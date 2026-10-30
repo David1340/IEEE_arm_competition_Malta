@@ -14,3 +14,4 @@ yolo_dataset/images/*
 !yolo_dataset/images/*.png
 yolo_dataset/labels/*
 !yolo_dataset/labels/*.txt
+!gripper_current_gui.py
