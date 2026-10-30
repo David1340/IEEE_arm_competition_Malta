@@ -1,0 +1,6 @@
+cube
+cylinder
+dodecahedron
+hexagonal
+bin
+gripper

@@ -4,3 +4,11 @@
 !yolo_dataset/
 yolo_dataset/*
 !yolo_dataset/*.py
+!yolo_dataset/classes.txt
+!yolo_dataset/roi.json
+!yolo_dataset/images/
+!yolo_dataset/labels/
+yolo_dataset/images/*
+!yolo_dataset/images/*.{jpg,jpeg,png}
+yolo_dataset/labels/*
+!yolo_dataset/labels/*.txt
