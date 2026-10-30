@@ -87,7 +87,7 @@ def main():
     cv2.setMouseCallback(win, on_mouse)
 
     quit_all = False
-    for f in files:
+    for file_i, f in enumerate(files, start=1):
         if quit_all:
             break
         img = cv2.imread(str(f))
@@ -126,10 +126,10 @@ def main():
                 cv2.circle(vis, (int(x), int(y)), 8, (0, 255, 0) if l else (0, 0, 255), -1)
             if state["scale"] < 1.0:
                 vis = cv2.resize(vis, None, fx=state["scale"], fy=state["scale"])
-            text = f"{f.name} | class {cls}:{args.classes[cls]} | objects={len(objects)}"
+            text = f"[{file_i}/{len(files)}] {f.name} | class {cls}:{args.classes[cls]} | objects={len(objects)}"
             if args.add_missing:
                 selected_text = f"selected {selected + 1}/{len(objects)}" if selected is not None else "no object selected"
-                text = f"{f.name} | class {cls}:{args.classes[cls]} | {selected_text} | objects={len(objects)}"
+                text = f"[{file_i}/{len(files)}] {f.name} | class {cls}:{args.classes[cls]} | {selected_text} | objects={len(objects)}"
             if quit_armed:
                 text = "Press q again to quit (unsaved work on this image is lost), any other key cancels"
             cv2.putText(vis, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
