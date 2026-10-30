@@ -1,0 +1,6 @@
+*
+!.gitignore
+!dataset_generation.py
+!yolo_dataset/
+yolo_dataset/*
+!yolo_dataset/*.py
