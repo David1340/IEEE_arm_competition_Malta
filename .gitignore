@@ -15,3 +15,5 @@ yolo_dataset/images/*
 yolo_dataset/labels/*
 !yolo_dataset/labels/*.txt
 !gripper_current_gui.py
+!DOC-20261018-WA0004.pdf
+!Robot-Championship-2026-V0.5.pdf
