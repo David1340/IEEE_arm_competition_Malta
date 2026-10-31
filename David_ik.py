@@ -5,7 +5,7 @@ so LeRobot degrees (use_degrees=True) map directly to URDF joint angles.
 
 Usage:
     python David_ik.py --sim-only            # PyBullet GUI only, no hardware
-    python David_ik.py                       # drives the real arm
+    python David_ik.py                         # drives the real arm
 Commands in the prompt (meters, base frame):
     x y z [gripper 0-100]    absolute target
     d dx dy dz               relative move
@@ -134,7 +134,16 @@ def read_joints_rad(robot) -> list[float]:
     return [math.radians(obs[f"{n}.pos"]) for n in ARM_JOINTS]
 
 
-def send_joints(robot, q, gripper=None, steps=20, dt=0.03, tol_deg=3.0, timeout=None):
+def send_joints(
+    robot,
+    q,
+    gripper=None,
+    steps=20,
+    dt=0.03,
+    tol_deg=3.0,
+    gripper_tolerance=5.0,
+    timeout=None,
+):
     """Interpolates from the current pose to q so the arm moves smoothly."""
     start = np.array(read_joints_rad(robot))
     goal = np.array(q)
@@ -159,10 +168,18 @@ def send_joints(robot, q, gripper=None, steps=20, dt=0.03, tol_deg=3.0, timeout=
         robot.send_action(final)
         time.sleep(dt)
         obs = robot.get_observation()
-        arm_err = max(abs(obs[k] - final[k]) for k in final if k != "gripper.pos")
+        arm_errors = {
+            name: abs(obs[f"{name}.pos"] - final[f"{name}.pos"])
+            for name in ARM_JOINTS
+        }
+        arm_err = max(arm_errors.values())
         grip_err = abs(obs["gripper.pos"] - g1)
-        if arm_err < tol_deg and (gripper is None or grip_err < tol_deg):
+        if arm_err < tol_deg and (gripper is None or grip_err < gripper_tolerance):
             return True
+    error_summary = ", ".join(f"{name}={error:.1f}deg" for name, error in arm_errors.items())
+    if gripper is not None:
+        error_summary += f", gripper={grip_err:.1f}units"
+    print(f"Joint motion timeout after {timeout:.1f}s; remaining errors: {error_summary}")
     return False
 
 
