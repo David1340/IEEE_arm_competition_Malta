@@ -4,8 +4,8 @@ Assumes the URDF zero pose matches the calibration midpoint (so101_new_calib),
 so LeRobot degrees (use_degrees=True) map directly to URDF joint angles.
 
 Usage:
-    python David_ik.py --sim-only            # PyBullet GUI only, no hardware
-    python David_ik.py                         # drives the real arm
+    python IK_control.py --sim-only            # PyBullet GUI only, no hardware
+    python IK_control.py                         # drives the real arm
 Commands in the prompt (meters, base frame):
     x y z [gripper 0-100]    absolute target
     d dx dy dz               relative move
@@ -174,7 +174,7 @@ def send_joints(
         }
         arm_err = max(arm_errors.values())
         grip_err = abs(obs["gripper.pos"] - g1)
-        if arm_err < tol_deg and (gripper is None or grip_err < gripper_tolerance):
+        if arm_err <= tol_deg and (gripper is None or grip_err <= gripper_tolerance):
             return True
     error_summary = ", ".join(f"{name}={error:.1f}deg" for name, error in arm_errors.items())
     if gripper is not None:

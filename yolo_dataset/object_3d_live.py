@@ -1,8 +1,8 @@
-"""Show YOLO objects with calibrated 3D centroids from the ZED point cloud.
+"""Show YOLO objects with calibrated 3D centers from the YOLO mask and ZED point cloud.
 
 Coordinates are transformed into the robot/table frame defined by the known
 ArUco marker positions in qr_calibrate.py. The center is the mean of valid
-visible surface points inside each mask, not the hidden volumetric center.
+point-cloud samples across the full segmented object mask, after depth outlier rejection.
 
 Usage:
     python yolo_dataset/object_3d_live.py
@@ -70,8 +70,17 @@ def transform_point(transform, point):
     return (transform @ np.append(np.asarray(point, dtype=float), 1.0))[:3]
 
 
-def visible_surface_center(cloud, polygon, roi, min_depth, max_depth, min_points):
-    """Return mean XYZ of robust valid points under the polygon, plus its pixel mask/center."""
+def visible_surface_center(
+    cloud,
+    polygon,
+    roi,
+    min_depth,
+    max_depth,
+    min_points,
+    camera_to_table,
+    z_tolerance_m=0.015,
+):
+    """Return a robust full-mask point-cloud center in calibrated table coordinates."""
     x0, y0, width, height = roi
     poly = np.asarray(polygon, dtype=np.float32)
     mask = np.zeros((height, width), dtype=np.uint8)
@@ -79,23 +88,28 @@ def visible_surface_center(cloud, polygon, roi, min_depth, max_depth, min_points
     mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=1)
     ys, xs = np.nonzero(mask)
     if len(xs) == 0:
-        return None, 0, None
+        return None, 0, None, None
 
-    xyz = cloud[y0 : y0 + height, x0 : x0 + width, :3][ys, xs]
-    valid = np.isfinite(xyz).all(axis=1) & (xyz[:, 2] >= min_depth) & (xyz[:, 2] <= max_depth)
-    xyz = xyz[valid]
-    if len(xyz) == 0:
-        return None, 0, None
+    camera_xyz = cloud[y0 : y0 + height, x0 : x0 + width, :3][ys, xs]
+    valid = np.isfinite(camera_xyz).all(axis=1) & (camera_xyz[:, 2] >= min_depth) & (camera_xyz[:, 2] <= max_depth)
+    camera_xyz = camera_xyz[valid]
+    xs, ys = xs[valid], ys[valid]
+    if len(camera_xyz) < min_points:
+        return None, 0, None, None
 
-    z_median = np.median(xyz[:, 2])
-    z_mad = np.median(np.abs(xyz[:, 2] - z_median))
-    z_tolerance = max(0.015, 3.0 * 1.4826 * z_mad)
-    xyz = xyz[np.abs(xyz[:, 2] - z_median) <= z_tolerance]
-    if len(xyz) < min_points:
-        return None, len(xyz), None
-    center = xyz.mean(axis=0)
+    z_median = np.median(camera_xyz[:, 2])
+    z_mad = np.median(np.abs(camera_xyz[:, 2] - z_median))
+    depth_tolerance = max(z_tolerance_m, 3.0 * 1.4826 * z_mad)
+    inliers = np.abs(camera_xyz[:, 2] - z_median) <= depth_tolerance
+    camera_xyz = camera_xyz[inliers]
+    xs, ys = xs[inliers], ys[inliers]
+    if len(camera_xyz) < min_points:
+        return None, len(camera_xyz), None, None
+
+    center_camera = camera_xyz.mean(axis=0)
+    center = transform_point(camera_to_table, center_camera)
     pixel_center = (int(round(xs.mean() + x0)), int(round(ys.mean() + y0)))
-    return center, len(xyz), pixel_center
+    return center, len(camera_xyz), pixel_center, mask * 255
 
 
 def main():
@@ -182,18 +196,20 @@ def main():
                         continue
                     points = np.rint(polygon + [x0, y0]).astype(np.int32)
                     color = COLORS[class_id % len(COLORS)]
-                    cv2.fillPoly(overlay, [points], color)
-                    cv2.polylines(canvas, [points], True, color, 2)
-
-                    center, count, pixel_center = visible_surface_center(
-                        cloud, polygon, current_roi, args.min_depth, args.max_depth, args.min_points
+                    center, count, pixel_center, top_mask = visible_surface_center(
+                        cloud, polygon, current_roi, args.min_depth, args.max_depth, args.min_points,
+                        camera_to_robot,
                     )
                     class_name = names[class_id]
                     if center is None:
+                        cv2.polylines(canvas, [points], True, (128, 128, 128), 1)
                         text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"
                         objects.append((class_name, confidence, None, count))
                     else:
-                        center = transform_point(camera_to_robot, center)
+                        roi_overlay = overlay[y0 : y0 + roi_h, x0 : x0 + roi_w]
+                        roi_overlay[top_mask > 0] = color
+                        contours, _ = cv2.findContours(top_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        cv2.drawContours(canvas, contours, -1, color, 2, offset=(x0, y0))
                         cx, cy = pixel_center
                         cv2.circle(canvas, (cx, cy), 5, (255, 255, 255), -1)
                         text = f"{class_name} {confidence:.2f} TABLE X{center[0]:+.3f} Y{center[1]:+.3f} Z{center[2]:+.3f}m"
