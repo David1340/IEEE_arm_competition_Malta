@@ -24,3 +24,7 @@ stl/*
 !stl/*.stl
 !stl/*.3mf
 !stl/*.py
+!point_cloud_matching/
+point_cloud_matching/*
+!point_cloud_matching/*.py
+!point_cloud_matching/*.md
