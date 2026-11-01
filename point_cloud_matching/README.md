@@ -13,6 +13,15 @@ object's true centre (and later its top face), instead of the mean of the visibl
 
        python point_cloud_matching/silhouette.py
 
+   See how it works:
+
+       python point_cloud_matching/silhouette_gui.py
+
+   Real time (ZED + YOLO), or replay a saved case without the camera:
+
+       python point_cloud_matching/silhouette_live.py
+       python point_cloud_matching/silhouette_live.py --replay point_cloud_mathing/case_20261101T165958_770293Z
+
    Depth top-face matching (for comparison):
 
        python point_cloud_matching/top_face.py
@@ -37,6 +46,8 @@ Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralyt
 | `matching.py` | 4-DoF ICP (X, Y, yaw, optional Z) of every size x pose candidate against the data, comparing only the model faces the camera can see |
 | `match_gui.py` | the GUI: show/hide each fitted model, pick the active one, 4-DoF or 6-DoF ICP |
 | `silhouette.py` | **render-and-compare (best so far)**: projects each STL through the calibrated camera and fits X, Y, yaw, size and pose to the YOLO mask (IoU); top-face centre from the STL. Does not use object depth, so it works on dark objects. Writes `<case>/silhouette_centres.png`, `silhouette_fit.png`, `silhouette.json` |
+| `silhouette_gui.py` | **GUI explaining render-and-compare**: close-up with YOLO mask vs projected STL (overlap colours), top-down table view showing why the top face sits away from the camera, IoU-per-step plot, animated search, sliders to move the STL by hand |
+| `silhouette_live.py` | **real-time** version: ZED + YOLO, full fit once per object then tracking (~1-2 ms per object); `--replay <case>` runs it without a camera |
 | `top_face.py` | **top-face matching**: keeps only the plateau near the top of the point cloud, snaps it to the STL top height along the camera rays, and slides/rotates each STL top face over it (IoU) -> size, pose, yaw, top-face centre. Writes `<case>/top_faces.png` + `.json` |
 | `render_centres.py` | draws the fitted centres back onto the camera image (`<case>/fitted_centres.png`) to check them by eye |
 

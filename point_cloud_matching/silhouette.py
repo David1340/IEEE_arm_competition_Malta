@@ -113,38 +113,68 @@ class SilhouetteMatcher:
 
     def iou(self, cand, x, y, yaw, tz):
         m = self.render(cand, x, y, yaw, tz)
-        inter = float(np.logical_and(m, self.target).sum())
-        return inter / (self.area_t + float(m.sum()) - inter + 1e-9)
+        inter = float(cv2.countNonZero(cv2.bitwise_and(m, self.target)))
+        return inter / (self.area_t + float(cv2.countNonZero(m)) - inter + 1e-9)
 
-    def fit(self, cand, tz, yaw_starts=6):
-        # Start: ray through the mask centre meets the plane at half the model height
+    STEPS = [(0.004, np.radians(6)), (0.002, np.radians(3)), (0.001, np.radians(1.5)),
+             (0.0005, np.radians(0.75)), (0.00025, np.radians(0.4))]
+
+    def start_xy(self, cand, tz):
+        """Start position: the ray through the mask centre meets the plane at half height."""
         u, v = self.obj.polygon_full.mean(axis=0)
         x0, y0, _ = self.cam.ray_to_plane(u, v, tz + cand.height / 2)
+        return x0, y0
+
+    def _search(self, cand, tz, p, steps, trace=None):
+        """Pattern search on (x, y, yaw): try +-step moves, keep any that raise IoU, then halve."""
+        n = cand.sym_order
+        s = self.iou(cand, *p, tz)
+        if trace is not None:
+            trace.append((*p, s))
+        for dxy, dyaw in steps:
+            improved = True
+            while improved:
+                improved = False
+                moves = [(dxy, 0, 0), (-dxy, 0, 0), (0, dxy, 0), (0, -dxy, 0)]
+                if n != 0:
+                    moves += [(0, 0, dyaw), (0, 0, -dyaw)]
+                for m in moves:
+                    q = p + m
+                    sq = self.iou(cand, *q, tz)
+                    if sq > s + 1e-6:
+                        p, s, improved = q, sq, True
+                        if trace is not None:
+                            trace.append((*p, s))
+        return p, s
+
+    def _make_fit(self, cand, p, s, tz):
+        n = cand.sym_order
+        period = 2 * np.pi / max(n, 1)
+        yaw = 0.0 if n == 0 else (p[2] + period / 2) % period - period / 2
+        return SilhouetteFit(cand, s, p[0], p[1], yaw, tz)
+
+    def fit(self, cand, tz, yaw_starts=6, trace=None):
+        """Full search for one candidate from several start yaws. If `trace` is a list, the
+        accepted steps of the winning start are appended to it as (x, y, yaw, iou)."""
+        x0, y0 = self.start_xy(cand, tz)
         n = cand.sym_order
         period = 2 * np.pi / max(n, 1)
         starts = [0.0] if n == 0 else [period * (k / yaw_starts - 0.5) for k in range(yaw_starts)]
-        best = None
+        best, best_trace = None, None
         for yaw0 in starts:
-            p = np.array([x0, y0, yaw0])
-            s = self.iou(cand, *p, tz)
-            steps = [(0.004, np.radians(6)), (0.002, np.radians(3)), (0.001, np.radians(1.5)),
-                     (0.0005, np.radians(0.75)), (0.00025, np.radians(0.4))]
-            for dxy, dyaw in steps:   # pattern search on (x, y, yaw)
-                improved = True
-                while improved:
-                    improved = False
-                    moves = [(dxy, 0, 0), (-dxy, 0, 0), (0, dxy, 0), (0, -dxy, 0)]
-                    if n != 0:
-                        moves += [(0, 0, dyaw), (0, 0, -dyaw)]
-                    for m in moves:
-                        q = p + m
-                        sq = self.iou(cand, *q, tz)
-                        if sq > s + 1e-6:
-                            p, s, improved = q, sq, True
+            tr = [] if trace is not None else None
+            p, s = self._search(cand, tz, np.array([x0, y0, yaw0]), self.STEPS, tr)
             if best is None or s > best.iou:
-                yaw = 0.0 if n == 0 else (p[2] + period / 2) % period - period / 2
-                best = SilhouetteFit(cand, s, p[0], p[1], yaw, tz)
+                best, best_trace = self._make_fit(cand, p, s, tz), tr
+        if trace is not None:
+            trace.extend(best_trace)
         return best
+
+    def refine(self, prev_fit, tz):
+        """Tracking: start from last frame's pose, small steps only (a few ms)."""
+        p = np.array([prev_fit.x, prev_fit.y, prev_fit.yaw])
+        p, s = self._search(prev_fit.candidate, tz, p, self.STEPS[2:])
+        return self._make_fit(prev_fit.candidate, p, s, tz)
 
 
 def fit_object(cam, obj, candidates):
