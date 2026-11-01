@@ -9,6 +9,10 @@ object's true centre (and later its top face), instead of the mean of the visibl
 
        python yolo_dataset/capture_pointcloud_case.py
 
+3. Check the centres on the camera image:
+
+       python point_cloud_matching/render_centres.py
+
 2. Open the comparison GUI (newest case by default):
 
        python point_cloud_matching/match_gui.py
@@ -23,7 +27,8 @@ Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralyt
 | `models.py` | loads the STLs, finds each shape's stable resting poses (e.g. cylinder upright / on side), samples surface points + normals, in metres |
 | `cases.py` | loads a capture case, converts it to the table frame, and fits the local table plane from a ring of pixels around each mask |
 | `matching.py` | 4-DoF ICP (X, Y, yaw, optional Z) of every size x pose candidate against the data, comparing only the model faces the camera can see |
-| `match_gui.py` | the GUI |
+| `match_gui.py` | the GUI: show/hide each fitted model, pick the active one, 4-DoF or 6-DoF ICP |
+| `render_centres.py` | draws the fitted centres back onto the camera image (`<case>/fitted_centres.png`) to check them by eye |
 
 `python point_cloud_matching/models.py` prints every candidate with its height and centre.
 
@@ -34,6 +39,9 @@ Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralyt
 * Only model points whose normal faces the camera are compared (all shapes are convex, so
   this is exact). Matching is symmetric, data -> model and model -> data, which is what
   separates small from large.
+* ICP: **4-DoF** (default) keeps the object flat on the table (X, Y, yaw, optional Z).
+  **6-DoF** is standard free rigid ICP (Kabsch); on flattened depth it tips models over,
+  so use it for comparison only.
 * Each candidate starts from 12 yaw angles; the best result by RMS x coverage wins.
 * **3D mode** uses XYZ distances. **Top-down mode** uses XY only, for objects whose depth is
   unreliable.
