@@ -184,12 +184,61 @@ def project(case, K, table_xyz):
     return np.column_stack((fx * p[:, 0] / p[:, 2] + cx, fy * p[:, 1] / p[:, 2] + cy))
 
 
+def render_centres_only(case, K, fits, out):
+    """Camera image with only a thin crosshair at each top-face centre, plus zoomed crops."""
+    img = case.image.copy()
+    marks = []
+    for i, (o, best) in enumerate(fits, 1):
+        if best is None:
+            continue
+        u, v = project(case, K, best.center)[0]
+        marks.append((i, o, int(round(u)), int(round(v))))
+    x0, y0, w, h = case.roi
+    full = img.copy()
+    for i, o, u, v in marks:
+        cv2.drawMarker(full, (u, v), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+        cv2.putText(full, str(i), (u + 8, v - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+        cv2.putText(full, str(i), (u + 8, v - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    top = full[y0:y0 + h, x0:x0 + w]
+    tiles = []
+    T = 300  # tile size in px
+    for i, o, u, v in marks:
+        lo, hi = o.polygon_full.min(axis=0), o.polygon_full.max(axis=0)
+        cx, cy = ((lo + hi) / 2).astype(int)
+        r = int(max(hi - lo) / 2) + 12   # square crop around the whole object
+        ax0, ay0 = max(cx - r, 0), max(cy - r, 0)
+        src = img[ay0:cy + r, ax0:cx + r]
+        z = T / (2 * r)
+        crop = cv2.resize(src, None, fx=z, fy=z, interpolation=cv2.INTER_CUBIC)
+        pu, pv = int((u - ax0 + 0.5) * z), int((v - ay0 + 0.5) * z)
+        cv2.line(crop, (pu - 14, pv), (pu + 14, pv), (0, 0, 255), 1)   # thin crosshair
+        cv2.line(crop, (pu, pv - 14), (pu, pv + 14), (0, 0, 255), 1)
+        cv2.circle(crop, (pu, pv), 2, (0, 0, 255), -1)
+        tile = np.full((T + 24, T, 3), 30, np.uint8)
+        hh, ww = min(crop.shape[0], T), min(crop.shape[1], T)
+        tile[24:24 + hh, :ww] = crop[:hh, :ww]
+        cv2.putText(tile, f"{i}. {o.class_name}", (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        tiles.append(tile)
+    per_row = max(1, top.shape[1] // tiles[0].shape[1]) if tiles else 1
+    rows = []
+    for k in range(0, len(tiles), per_row):
+        row = tiles[k:k + per_row]
+        row += [np.full_like(tiles[0], 30)] * (per_row - len(row))
+        rows.append(np.hstack(row))
+    grid = np.vstack(rows) if rows else np.zeros((0, top.shape[1], 3), np.uint8)
+    width = max(top.shape[1], grid.shape[1])
+    pad = lambda a: np.hstack((a, np.full((a.shape[0], width - a.shape[1], 3), 30, np.uint8)))  # noqa: E731
+    cv2.imwrite(str(out), np.vstack((pad(top), pad(grid))))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("case", nargs="?", type=Path)
     ap.add_argument("--band", type=float, default=4.0, help="top-face band below the highest points (mm)")
     ap.add_argument("--no-snap", action="store_true", help="do not move top points to the STL height")
     ap.add_argument("--out", type=Path, default=None, help="default: <case>/top_faces.png")
+    ap.add_argument("--centres-only", action="store_true",
+                    help="also write <case>/top_face_centres.png: just the centres on the camera image")
     args = ap.parse_args()
 
     import matplotlib
@@ -202,10 +251,11 @@ def main():
     K = estimate_intrinsics(path)
     n = len(case.objects)
     fig, axs = plt.subplots(3, n, figsize=(3.1 * n, 9.6), squeeze=False)
-    report = []
+    report, all_best = [], []
     for j, o in enumerate(case.objects):
         cands = models.candidates_for_class(o.class_name)
         best, allres = fit_top_face(o, case, cands, args.band, not args.no_snap)
+        all_best.append((o, best))
         ax_img, ax_top, ax_txt = axs[0, j], axs[1, j], axs[2, j]
         for a in (ax_img, ax_top, ax_txt):
             a.set_xticks([])
@@ -267,6 +317,10 @@ def main():
     fig.savefig(out, dpi=80)
     out.with_suffix(".json").write_text(json.dumps(report, indent=2))
     print(f"wrote {out} and {out.with_suffix('.json')}")
+    if args.centres_only:
+        c_out = out.with_name("top_face_centres.png")
+        render_centres_only(case, K, all_best, c_out)
+        print(f"wrote {c_out}")
 
 
 if __name__ == "__main__":
