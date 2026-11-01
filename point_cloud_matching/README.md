@@ -9,7 +9,11 @@ object's true centre (and later its top face), instead of the mean of the visibl
 
        python yolo_dataset/capture_pointcloud_case.py
 
-3. Top-face matching (recommended):
+3. Render-and-compare centres (recommended):
+
+       python point_cloud_matching/silhouette.py
+
+   Depth top-face matching (for comparison):
 
        python point_cloud_matching/top_face.py
 
@@ -32,6 +36,7 @@ Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralyt
 | `cases.py` | loads a capture case, converts it to the table frame, and fits the local table plane from a ring of pixels around each mask |
 | `matching.py` | 4-DoF ICP (X, Y, yaw, optional Z) of every size x pose candidate against the data, comparing only the model faces the camera can see |
 | `match_gui.py` | the GUI: show/hide each fitted model, pick the active one, 4-DoF or 6-DoF ICP |
+| `silhouette.py` | **render-and-compare (best so far)**: projects each STL through the calibrated camera and fits X, Y, yaw, size and pose to the YOLO mask (IoU); top-face centre from the STL. Does not use object depth, so it works on dark objects. Writes `<case>/silhouette_centres.png`, `silhouette_fit.png`, `silhouette.json` |
 | `top_face.py` | **top-face matching**: keeps only the plateau near the top of the point cloud, snaps it to the STL top height along the camera rays, and slides/rotates each STL top face over it (IoU) -> size, pose, yaw, top-face centre. Writes `<case>/top_faces.png` + `.json` |
 | `render_centres.py` | draws the fitted centres back onto the camera image (`<case>/fitted_centres.png`) to check them by eye |
 
