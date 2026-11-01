@@ -19,3 +19,8 @@ yolo_dataset/labels/*
 !docs/*.pdf
 !docs/
 !docs/*.pdf
+!stl/
+stl/*
+!stl/*.stl
+!stl/*.3mf
+!stl/*.py
