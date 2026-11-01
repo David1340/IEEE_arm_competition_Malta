@@ -145,10 +145,58 @@ class ModelCandidate:
     height: float         # metres
     com: np.ndarray       # (3,) centre of mass in object frame: (0, 0, com_z)
     top_z: float          # = height
+    top_tris: np.ndarray = None    # (k, 3, 3) the flat top face (upward faces at the top)
+    top_center: np.ndarray = None  # (3,) area centroid of the top face, object frame
+    top_edges: np.ndarray = None   # (e, 2, 3) outline of the top face, for drawing
+    sym_order: int = 1             # rotational symmetry about the vertical: n-fold, 0 = any angle
+    top_kind: str = "flat"         # "flat" face, or "ridge" (prism / cylinder lying on its side)
 
     @property
     def label(self):
         return f"{self.size} {self.shape} - {self.pose_name}"
+
+
+def top_face(tris, height, cos_min=0.99, z_tol=1e-4):
+    """Triangles of the flat top face, its area centroid and its outline edges.
+    A cylinder on its side has no flat top; its top-most strip is used instead."""
+    cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+    nz = cross[:, 2] / np.maximum(2 * area, 1e-15)
+    sel = (nz > cos_min) & (tris[..., 2].min(axis=1) > height - z_tol)
+    kind = "flat"
+    if area[sel].sum() < 2e-6:  # < 2 mm^2: no flat top, the top is a ridge (edge or curved line)
+        sel = (nz > 0.3) & (tris[..., 2].max(axis=1) > height - z_tol)
+        kind = "ridge"
+    top = tris[sel]
+    w = area[sel]
+    centre = (top.mean(axis=1) * w[:, None]).sum(axis=0) / w.sum()
+    centre[2] = height
+    # Outline = edges used by only one top triangle
+    count = {}
+    for t in np.round(top * 1e6).astype(np.int64):
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            key = tuple(sorted((tuple(t[a]), tuple(t[b]))))
+            count[key] = count.get(key, 0) + 1
+    edges = np.array([k for k, c in count.items() if c == 1], dtype=np.float64) / 1e6
+    return top, centre, edges, kind
+
+
+def symmetry_order(points, tol=0.6e-3):
+    """n-fold rotational symmetry about the vertical through the origin (0 = any angle)."""
+    from scipy.spatial import cKDTree
+    tree = cKDTree(points)
+
+    def matches(angle):
+        c, s = np.cos(angle), np.sin(angle)
+        p = points @ np.array([[c, -s, 0], [s, c, 0], [0, 0, 1.0]]).T
+        return np.median(tree.query(p)[0]) < tol
+
+    if matches(np.radians(7.0)) and matches(np.radians(19.0)):
+        return 0
+    for n in (6, 5, 4, 3, 2):
+        if matches(2 * np.pi / n):
+            return n
+    return 1
 
 
 def _pose_name(shape, pose_index, n_poses, height, xy_extent):
@@ -178,7 +226,10 @@ def load_candidates(shape, sizes=SIZES, spacing_mm=1.5, seed=0, stl_dir=STL_DIR)
             com = (com - shift) / 1000.0
             pts, nrm = sample_surface(t, normals, spacing_mm / 1000.0, rng)
             height = float(np.ptp(t[..., 2]))
-            out.append(ModelCandidate(shape, size, k, "", pts, nrm, t, height, com, height))
+            top, top_c, edges, kind = top_face(t, height)
+            dense, _ = sample_surface(t, normals, 0.7e-3, np.random.default_rng(1))
+            out.append(ModelCandidate(shape, size, k, "", pts, nrm, t, height, com, height,
+                                      top, top_c, edges, symmetry_order(dense), kind))
     # Name poses after all sizes are loaded so small and large share names
     for c in out:
         n = sum(1 for d in out if d.size == c.size)
@@ -194,5 +245,8 @@ def candidates_for_class(class_name, **kw):
 if __name__ == "__main__":
     for shape in sorted(set(CLASS_TO_STL.values())):
         for c in load_candidates(shape):
-            print(f"{c.label:40s} height {c.height * 1000:5.1f} mm  centre z {c.com[2] * 1000:5.1f} mm  "
-                  f"{len(c.points)} pts")
+            sym = "any angle" if c.sym_order == 0 else f"{c.sym_order}-fold"
+            a = 0.5 * np.linalg.norm(np.cross(c.top_tris[:, 1] - c.top_tris[:, 0],
+                                              c.top_tris[:, 2] - c.top_tris[:, 0]), axis=1).sum() * 1e6
+            print(f"{c.label:36s} height {c.height * 1000:5.1f} mm  top {c.top_kind:5s} {a:6.0f} mm^2  "
+                  f"top centre ({c.top_center[0] * 1000:+.1f}, {c.top_center[1] * 1000:+.1f}) mm  symmetry {sym}")

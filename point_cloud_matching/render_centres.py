@@ -2,7 +2,7 @@
 
 For every object in a case: fit the STL candidates (4-DoF ICP, both 3D and top-down
 distances), then project into the image
-    - the fitted model's silhouette (its points, faint),
+    - the outline of the STL's top face, placed with the fitted pose,
     - the model centre (3D mode: red, top-down mode: orange),
     - the top-face centre (green),
     - the capture script's centre (blue).
@@ -100,10 +100,11 @@ def main():
     for i, o in enumerate(case.objects, 1):
         f3, f2 = fit_object(case, o, "3d"), fit_object(case, o, "2d")
         cv2.polylines(img, [np.rint(o.polygon_full).astype(np.int32)], True, WHITE, 1)
-        if f3 is not None:  # faint silhouette of the 3D-mode fit
-            for u, v in proj(f3.pose.apply(f3.candidate.points[::3])):
-                if 0 <= int(v) < img.shape[0] and 0 <= int(u) < img.shape[1]:
-                    img[int(v), int(u)] = (0.5 * img[int(v), int(u)] + 0.5 * np.array(RED)).astype(np.uint8)
+        if f3 is not None:  # top-face outline of the 3D-mode fit, from the STL
+            for e in proj(f3.top_outline().reshape(-1, 3)).reshape(-1, 2, 2):
+                a, b = (tuple(int(round(c)) for c in p) for p in e)
+                cv2.line(img, a, b, (0, 0, 0), 3)
+                cv2.line(img, a, b, GREEN, 1)
         pts = {}
         if o.yolo_center is not None:
             pts["capture"] = proj(o.yolo_center)[0]
@@ -164,7 +165,7 @@ def main():
     x = 10
     for colour, kind, text in ((RED, "cross", "model centre (3D fit)"), (ORANGE, "cross", "model centre (top-down fit)"),
                                (GREEN, "ring", "top-face centre (3D fit)"), (BLUE, "dot", "capture-script centre"),
-                               (RED, "dot", "faint red = fitted model silhouette")):
+                               (GREEN, "dot", "green line = STL top-face outline")):
         marker(legend, (x + 8, 20), colour, kind, 6)
         cv2.putText(legend, text, (x + 22, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         x += 22 + 9 * len(text) + 20

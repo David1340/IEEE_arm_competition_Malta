@@ -104,7 +104,15 @@ class FitResult:
 
     @property
     def top_center(self):
-        return self.pose.apply(np.array([[0.0, 0.0, self.candidate.top_z]]))[0]
+        """Centre of the STL's top face (or top ridge), placed with the fitted pose."""
+        c = self.candidate
+        local = c.top_center if c.top_center is not None else np.array([0.0, 0.0, c.top_z])
+        return self.pose.apply(local[None])[0]
+
+    def top_outline(self):
+        """(e, 2, 3) top-face outline edges in the table frame."""
+        e = self.candidate.top_edges
+        return self.pose.apply(e.reshape(-1, 3)).reshape(-1, 2, 3)
 
 
 def visible_mask(points_w, normals_w, cam, min_cos=0.15):
@@ -228,7 +236,18 @@ class Matcher:
                   for k in range(yaw_starts)]
         coarse.sort(key=lambda f: f.score)
         fine = [self.icp(cand, f.pose, fine_iters) for f in coarse[:keep]]
-        return min(fine, key=lambda f: f.score)
+        return self.canonical(min(fine, key=lambda f: f.score))
+
+    def canonical(self, fit):
+        """Symmetric shapes fit equally well at several yaws (cube every 90 deg, pentagon every
+        72 deg, upright cylinder at any angle). Report the yaw closest to 0 so the orientation
+        is consistent; position, centre and top face do not change."""
+        n = getattr(fit.candidate, "sym_order", 1)
+        if self.icp_type != "4dof" or n == 1:
+            return fit
+        step = 2 * np.pi / n if n else None
+        yaw = 0.0 if n == 0 else (fit.pose.yaw + step / 2) % step - step / 2
+        return self.evaluate(fit.candidate, Pose.from_yaw(yaw, fit.pose.t), fit.iterations)
 
     def fit_all(self, candidates, **kw):
         return sorted((self.fit_candidate(c, **kw) for c in candidates), key=lambda f: f.score)

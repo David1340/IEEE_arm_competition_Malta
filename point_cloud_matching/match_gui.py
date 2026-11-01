@@ -24,7 +24,9 @@ Mouse / keys:
 
 3D view: data points use the camera colours (or distance to the active model). For each
 shown model: solid points = faces the camera can see, faint points = hidden faces, star =
-model centre, ring = top-face centre. Blue X = centre saved by the capture script.
+model centre, ring = top-face centre, thick outline = the STL's top face (or top ridge
+for a prism / cylinder lying on its side). Symmetric shapes are always shown at the yaw
+closest to 0 (cube within +-45 deg, pentagon +-36 deg, upright cylinder 0). Blue X = centre saved by the capture script.
 """
 
 import argparse
@@ -47,7 +49,8 @@ import cases  # noqa: E402
 import matching  # noqa: E402
 import models  # noqa: E402
 
-VIEW_LABELS = ["data", "visible faces", "hidden faces", "mesh", "colour by distance", "lock base to table"]
+VIEW_LABELS = ["data", "top face", "visible faces", "hidden faces", "mesh", "colour by distance",
+               "lock base to table"]
 MODEL_COLOURS = ["#ff7f0e", "#e040fb", "#00bcd4", "#7cb342", "#8d6e63", "#ffd600"]
 ICP_LABELS = ["4-DoF ICP (flat on table)", "6-DoF ICP (free)"]
 DIST_LABELS = ["3D (xyz)", "top-down (xy)"]
@@ -63,7 +66,7 @@ class MatchGUI:
         self.idx = 0
         self.mode = "3d"
         self.icp = "4dof"
-        self.view = dict(zip(VIEW_LABELS, [True, True, True, True, False, True]))
+        self.view = dict(zip(VIEW_LABELS, [True, True, True, False, True, False, True]))
         self.cand_cache = {}
         self.results = {}       # object_id -> (FitResult, mode, icp) for saving
         self.fits = []
@@ -124,7 +127,7 @@ class MatchGUI:
         self.r_dist = radio([0.01, 0.215, 0.125, 0.07], "distances", DIST_LABELS)
         self.r_dist.on_clicked(self._on_dist)
 
-        ax = self.fig.add_axes([0.01, 0.02, 0.125, 0.17])
+        ax = self.fig.add_axes([0.01, 0.01, 0.125, 0.185])
         ax.set_title("view", fontsize=8, loc="left")
         self.c_view = CheckButtons(ax, VIEW_LABELS, [self.view[k] for k in VIEW_LABELS])
         for t in self.c_view.labels:
@@ -358,6 +361,9 @@ class MatchGUI:
                 ax.add_collection3d(Poly3DCollection(tw, facecolor=matplotlib.colors.to_rgba(col, 0.06),
                                                      edgecolor=matplotlib.colors.to_rgba(col, 0.45),
                                                      linewidths=0.5 if k == self.active else 0.3))
+            if self.view["top face"]:
+                for e in f.top_outline() * mm:
+                    ax.plot(*e.T, color=col, lw=3 if k == self.active else 2)
             ctr, top = f.center * mm, f.top_center * mm
             big = k == self.active
             ax.scatter(*ctr, marker="*", s=260 if big else 140, color=col, edgecolor="k", depthshade=False)
@@ -423,7 +429,7 @@ class MatchGUI:
                 f"ICP iters   {fit.iterations}",
                 "MODEL CENTRE (table, mm)",
                 f"  X {ctr[0]:8.1f}  Y {ctr[1]:8.1f}  Z {ctr[2]:7.1f}",
-                "TOP-FACE CENTRE (table, mm)",
+                f"TOP-FACE CENTRE (table, mm)  [{c.top_kind}]",
                 f"  X {top[0]:8.1f}  Y {top[1]:8.1f}  Z {top[2]:7.1f}",
             ]
             if o.yolo_center is not None:
