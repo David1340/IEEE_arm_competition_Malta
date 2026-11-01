@@ -27,13 +27,19 @@ import argparse
 import sys
 from pathlib import Path
 
+import os
+
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")  # silences OpenCV Qt font warnings
+
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import cv2  # noqa: E402
+# matplotlib must be imported before OpenCV: the opencv-python wheel bundles its own Qt,
+# which can stop matplotlib from finding a window backend (the GUI then exits silently).
 import matplotlib  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+import cv2  # noqa: E402
 from matplotlib.path import Path as MplPath  # noqa: E402
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider  # noqa: E402
 
@@ -380,6 +386,16 @@ def main():
         gui.fig.savefig(args.screenshot, dpi=85)
         print(f"wrote {args.screenshot}")
         return
+    backend = matplotlib.get_backend().lower()
+    if backend in ("agg", "pdf", "svg", "ps", "cairo", "template"):
+        out = path / "silhouette_gui.png"
+        gui.fig.savefig(out, dpi=85)
+        print(f"\nmatplotlib has no window backend here (backend = '{backend}'), so no window can open.\n"
+              f"Saved a still image instead: {out}\n"
+              "Fix (Ubuntu):  sudo apt install python3-tk     or, inside the venv:  pip install PyQt5\n"
+              "Check with:    python -c \"import matplotlib; print(matplotlib.get_backend())\"")
+        return
+    print(f"window backend: {backend} (close the window to quit)")
     plt.show()
 
 

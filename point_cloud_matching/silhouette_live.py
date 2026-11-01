@@ -25,6 +25,10 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import os
+
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")  # silences OpenCV Qt font warnings
+
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
