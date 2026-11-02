@@ -152,11 +152,14 @@ def draw_plan(scene, dets, tasks, path, head):
                           4 if d.name == "bin" else 2)
         if d.name == "bin" and d.pixel is not None:
             label(f"{d.colour.upper()} BIN", (int(d.pixel[0]) - 50, int(d.pixel[1])), (255, 255, 255), 0.8)
+            label(f"yolo {d.conf:.2f} colour {d.colour_conf:.2f}", (int(d.pixel[0]) - 50, int(d.pixel[1]) + 24),
+                  (255, 255, 255), 0.5)
     for n, t in enumerate(tasks):
         d = t.obj
         if d.pixel is None:
             continue
         px = tuple(map(int, d.pixel))
+        label(f"yolo {d.conf:.2f} colour {d.colour_conf:.2f}", (px[0] + 12, px[1] + 16), (255, 255, 255), 0.5)
         if t.ok:
             c = (0, 0, 255) if n == 0 else (255, 255, 255)
             cv2.arrowedLine(img, px, tuple(map(int, t.bin.pixel)), c, 4 if n == 0 else 2, tipLength=0.03)
@@ -169,8 +172,9 @@ def draw_plan(scene, dets, tasks, path, head):
     return img
 
 
-def confirm(img):
-    """Show the plan; True on g/Enter, False on q/Esc or a closed window. Without a display, ask in the terminal."""
+def confirm(img, look_only=False):
+    """Show the plan; True on g/Enter, False on q/Esc or a closed window. Without a display, ask in the terminal.
+    look_only: any key (or closing the window) closes it."""
     import cv2
 
     win = "sort_objects"
@@ -178,12 +182,15 @@ def confirm(img):
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
         cv2.imshow(win, img)
     except cv2.error:
-        return input("Start sorting? [y/N] ").strip().lower() == "y"
-    print("Picture window: click on it, then g or Enter = start sorting, q or Esc = quit")
+        return False if look_only else input("Start sorting? [y/N] ").strip().lower() == "y"
+    print("Picture window: click on it, then " + ("any key closes it" if look_only
+                                                  else "g or Enter = start sorting, q or Esc = quit"))
     try:
         while True:
             k = cv2.waitKey(100)
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                return False
+            if k != -1 and look_only:
                 return False
             if k != -1 and (k & 0xFF) in (ord("g"), 13, 10):
                 return True
@@ -252,11 +259,12 @@ def main():
         img = None
         if scene is not None and scene.frame is not None:
             img = draw_plan(scene, dets, tasks, out / time.strftime("plan_%Y%m%d_%H%M%S.jpg"), head)
-            print(f"Picture: {out}")
-        if not todo:
-            print(f"\nNothing (more) to sort. {sorted_n} sorted.")
-            return
-        if args.dry:
+            print(f"Picture: {sorted(out.glob('plan_*.jpg'))[-1]}")
+        if args.dry or not todo:
+            if not todo:
+                print(f"\nNothing (more) to sort. {sorted_n} sorted.")
+            if img is not None and not args.yes:
+                confirm(img, look_only=True)
             return
         if not asked:
             if not (confirm(img) if img is not None else input("Start sorting? [y/N] ").strip().lower() == "y"):
