@@ -42,10 +42,15 @@ import detect  # noqa: E402
 # ---- change these --------------------------------------------------------------------------------------
 HOVER = 0.12           # m above the grasp point the arm stops first and opens the jaws (an opening jaw swings
                        # several cm down when the gripper is tilted), before going straight down
-GRASP_DEPTH = 0.015    # m below the object's measured top surface the tip goes (the jaws straddle it)
-MIN_TIP_Z = 0.012      # m: never aim the tip lower than this above the table (z = 0)
+GRASP_DEPTH = 0.015    # m below the object's measured top surface the middle of the jaws goes
+MIN_GRASP_Z = 0.02     # m: never aim the middle of the jaws lower than this above the table (z = 0)
 PRESS = 0.008          # m: on the way down, stop when the tip is held this far above where it should be
-OPEN = 70.0            # gripper opening (0 closed .. 100 open) before going down
+OPEN = 50.0            # gripper opening (0 closed .. 100 open) before going down: 50 = 6.8 cm between the jaw
+                       # ends (the blocks are 3 to 5.5 cm); wider swings the moving jaw back from the tip
+ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
+# Where the object goes, in so101ik's tip frame (the tip = the fixed jaw's grasp point; x towards the moving jaw
+# is negative, z along the fingers): halfway between the jaws at OPEN = 50, 1 cm back from the jaw ends.
+JAW_CENTRE = np.array([-0.032, 0.0, -0.010])
 SPEED = 20.0           # deg/s peak, the moves in joint space (unfold, to the hover point)
 DOWN_SPEED = 0.03      # m/s peak, the vertical descent and the rise
 PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-90 = pointing straight down)
@@ -71,10 +76,33 @@ def fine_offsets(path):
 
 
 def grasp_point(d):
-    """Where the tip goes: GRASP_DEPTH below the measured top (the mask's mean height), not below MIN_TIP_Z.
-    The ZED reads dark objects too flat (see point_cloud_matching/README.md), so the floor matters."""
+    """Where the middle of the jaws goes: the object's x, y, GRASP_DEPTH below its measured top (the mask's mean
+    height), not below MIN_GRASP_Z. The ZED reads dark objects too flat, so the floor matters."""
     x, y, z_top = d.base_xyz
-    return np.array([x, y, max(z_top - GRASP_DEPTH, MIN_TIP_Z)])
+    return np.array([x, y, max(z_top - GRASP_DEPTH, MIN_GRASP_Z)])
+
+
+def centre_of(model, pose):
+    """Where the middle of the open jaws is (m, base frame) for a pose."""
+    T = model.frames(pose.deg)["gripper_frame_link"]
+    return T[:3, :3] @ JAW_CENTRE + T[:3, 3]
+
+
+def ik_centre(model, c, pitch, near=None):
+    """The pose (roll ROLL, gripper OPEN) that puts the middle of the jaws at c: the tip aimed at c minus the
+    jaw-centre offset, three rounds since the offset turns with the pose. pitch None: the least-loaded pose, or
+    with near the next one along a path (its roll and gripper kept)."""
+    c = np.asarray(c, float)
+    tip = c.copy()
+    for _ in range(3):
+        if pitch is not None:
+            pose = model.ik(*tip, pitch=pitch, roll=ROLL, gripper=OPEN)
+        elif near is not None:
+            pose = model.ik(*tip, near=near)
+        else:
+            pose = model.ik(*tip, roll=ROLL, gripper=OPEN)
+        tip = tip + (c - centre_of(model, pose))
+    return pose
 
 
 def plan(model, goal, hover=HOVER, step=0.004):
@@ -89,12 +117,11 @@ def plan(model, goal, hover=HOVER, step=0.004):
         try:
             poses, prev = [], None
             for z in zs:
-                if pitch is None:
-                    prev = model.ik(x, y, z, near=prev) if prev else model.ik(x, y, z)
-                else:
-                    prev = model.ik(x, y, z, pitch=pitch)
+                prev = ik_centre(model, (x, y, z), pitch, near=prev if pitch is None else None)
                 poses.append(prev)
         except Unreachable:
+            continue
+        if np.linalg.norm(centre_of(model, poses[-1]) - goal) > 0.002:
             continue
         # follow() wants neighbours within 3 degrees of each other: a jump means the IK flipped branch.
         jumps = [max(abs(a.deg[j] - b.deg[j]) for j in ARM) for a, b in zip(poses, poses[1:])]
@@ -147,12 +174,21 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None):
     `with Arm()` block folds the arm home."""
     from so101ik import Fault
 
-    print(f"\n>> to the hover point: tip {100 * poses[0].tip[2]:.1f} cm above the table, pitch {poses[0].pitch:.0f}")
+    def measured():
+        deg = arm.read()[0]
+        pose = arm.model.pose(deg)
+        return pose.tip, centre_of(arm.model, pose)
+
+    c0 = centre_of(arm.model, poses[0])
+    print(f"\n>> to the hover point: jaws' middle {100 * c0[2]:.1f} cm above the table (tip {100 * poses[0].tip[2]:.1f}),"
+          f" pitch {poses[0].pitch:.0f}, roll {ROLL:.0f}")
     arm.move_joints(arm_only(poses[0]), speed=SPEED)              # unfolds from the rest pose first
     settle_to(arm, poses[0])                                      # the joints onto it, not a few degrees short
-    print(f">> at the hover point (measured from the servos: tip {100 * arm.where()[2]:.1f} cm up); opening the jaws")
+    tip, c = measured()
+    print(f">> at the hover point (from the servos: jaws' middle {100 * c[2]:.1f} cm, tip {100 * tip[2]:.1f} cm up);"
+          f" opening the jaws to {OPEN:.0f}")
     arm.move_joints({"gripper": OPEN}, speed=60, check=False)
-    print(f">> going down to {100 * goal[2]:.1f} cm")
+    print(f">> going down: jaws' middle to {100 * goal[2]:.1f} cm")
     if sim_floor is not None:
         arm.sim(floor=sim_floor)
     try:
@@ -163,10 +199,10 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None):
         arm.pose = None
     if not touched:                    # the press ends with the goals where the joints lag: close that last bit
         settle_to(arm, poses[-1])      # (no press: it would end where the joints lag again)
-    x, y, z, p = arm.where()
-    err = 1000 * np.linalg.norm(np.array([x, y, z]) - goal)
-    print(f"\nTIP at {x:+.3f} {y:+.3f} {z:+.3f} m, pitch {p:.0f}; goal {np.round(goal, 3)}; {err:.1f} mm off"
-          + ("  (stopped on contact)" if touched else ""))
+    tip, c = measured()
+    err = 1000 * np.linalg.norm(c - goal)
+    print(f"\nJAWS' MIDDLE at {c[0]:+.3f} {c[1]:+.3f} {c[2]:+.3f} m (tip {100 * tip[2]:.1f} cm up); object point "
+          f"{np.round(goal, 3)}; {err:.1f} mm off" + ("  (stopped on contact)" if touched else ""))
     if hold is None:
         input("At the object. Enter to go back up and fold home ... ")
     else:
@@ -294,7 +330,7 @@ def main():
         raise SystemExit("No reachable object" + (f" of class {args.target!r}" if args.target else "")
                          + ". The arm reaches about 15 to 45 cm from its base at table height.")
     goal, pitch, poses = d.plan
-    print(f"\nGoing to {d.name}: tip to {np.round(goal, 3)} m from {100 * HOVER:.0f} cm above, "
+    print(f"\nGoing to {d.name}: jaws' middle to {np.round(goal, 3)} m from {100 * HOVER:.0f} cm above, "
           f"pitch {'least-loaded' if pitch is None else f'{pitch} deg'}, {len(poses)} poses down")
     print(f"  hover pose: {poses[0]}\n  goal pose:  {poses[-1]}")
     if args.dry:

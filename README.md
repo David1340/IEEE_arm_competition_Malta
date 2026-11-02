@@ -45,13 +45,14 @@ What it does:
 1. **Detect**: 15 ZED frames through YOLO; each object's centre is computed as `object_3d_live.py` does
    (mean of the mask's point-cloud samples, in the ArUco TABLE frame) and the median over the frames is taken.
    The camera is closed before the arm moves.
-2. **Plan** (`so101ik`): the tip goes 1.5 cm below the object's measured top, never lower than 1.2 cm above
-   the table. A vertical descent from 12 cm above is solved at the steepest gripper pitch the arm can hold all
-   the way down (straight down near the base, sloping further out). Every pose is checked against the joint
-   ranges, the table and the arm's own parts.
-3. **Move**: unfold, go above the object, open the jaws, then go straight down. The descent stops early if the
-   tip is held up by something (a contact, not a stall), or if a joint stalls. It waits for Enter, goes
-   straight up, then folds home.
+2. **Plan** (`so101ik`): the **middle of the open jaws** goes to the object: 1.5 cm below its measured top,
+   never lower than 2 cm above the table. The jaws open sideways (wrist roll fixed at -90°, the camera is on one
+   side), so the tip (the fixed jaw) passes 3 cm to one side of the object and the moving jaw to the other.
+   A vertical descent from 12 cm above is solved at the steepest gripper pitch the arm can hold all the way
+   down. Every pose is checked against the joint ranges, the table and the arm's own parts.
+3. **Move**: unfold, go above the object, open the jaws to 50 % (6.8 cm between the jaw ends; the blocks are
+   3 to 5.5 cm), then go straight down. The descent stops early if the tip is held up by something (a contact,
+   not a stall), or if a joint stalls. It waits for Enter, goes straight up, then folds home.
 
 Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the arm).
 
@@ -60,8 +61,9 @@ Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the a
 set with `python fine_joint_calibration_gui.py` and read with `fine_joint_offsets.py`, as the rest of the repo does
 (true angle = LeRobot reading + offset; motor target = wanted angle - offset). `--offsets none` runs without them.
 
-The settings are at the top of `robot/go_to_object.py` (`HOVER`, `GRASP_DEPTH`, `MIN_TIP_Z`, `PRESS`, `OPEN`,
-speeds).
+The settings are at the top of `robot/go_to_object.py` (`HOVER`, `GRASP_DEPTH`, `MIN_GRASP_Z`, `OPEN`, `ROLL`,
+`JAW_CENTRE`, `PRESS`, speeds). `robot/check_calibration.py` (torque off) shows where the model puts the tip while
+the arm is moved by hand.
 
 ### Frames: check this once
 
