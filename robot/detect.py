@@ -97,7 +97,12 @@ def detect_from_case(case_dir, transform=None):
     dets = [Detection(name=d["class_name"], conf=d["confidence"], table_xyz=np.array(d["center_table_xyz_m"], float),
                       pixel=tuple(d["center_pixel_xy_full"]) if d.get("center_pixel_xy_full") else None)
             for d in meta["detections"] if d.get("center_table_xyz_m") is not None]
-    return finish(dets, transform), None
+    image = Path(case_dir) / meta.get("files", {}).get("image", "image.png")
+    frame = None
+    if image.is_file():
+        import cv2
+        frame = cv2.imread(str(image))
+    return finish(dets, transform), frame
 
 
 def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, resolution="HD1080",

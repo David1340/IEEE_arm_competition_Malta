@@ -33,6 +33,7 @@ os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")   # 
 
 import numpy as np
 
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import detect  # noqa: E402
 
@@ -92,19 +93,28 @@ def arm_only(pose):
 
 
 def choose(dets, model, target=None, index=None):
-    """The object to go to and its plan: --index, else the most confident --target (or any) the arm can reach."""
+    """Mark every detection (d.status: "skipped class", "not --target", "out of reach" or "reachable") and return
+    the one to go to with its plan: --index, else the most confident reachable --target (or any object)."""
     from so101ik import Unreachable
 
-    if index is not None:
-        cands = [dets[index]]
-    else:
-        cands = [d for d in dets if d.name not in detect.SKIP_CLASSES and (target is None or d.name == target)]
-    for d in cands:
-        try:
-            return d, grasp_point(d), *plan(model, grasp_point(d))
-        except Unreachable as e:
-            print(f"  skip {d.name} at {np.round(d.base_xyz, 3)}: {e}")
-    return None
+    pick = None
+    for i, d in enumerate(dets):
+        d.plan = None
+        if index is not None and i != index:
+            d.status = "not --index"
+        elif index is None and d.name in detect.SKIP_CLASSES:
+            d.status = "skipped class"
+        elif index is None and target is not None and d.name != target:
+            d.status = "not --target"
+        else:
+            try:
+                d.plan = (grasp_point(d), *plan(model, grasp_point(d)))
+                d.status = "reachable"
+            except Unreachable:
+                d.status = "out of reach"
+        if pick is None and d.plan is not None:
+            pick = d
+    return pick
 
 
 def settle_to(arm, pose):
@@ -151,30 +161,51 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None):
     return touched, err
 
 
-def show(frame, dets, chosen):
-    """The detections on the last camera frame; returns True on g/Enter (go), False on q/Esc."""
+def show(frame, dets, chosen, save_dir, wait=True):
+    """Every detection on the camera frame: its list number, class, confidence and base-frame position; the
+    chosen one in red with a ring, other reachable ones green, out of reach orange, skipped grey. The picture
+    is also saved in save_dir. With wait, returns True on g/Enter (go), False on q/Esc."""
     import cv2
 
+    colours = {"reachable": (0, 200, 0), "out of reach": (0, 140, 255)}
     img = frame.copy()
-    for d in dets:
+    for i, d in enumerate(dets):
         if d.pixel is None:
             continue
-        colour = (0, 0, 255) if d is chosen else (0, 255, 0)
-        cv2.circle(img, tuple(map(int, d.pixel)), 10 if d is chosen else 5, colour, -1)
+        c = (0, 0, 255) if d is chosen else colours.get(d.status, (160, 160, 160))
+        px = tuple(map(int, d.pixel))
+        cv2.circle(img, px, 7, c, -1)
+        if d is chosen:
+            cv2.circle(img, px, 28, c, 4)
         x, y, z = d.base_xyz
-        cv2.putText(img, f"{d.name} {x:+.3f} {y:+.3f} {z:+.3f}", (int(d.pixel[0]) + 12, int(d.pixel[1])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
-    cv2.putText(img, "g / Enter: go     q / Esc: quit", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-    cv2.namedWindow("go_to_object", cv2.WINDOW_NORMAL)
-    cv2.imshow("go_to_object", img)
+        for text, dy in ((f"{i}. {d.name} {d.conf:.2f}" + ("  <- GOING HERE" if d is chosen else f"  ({d.status})"), 0),
+                         (f"x {x:+.3f} y {y:+.3f} z {z:+.3f}", 24)):
+            org = (px[0] + 14, px[1] - 6 + dy)
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4)
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
+    head = (f"going to {dets.index(chosen)}. {chosen.name}:  g / Enter = go, q / Esc = quit" if chosen
+            else "no reachable object:  any key to close")
+    cv2.putText(img, head, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 6)
+    cv2.putText(img, head, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    path = save_dir / time.strftime("detections_%Y%m%d_%H%M%S.jpg")
+    cv2.imwrite(str(path), img)
+    print(f"Picture: {path}")
+    if not wait:
+        return False
+    try:
+        cv2.namedWindow("go_to_object", cv2.WINDOW_NORMAL)
+        cv2.imshow("go_to_object", img)
+    except cv2.error:                  # no display: ask in the terminal instead
+        return chosen is not None and input("Move the arm? [y/N] ").strip().lower() == "y"
     while True:
         k = cv2.waitKey(0) & 0xFF
+        if chosen is None or k in (ord("q"), 27):
+            cv2.destroyAllWindows()
+            return False
         if k in (ord("g"), 13, 10):
             cv2.destroyAllWindows()
             return True
-        if k in (ord("q"), 27):
-            cv2.destroyAllWindows()
-            return False
 
 
 def main():
@@ -220,11 +251,16 @@ def main():
     if not (args.sim or args.dry) and not cal.is_file():
         raise SystemExit(f"Calibration file not found: {cal}; pass --calibration")
     model = Model(calibration_file=cal) if cal.is_file() else Model()
-    pick = choose(dets, model, args.target, args.index)
-    if pick is None:
+    d = choose(dets, model, args.target, args.index)
+    print()
+    for i, x in enumerate(dets):
+        print(f"  {i:2d}. {x.name:<14} {x.status}")
+    if frame is not None:
+        go_ok = show(frame, dets, d, ROOT / "outputs" / "go_to_object", wait=not args.yes)
+    if d is None:
         raise SystemExit("No reachable object" + (f" of class {args.target!r}" if args.target else "")
-                         + ". The arm reaches about 15 to 40 cm from its base at table height.")
-    d, goal, pitch, poses = pick
+                         + ". The arm reaches about 15 to 45 cm from its base at table height.")
+    goal, pitch, poses = d.plan
     print(f"\nGoing to {d.name}: tip to {np.round(goal, 3)} m from {100 * HOVER:.0f} cm above, "
           f"pitch {'least-loaded' if pitch is None else f'{pitch} deg'}, {len(poses)} poses down")
     print(f"  hover pose: {poses[0]}\n  goal pose:  {poses[-1]}")
@@ -234,7 +270,7 @@ def main():
     # 4. move
     if not args.yes:
         if frame is not None:
-            if not show(frame, dets, d):
+            if not go_ok:
                 return
         elif input("Move the arm? [y/N] ").strip().lower() != "y":
             return
