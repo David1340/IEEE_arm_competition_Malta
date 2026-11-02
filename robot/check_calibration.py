@@ -49,11 +49,17 @@ def main():
         print("Torque OFF: move the arm by hand. Ctrl-C to stop.")
         print("fine offsets: " + "  ".join(f"{j} {offsets[j]:+.2f}" for j in ARM))
         print("joints: LeRobot deg -> model deg (LeRobot + offset)")
+        print("Nothing moves by itself: move the arm BY HAND. A line is printed when a joint moves (and every 5 s).")
+        last, shown = None, 0.0
         while True:
             deg = arm.read()[0]
-            x, y, z, pitch = arm.where()
-            joints = "  ".join(f"{SHORT[j]} {deg[j]:+6.1f}>{deg[j] + offsets[j]:+6.1f}" for j in ARM)
-            print(f"TIP x {100 * x:5.1f} y {100 * y:5.1f} z {100 * z:5.1f} cm  pitch {pitch:+5.0f} | {joints}", flush=True)
+            moved = last is None or max(abs(deg[j] - last[j]) for j in ARM) > 0.5
+            if moved or time.time() - shown > 5:
+                x, y, z, pitch = arm.where()
+                joints = "  ".join(f"{SHORT[j]} {deg[j]:+6.1f}>{deg[j] + offsets[j]:+6.1f}" for j in ARM)
+                print(f"TIP x {100 * x:5.1f} y {100 * y:5.1f} z {100 * z:5.1f} cm  pitch {pitch:+5.0f} | {joints}",
+                      flush=True)
+                last, shown = deg, time.time()
             time.sleep(0.2)
     except KeyboardInterrupt:
         pass
