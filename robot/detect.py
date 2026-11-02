@@ -7,6 +7,8 @@ noisy frame does not decide where the arm goes, and then moved from the TABLE fr
 base frame with TABLE_TO_BASE.
 
     detect_live(...)        opens the ZED, runs YOLO on `frames` frames, returns [Detection]
+    TABLE_TO_BASE           the camera-to-arm correction, from robot/table_to_base.json when
+                            robot/calibrate_camera_to_arm.py has measured it
     detect_from_case(path)  the same from a case saved by yolo_dataset/capture_pointcloud_case.py
                             (no camera, no YOLO: for trying the arm side on its own)
 
@@ -36,6 +38,12 @@ YOLO_DIR = ROOT / "yolo_dataset"
 # Check it once: switch the torque off, run so101ik's examples/where.py, put the gripper tip on a block
 # that detect.py has located, and compare the two printouts.
 TABLE_TO_BASE = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0}
+
+# Measured by robot/calibrate_camera_to_arm.py: when the file is there, it replaces the values above.
+TRANSFORM_FILE = Path(__file__).resolve().parent / "table_to_base.json"
+if TRANSFORM_FILE.is_file():
+    _saved = json.loads(TRANSFORM_FILE.read_text())
+    TABLE_TO_BASE = {k: float(_saved[k]) for k in ("x", "y", "z", "yaw_deg")}
 
 # Classes that are not objects to go to.
 SKIP_CLASSES = {"gripper", "bin"}

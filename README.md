@@ -65,18 +65,20 @@ The settings are at the top of `robot/go_to_object.py` (`HOVER`, `GRASP_DEPTH`, 
 `JAW_CENTRE`, `PRESS`, speeds). `robot/check_calibration.py` (torque off) shows where the model puts the tip while
 the arm is moved by hand.
 
-### Frames: check this once
+### Camera and arm: calibrate once
 
-`detect.py` assumes the ArUco TABLE frame **is** the robot's base frame: metres, x forward, y to the arm's
-left, z up, origin under the shoulder pan axis. The saved case supports this: the detected gripper sits at
-y = +0.016 m, in front of the base. If the markers were measured from somewhere else, set `TABLE_TO_BASE` in
-`robot/detect.py` (or pass `--base-offset X Y Z YAW`).
+The camera gives positions in the ArUco TABLE frame; the arm works in its base frame (x forward, y to the
+arm's left, z up, origin under the shoulder pan axis). They must agree to well under the 2 cm of room between a
+block and the open jaws. Measure it once, and again if the camera or the arm is moved:
 
-To check it:
-1. Switch the torque off.
-2. Run so101ik's `examples/where.py`. It prints the tip's x, y, z from the servos.
-3. Put the gripper tip on a block that `detect.py` lists.
-4. The two printouts should agree to about 1 cm.
+```sh
+python robot/calibrate_camera_to_arm.py
+```
+
+Four times: put one block somewhere new, let the camera find it, then (torque off) put the tip of the fixed
+finger on the centre of its top face by hand. It fits a rotation and a shift and saves them to
+`robot/table_to_base.json`, which `robot/detect.py` uses from then on. `robot/check_calibration.py` (torque off)
+shows where the model puts the tip and the jaws' middle while the arm is moved by hand.
 
 ### Without the camera or the arm
 
