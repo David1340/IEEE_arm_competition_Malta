@@ -43,14 +43,16 @@ import detect  # noqa: E402
 HOVER = 0.12           # m above the grasp point the arm stops first and opens the jaws (an opening jaw swings
                        # several cm down when the gripper is tilted), before going straight down
 GRASP_DEPTH = 0.015    # m below the object's measured top surface the middle of the jaws goes
-MIN_GRASP_Z = 0.02     # m: never aim the middle of the jaws lower than this above the table (z = 0)
+MIN_GRASP_Z = 0.03     # m: never aim the middle of the jaws lower than this above the table (z = 0); the
+                       # fixed finger's tip is lower than the middle when the gripper is tilted
 PRESS = 0.008          # m: on the way down, stop when the tip is held this far above where it should be
 OPEN = 50.0            # gripper opening (0 closed .. 100 open) before going down: 50 = 6.8 cm between the jaw
                        # ends (the blocks are 3 to 5.5 cm); wider swings the moving jaw back from the tip
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
 # Where the object goes, in so101ik's tip frame (the tip = the fixed jaw's grasp point; x towards the moving jaw
-# is negative, z along the fingers): halfway between the jaws at OPEN = 50, 1 cm back from the jaw ends.
-JAW_CENTRE = np.array([-0.032, 0.0, -0.010])
+# is negative, z along the fingers): halfway between the jaws at OPEN = 50 (6.7 cm gap there), 2.5 cm back from
+# the jaw ends, so the object sits well inside the gripper, nearer the palm.
+JAW_CENTRE = np.array([-0.030, 0.0, -0.025])
 SPEED = 20.0           # deg/s peak, the moves in joint space (unfold, to the hover point)
 DOWN_SPEED = 0.03      # m/s peak, the vertical descent and the rise
 PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-90 = pointing straight down)
