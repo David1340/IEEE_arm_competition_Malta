@@ -59,11 +59,13 @@ class Detection:
     spread_mm: float = 0.0         # how much the per-frame centres disagreed (std, XY)
     pixel: tuple = None            # pixel centre in the full image, for drawing
     polygon: np.ndarray = None     # YOLO's mask outline in the full image (N x 2 pixels), for drawing and clicks
+    colour: str = "unknown"        # red / yellow / green / blue, from yolo_dataset/block_color.py (HSV vote)
+    colour_conf: float = 0.0       # the winning colour's share of the vote
     samples: list = field(default_factory=list, repr=False)
 
     def __str__(self):
         x, y, z = self.base_xyz
-        return (f"{self.name:<14} conf {self.conf:.2f}  base x {x:+.3f} y {y:+.3f} z {z:+.3f} m"
+        return (f"{self.colour:>7} {self.name:<13} conf {self.conf:.2f}  base x {x:+.3f} y {y:+.3f} z {z:+.3f} m"
                 f"  (seen {self.seen}x, spread {self.spread_mm:.1f} mm)")
 
 
@@ -109,6 +111,44 @@ class Scene:
             return None
         c = np.median(win, axis=0)
         return table_to_base(self.camera_to_table[:3, :3] @ c + self.camera_to_table[:3, 3], self.transform)
+
+
+def add_colours(frame, dets):
+    """Each detection's colour from its mask, with yolo_dataset/block_color.py: the eroded mask's well-saturated
+    pixels vote by hue (colors.json there, when calibrated, sets the hue centres). Smaller detections lying on a
+    bigger one (blocks in a bin) are left out of the bigger one's vote."""
+    if frame is None:
+        return dets
+    import cv2
+
+    sys.path.insert(0, str(YOLO_DIR))
+    import block_color as bc
+
+    colors = bc.load_colors()
+    hsv = bc.to_hsv(frame)
+    h, w = frame.shape[:2]
+    objs = []
+    for d in dets:
+        if d.polygon is None or len(d.polygon) < 3:
+            objs.append(None)
+            continue
+        poly = np.rint(d.polygon).astype(np.int32)
+        x, y, bw, bh = cv2.boundingRect(poly)
+        box = (max(0, x), max(0, y), min(w, x + bw), min(h, y + bh))
+        objs.append((0, poly, box) if box[2] > box[0] and box[3] > box[1] else None)
+    valid = [o for o in objs if o is not None]
+    k = -1
+    for d, o in zip(dets, objs):
+        if o is None:
+            continue
+        k += 1
+        exclude = bc.overlap_mask(valid, k)
+        hue, sat = bc.object_pixels(hsv, o[1], o[2], 0.35, 0.15, 1.01, exclude)
+        if len(hue) < 30:              # badly lit or small: relaxed thresholds, as block_color.py does
+            hue, sat = bc.object_pixels(hsv, o[1], o[2], 0.175, 0.075, 1.01, exclude)
+        if len(hue):
+            d.colour, d.colour_conf, _ = bc.classify(hue, sat, colors)
+    return dets
 
 
 def table_to_base(xyz, t=None):
@@ -163,7 +203,7 @@ def detect_from_case(case_dir, transform=None):
         frame = cv2.imread(str(image))
     cloud = np.load(Path(case_dir) / files.get("point_cloud_xyzrgba", "point_cloud_xyzrgba.npy"), mmap_mode="r")
     T = np.load(Path(case_dir) / files.get("camera_transform", "camera_transform.npy"))
-    return finish(dets, transform), Scene(frame, cloud, T, transform)
+    return add_colours(frame, finish(dets, transform)), Scene(frame, cloud, T, transform)
 
 
 def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, resolution="HD1080",
@@ -229,7 +269,7 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
         scene = Scene(frame, np.array(cloud[:, :, :3], dtype=np.float32), camera_to_table, transform)
     finally:
         zed.close()
-    return finish(merge(per_frame, min_seen=max(1, frames // 2)), transform), scene
+    return add_colours(scene.frame, finish(merge(per_frame, min_seen=max(1, frames // 2)), transform)), scene
 
 
 if __name__ == "__main__":

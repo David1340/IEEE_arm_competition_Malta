@@ -272,8 +272,9 @@ def settle_to(arm, pose):
 
 def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
     """Drive it: to the hover pose, jaws open, down (stopping on contact), close on the object, lift it, then
-    put it down at `place` ((goal, pitch, poses) from plan_place) or, without one, back where it was; let go,
-    up. Leaving the caller's `with Arm()` block folds the arm home."""
+    put it down at `place` (a Place) or, without one, back where it was; let go, up. Leaving the caller's
+    `with Arm()` block folds the arm home. Returns "placed", "empty" (the jaws closed on nothing), "slipped",
+    "touched" (stopped on something on the way down) or "no grasp"."""
     from so101ik import Fault, GripLost
 
     def measured():
@@ -325,7 +326,7 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
         print(">> stopped on something before the grasp point: the jaws stay open" if touched else ">> --no-grasp")
         wait("Enter to go back up and fold home ... ")
         up_and_out(goal[2] + HOVER)
-        return touched, err
+        return "touched" if touched else "no grasp"
 
     # close on it
     if arm_is_sim(arm):
@@ -335,7 +336,7 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
         print(f">> the jaws closed on nothing (stopped at {at:.0f} %): opening, back up and home")
         arm.move_joints({"gripper": OPEN}, speed=60, check=False)
         up_and_out(goal[2] + HOVER)
-        return touched, err
+        return "empty"
     guard = (max(0.0, at - GRIP_SLIP), min(100.0, at + GRIP_SLIP))
     print(f">> holding it: the jaws stopped at {at:.0f} % (it counts as slipping outside {guard[0]:.0f}-{guard[1]:.0f} %)")
 
@@ -365,15 +366,17 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
             print(f">> {'over the bin' if place.kind == 'bin' else 'put down'}: jaws' middle at "
                   f"{c[0]:+.3f} {c[1]:+.3f} {c[2]:+.3f} m, {1000 * np.linalg.norm(c - place.goal):.1f} mm from the place")
             goal = place.goal - [0, 0, HOVER - 0.05] if place.kind == "bin" else place.goal
+        status = "placed"
     except GripLost as e:
         print(f">> it slipped ({e}): opening the jaws where the arm stands")
         arm.pose = arm.model.pose(dict(arm.goal))
+        status = "slipped"
     if arm_is_sim(arm):
         arm.sim(block={})
     arm.move_joints({"gripper": OPEN}, speed=60, check=False)    # let go
     print(">> let go: back up and home")
     up_and_out(goal[2] + HOVER)
-    return touched, err
+    return status
 
 
 def arm_is_sim(arm):

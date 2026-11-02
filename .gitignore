@@ -32,6 +32,7 @@ calibration/robots/so_follower/*
 robot/*
 !robot/*.py
 !robot/table_to_base.json
+!robot/sort_rules.json
 
 !yolo_dataset/
 yolo_dataset/*

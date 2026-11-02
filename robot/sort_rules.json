@@ -1,0 +1,18 @@
+{
+  "_help": "For each round: bin colour -> what goes in that bin. An entry is a colour (red, blue, green, yellow), a YOLO class (cube, cylinder, dodecahedron, hexagonal) or both ('yellow cube'). 'round' picks the rules sort_objects.py uses; --round overrides it. From the Game 1 rules (Rules & Regulations v0.5, 5.8.1.34 and 5.8.1.41).",
+  "round": "colour",
+  "rounds": {
+    "colour": {
+      "red": ["red"],
+      "blue": ["blue"],
+      "green": ["green"],
+      "yellow": ["yellow"]
+    },
+    "shape": {
+      "red": ["cube"],
+      "blue": ["cylinder"],
+      "green": ["dodecahedron"],
+      "yellow": ["hexagonal"]
+    }
+  }
+}

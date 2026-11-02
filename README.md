@@ -76,6 +76,30 @@ The settings are at the top of `robot/go_to_object.py` (`HOVER`, `GRASP_DEPTH`, 
 `JAW_CENTRE`, `PRESS`, speeds). `robot/check_calibration.py` (torque off) shows where the model puts the tip while
 the arm is moved by hand.
 
+## Game 1: sort the objects into the bins
+
+```sh
+python robot/sort_objects.py                  # the round in robot/sort_rules.json; shows the plan, g starts
+python robot/sort_objects.py --round shape
+python robot/sort_objects.py --dry            # detect and show the plan only
+```
+
+`robot/sort_rules.json` says, for each round, what goes into each bin colour. An entry is a colour, a YOLO class
+or both (`"yellow cube"`):
+
+| round | red bin | blue bin | green bin | yellow bin |
+|---|---|---|---|---|
+| `colour` (Round 1) | red objects | blue | green | yellow |
+| `shape` (Rounds 2 and 3) | cube | cylinder | dodecahedron | hexagonal |
+
+Every detection gets its colour from its YOLO mask with `yolo_dataset/block_color.py` (the HSV vote; blocks lying
+in a bin are left out of the bin's vote). Each cycle the arm is folded, the camera detects again (so bins or
+objects moved by a judge are found where they are now), the most confident object that the arm can reach and
+whose bin is seen and reachable is picked and dropped into its bin (11 cm over its centre), and the arm folds.
+Objects already inside a bin are left; one that fails twice (slipped, jaws closed on nothing) is left too.
+The plan picture (masks in their detected colour, an arrow from each object to its bin) is saved in
+`outputs/sort_objects/`.
+
 ### Camera and arm: calibrate once
 
 The camera gives positions in the ArUco TABLE frame; the arm works in its base frame (x forward, y to the
