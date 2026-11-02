@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from go_to_object import ARM, CALIBRATION, FINE_OFFSETS, fine_offsets  # noqa: E402
+from go_to_object import ARM, CALIBRATION, FINE_OFFSETS, centre_of, fine_offsets  # noqa: E402
 
 
 SHORT = {"shoulder_pan": "pan", "shoulder_lift": "lift", "elbow_flex": "elbow", "wrist_flex": "wrist",
@@ -56,8 +56,10 @@ def main():
             moved = last is None or max(abs(deg[j] - last[j]) for j in ARM) > 0.5
             if moved or time.time() - shown > 5:
                 x, y, z, pitch = arm.where()
+                c = centre_of(arm.model, arm.model.pose(deg))
                 joints = "  ".join(f"{SHORT[j]} {deg[j]:+6.1f}>{deg[j] + offsets[j]:+6.1f}" for j in ARM)
-                print(f"TIP x {100 * x:5.1f} y {100 * y:5.1f} z {100 * z:5.1f} cm  pitch {pitch:+5.0f} | {joints}",
+                print(f"TIP x {100 * x:5.1f} y {100 * y:5.1f} z {100 * z:5.1f} | JAWS' MIDDLE x {100 * c[0]:5.1f} "
+                      f"y {100 * c[1]:5.1f} z {100 * c[2]:5.1f} cm | pitch {pitch:+4.0f} grip {deg['gripper']:4.0f} | {joints}",
                       flush=True)
                 last, shown = deg, time.time()
             time.sleep(0.2)
