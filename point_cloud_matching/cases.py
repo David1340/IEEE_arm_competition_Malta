@@ -18,8 +18,8 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-# capture_pointcloud_case.py writes to point_cloud_mathing/ (sic); look in both.
-CASE_ROOTS = [ROOT / "point_cloud_mathing", ROOT / "point_cloud_matching"]
+# capture_pointcloud_case.py writes to point_cloud_matching/cases/.
+CASE_ROOTS = [ROOT / "point_cloud_matching" / "cases"]
 SKIP_CLASSES = {"bin", "gripper"}
 
 

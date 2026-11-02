@@ -6,7 +6,7 @@ with ICP, and the data and fitted models are shown in 3D in the calibrated table
 
 Usage:
     python point_cloud_matching/match_gui.py                    # newest case
-    python point_cloud_matching/match_gui.py point_cloud_mathing/case_20261101T165958_770293Z
+    python point_cloud_matching/match_gui.py point_cloud_matching/cases/case_20261101T165958_770293Z
     python point_cloud_matching/match_gui.py --list
 
 Panels:

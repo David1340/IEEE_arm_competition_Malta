@@ -4,7 +4,7 @@ Usage:
     python yolo_dataset/capture_pointcloud_case.py
     python yolo_dataset/capture_pointcloud_case.py --weights runs/segment/train-3/weights/best.pt
 
-Creates a unique case folder under point_cloud_mathing/ containing the source image,
+Creates a unique case folder under point_cloud_matching/cases/ containing the source image,
 full XYZRGBA point cloud, YOLO overlay, metadata, and one NPZ per detected instance.
 This script captures data only; it never connects to or moves the robot.
 """
@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--depth-mode", choices=["QUALITY", "ULTRA", "NEURAL"], default="QUALITY")
     parser.add_argument("--min-depth", type=float, default=0.10)
     parser.add_argument("--max-depth", type=float, default=2.00)
-    parser.add_argument("--out", type=Path, default=ROOT / "point_cloud_mathing")
+    parser.add_argument("--out", type=Path, default=ROOT / "point_cloud_matching" / "cases")
     args = parser.parse_args()
 
     roi_file = HERE / "roi.json"

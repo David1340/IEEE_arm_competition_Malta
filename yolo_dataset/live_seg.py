@@ -24,8 +24,8 @@ import pyzed.sl as sl
 from ultralytics import YOLO
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
-from dataset_generation import open_camera  # noqa: E402
+sys.path.insert(0, str(HERE))
+from capture_images import open_camera  # noqa: E402
 from roi import ROI_FILE, crop, load_roi  # noqa: E402
 
 RUNS = HERE.parent / "runs" / "segment"

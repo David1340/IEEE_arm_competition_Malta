@@ -5,14 +5,14 @@ object's true centre (and later its top face), instead of the mean of the visibl
 
 ## Run
 
-1. Capture a case (ZED + YOLO -> `point_cloud_mathing/case_*/`):
+1. Capture a case (ZED + YOLO -> `point_cloud_matching/cases/case_*/`):
 
        python yolo_dataset/capture_pointcloud_case.py
 
 2. Open the comparison GUI (newest case by default):
 
        python point_cloud_matching/match_gui.py
-       python point_cloud_matching/match_gui.py point_cloud_mathing/case_20261101T165958_770293Z
+       python point_cloud_matching/match_gui.py point_cloud_matching/cases/case_20261101T165958_770293Z
 
 Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralytics).
 

@@ -1,0 +1,12 @@
+# Vision (YOLO segmentation + ZED). pyzed comes with the ZED SDK installer, not from pip.
+ultralytics
+opencv-python
+numpy
+scipy
+matplotlib
+
+# Arm: inverse kinematics + Feetech driver for the SO-101 (C library with a Python binding; needs a C compiler)
+so101ik @ git+https://github.com/LukeGrif/lerobot-so101-inverse-kinematics@claude/busy-franklin-rgg1e9
+
+# Only robot/gripper_current_gui.py still drives the arm through LeRobot
+lerobot

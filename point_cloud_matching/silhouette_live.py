@@ -7,7 +7,7 @@ re-fit runs again when the overlap (IoU) drops, every --refit-every frames, or o
 Sources:
     python point_cloud_matching/silhouette_live.py                      # live ZED + YOLO
     python point_cloud_matching/silhouette_live.py --weights runs/segment/train-3/weights/best.pt
-    python point_cloud_matching/silhouette_live.py --replay point_cloud_mathing/case_...   # no camera
+    python point_cloud_matching/silhouette_live.py --replay point_cloud_matching/cases/case_...   # no camera
 
 Keys (click the window first):
     q / ESC quit      r  re-fit all objects      p  pause      c  centres only / full overlay
