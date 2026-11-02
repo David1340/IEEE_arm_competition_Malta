@@ -43,7 +43,7 @@ python robot/go_to_object.py --target cube
 What it does:
 
 1. **Detect**: 15 ZED frames through YOLO; each object's centre is computed as `object_3d_live.py` does
-   (mean of the mask's point-cloud samples, in the ArUco TABLE frame) and the median over the frames is taken.
+   (x, y and height from the top face of the mask's point-cloud samples, in the ArUco TABLE frame; a tall object's side wall would pull a plain mean towards the camera) and the median over the frames is taken.
    The camera is closed before the arm moves.
 2. **Plan** (`so101ik`): the **middle of the open jaws** goes to the object: 1.5 cm below its measured top,
    never lower than 2 cm above the table. The jaws open sideways (wrist roll fixed at -90°, the camera is on one

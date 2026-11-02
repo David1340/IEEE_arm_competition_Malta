@@ -1,8 +1,8 @@
 """Where the objects are: YOLO masks + ZED point cloud -> object centres in the robot's base frame.
 
-The 3D centre of each object is computed exactly as yolo_dataset/object_3d_live.py does it
-(visible_surface_center: the mean of the mask's point-cloud samples after depth outlier rejection,
-moved into the TABLE frame by camera_transform.npy). Here it is averaged over several frames, so one
+Each object's mask and point cloud are taken as yolo_dataset/object_3d_live.py does it (visible_surface_center,
+TABLE frame from camera_transform.npy); its x, y and height then come from its top face (top_face_centre), since
+a tall object's side wall pulls the whole-mask mean towards the camera. Here it is averaged over several frames, so one
 noisy frame does not decide where the arm goes, and then moved from the TABLE frame to the arm's
 base frame with TABLE_TO_BASE.
 
@@ -56,6 +56,27 @@ class Detection:
         x, y, z = self.base_xyz
         return (f"{self.name:<14} conf {self.conf:.2f}  base x {x:+.3f} y {y:+.3f} z {z:+.3f} m"
                 f"  (seen {self.seen}x, spread {self.spread_mm:.1f} mm)")
+
+
+TOP_BAND = 0.008       # m: the top face is the mask's points within this of its highest (95th percentile) point
+
+
+def top_face_centre(cloud, mask, roi, camera_to_table, min_depth, max_depth, min_points=15):
+    """x, y of the object's top face and its height (m, TABLE frame), from the mask's point-cloud samples. A tall
+    object seen at an angle shows its side wall too, which pulls the whole-mask mean towards the camera; the top
+    face does not. None if too few points."""
+    x0, y0, w, h = roi
+    ys, xs = np.nonzero(mask)
+    xyz = cloud[y0 + ys, x0 + xs, :3]
+    ok = np.isfinite(xyz).all(axis=1) & (xyz[:, 2] >= min_depth) & (xyz[:, 2] <= max_depth)
+    xyz = xyz[ok] @ camera_to_table[:3, :3].T + camera_to_table[:3, 3]
+    if len(xyz) < min_points:
+        return None
+    z_top = np.percentile(xyz[:, 2], 95)
+    top = xyz[xyz[:, 2] >= z_top - TOP_BAND]
+    if len(top) < min_points:
+        return None
+    return np.array([*top[:, :2].mean(axis=0), z_top])
 
 
 def table_to_base(xyz, t=None):
@@ -158,9 +179,12 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
                 for poly, cls, c in zip(result.masks.xy, result.boxes.cls.int().tolist(), result.boxes.conf.tolist()):
                     if len(poly) < 3:
                         continue
-                    centre, _, pixel, _ = visible_surface_center(cloud, poly, roi, min_depth, max_depth, min_points,
-                                                                 camera_to_table)
+                    centre, _, pixel, mask = visible_surface_center(cloud, poly, roi, min_depth, max_depth,
+                                                                    min_points, camera_to_table)
                     if centre is not None:
+                        top = top_face_centre(cloud, mask, roi, camera_to_table, min_depth, max_depth)
+                        if top is not None:
+                            centre = top
                         found.append(Detection(name=model.names[cls], conf=float(c), table_xyz=np.asarray(centre), pixel=pixel))
             per_frame.append(found)
     finally:
