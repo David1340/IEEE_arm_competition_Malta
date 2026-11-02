@@ -52,6 +52,7 @@ def slicer_names(zf):
 def clean_name(name):
     name = re.sub(r"\.stl$", "", name, flags=re.I)
     name = re.sub(r"\s*\(\d+\)$", "", name)  # "cube (1)" -> "cube"
+    name = re.sub(r"^pentagonal_prism$", "hexagonal_prism", name, flags=re.I)
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_").lower() or "object"
 
 

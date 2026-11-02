@@ -14,7 +14,6 @@ Commands in the prompt (meters, base frame):
 """
 
 import argparse
-import json
 import math
 import time
 from pathlib import Path
@@ -23,6 +22,9 @@ import numpy as np
 import logging
 
 import pybullet as p
+from modified_frpso_ik import IKResult, ModifiedFRPSOIK
+from rrt_connect import RRTConnectPlanner
+from fine_joint_offsets import correct_joint_position_deg, load_fine_joint_offsets, motor_position_deg
 
 logging.getLogger("lerobot.robots.utils").setLevel(logging.ERROR)
 
@@ -36,26 +38,34 @@ EE_LINK = "gripper_frame_link"
 
 def calib_limits_deg(calib: dict) -> dict[str, tuple[float, float]]:
     """Joint limits in degrees relative to the calibrated midpoint (0 deg)."""
+    offsets = load_fine_joint_offsets()
     out = {}
     for name in ARM_JOINTS:
         c = calib[name]
         mid = (c["range_min"] + c["range_max"]) / 2
         out[name] = (
-            (c["range_min"] - mid) * 360 / 4095,
-            (c["range_max"] - mid) * 360 / 4095,
+            (c["range_min"] - mid) * 360 / 4095 + offsets[name],
+            (c["range_max"] - mid) * 360 / 4095 + offsets[name],
         )
     return out
 
 
 class EEController:
-    def __init__(self, gui: bool = True):
+    def __init__(self, gui: bool = False, lock_wrist_roll: bool = True):
+        self.lock_wrist_roll = lock_wrist_roll
         self.client = p.connect(p.GUI if gui else p.DIRECT)
-        p.setAdditionalSearchPath(str(URDF.parent))
-        self.robot = p.loadURDF(str(URDF), useFixedBase=True)
+        p.setAdditionalSearchPath(str(URDF.parent), physicsClientId=self.client)
+        collision_flags = p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
+        self.robot = p.loadURDF(
+            str(URDF),
+            useFixedBase=True,
+            flags=collision_flags,
+            physicsClientId=self.client,
+        )
 
         self.idx, self.ee_idx = {}, None
-        for i in range(p.getNumJoints(self.robot)):
-            info = p.getJointInfo(self.robot, i)
+        for i in range(p.getNumJoints(self.robot, physicsClientId=self.client)):
+            info = p.getJointInfo(self.robot, i, physicsClientId=self.client)
             name = info[1].decode()
             if info[2] != p.JOINT_FIXED:
                 self.idx[name] = i
@@ -63,55 +73,64 @@ class EEController:
                 self.ee_idx = i
         assert self.ee_idx is not None, f"{EE_LINK} not found in URDF"
 
-        # Intersect URDF limits with calibration limits.
-        lim = calib_limits_deg(json.loads(CALIB.read_text()))
-        self.lower, self.upper = [], []
-        for n in ARM_JOINTS:
-            info = p.getJointInfo(self.robot, self.idx[n])
-            self.lower.append(max(info[8], math.radians(lim[n][0])))
-            self.upper.append(min(info[9], math.radians(lim[n][1])))
-        g = p.getJointInfo(self.robot, self.idx["gripper"])
+        self.arm_joint_indices = [self.idx[name] for name in ARM_JOINTS]
+        self.planner = ModifiedFRPSOIK(
+            self.robot,
+            self.ee_idx,
+            self.arm_joint_indices,
+            physics_client_id=self.client,
+            check_self_collision=True,
+            calibration_path=CALIB,
+            fixed_joint_values={
+                self.idx["wrist_roll"]: math.radians(-90.0),
+            } if self.lock_wrist_roll else None,
+        )
+        self.rrt = RRTConnectPlanner(self.planner)
+        self.lower = self.planner.lower.tolist()
+        self.upper = self.planner.upper.tolist()
+        g = p.getJointInfo(self.robot, self.idx["gripper"], physicsClientId=self.client)
         self.g_lower, self.g_upper = g[8], g[9]
         self.ranges = [u - l for l, u in zip(self.lower, self.upper)]
         self.q = [0.0] * len(ARM_JOINTS)
+        if self.lock_wrist_roll:
+            self.q[ARM_JOINTS.index("wrist_roll")] = math.radians(-90.0)
+        self.last_ik_result: IKResult | None = None
         self._apply_sim(self.q)
 
     def _apply_sim(self, q):
         for n, v in zip(ARM_JOINTS, q):
-            p.resetJointState(self.robot, self.idx[n], v)
+            p.resetJointState(self.robot, self.idx[n], v, physicsClientId=self.client)
 
     def set_sim_state(self, q):
         self.q = list(q)
         self._apply_sim(self.q)
 
     def ee_position(self) -> np.ndarray:
-        return np.array(p.getLinkState(self.robot, self.ee_idx, computeForwardKinematics=True)[4])
+        return np.array(p.getLinkState(
+            self.robot,
+            self.ee_idx,
+            computeForwardKinematics=True,
+            physicsClientId=self.client,
+        )[4])
 
-    def solve(self, target, orientation=None, tol=2e-3):
-        """Returns (joint angles in rad, error in m). Warm-started from the current state."""
+    def solve(self, target, orientation=None, tol=5e-3):
+        """Return the best M-FRPSO joint solution and its predicted position error."""
         self._apply_sim(self.q)
-        # calculateInverseKinematics returns all movable joints in URDF order; arm joints come first.
-        kwargs = dict(
-            lowerLimits=self.lower + [self.g_lower],
-            upperLimits=self.upper + [self.g_upper],
-            jointRanges=self.ranges + [self.g_upper - self.g_lower],
-            restPoses=list(self.q) + [0.0],
-            maxNumIterations=200,
-            residualThreshold=1e-5,
+        result = self.planner.solve(
+            target,
+            target_orientation=orientation,
+            start_q=self.q,
+            num_particles=120,
+            elite_count=5,
+            max_iterations=120,
+            position_tolerance_m=tol,
         )
-        if orientation is not None:
-            kwargs["targetOrientation"] = orientation
-        sol = None
-        for _ in range(5):
-            sol = p.calculateInverseKinematics(self.robot, self.ee_idx, list(target), **kwargs)
-            self._apply_sim(sol[: len(ARM_JOINTS)])
-            err = np.linalg.norm(self.ee_position() - target)
-            kwargs["restPoses"] = list(sol[: len(ARM_JOINTS)]) + [0.0]
-            if err < tol:
-                break
-        q = [float(np.clip(v, l, u)) for v, l, u in zip(sol[: len(ARM_JOINTS)], self.lower, self.upper)]
+        self.last_ik_result = result
+        if result is None:
+            return self.q.copy(), float("inf")
+        q = result.joint_positions.tolist()
         self._apply_sim(q)
-        return q, float(np.linalg.norm(self.ee_position() - target))
+        return q, result.position_error_m
 
 
 def connect_robot():
@@ -131,7 +150,7 @@ def connect_robot():
 
 def read_joints_rad(robot) -> list[float]:
     obs = robot.get_observation()
-    return [math.radians(obs[f"{n}.pos"]) for n in ARM_JOINTS]
+    return [math.radians(correct_joint_position_deg(name, obs[f"{name}.pos"])) for name in ARM_JOINTS]
 
 
 def send_joints(
@@ -143,6 +162,7 @@ def send_joints(
     tol_deg=3.0,
     gripper_tolerance=5.0,
     timeout=None,
+    feedback_callback=None,
 ):
     """Interpolates from the current pose to q so the arm moves smoothly."""
     start = np.array(read_joints_rad(robot))
@@ -155,19 +175,29 @@ def send_joints(
     g1 = g0 if gripper is None else gripper
     for s in np.linspace(0, 1, steps)[1:]:
         cur = start + (goal - start) * s
-        action = {f"{n}.pos": math.degrees(v) for n, v in zip(ARM_JOINTS, cur)}
+        action = {
+            f"{name}.pos": motor_position_deg(name, math.degrees(value))
+            for name, value in zip(ARM_JOINTS, cur)
+        }
         action["gripper.pos"] = g0 + (g1 - g0) * s
         robot.send_action(action)
         time.sleep(dt)
+        if feedback_callback is not None:
+            feedback_callback(robot.get_observation())
 
     # Keep commanding the final goal until the joints get there (gripper may stall on an object).
-    final = {f"{n}.pos": math.degrees(v) for n, v in zip(ARM_JOINTS, goal)}
+    final = {
+        f"{name}.pos": motor_position_deg(name, math.degrees(value))
+        for name, value in zip(ARM_JOINTS, goal)
+    }
     final["gripper.pos"] = g1
     t0 = time.time()
     while time.time() - t0 < timeout:
         robot.send_action(final)
         time.sleep(dt)
         obs = robot.get_observation()
+        if feedback_callback is not None:
+            feedback_callback(obs)
         arm_errors = {
             name: abs(obs[f"{name}.pos"] - final[f"{name}.pos"])
             for name in ARM_JOINTS
@@ -186,13 +216,17 @@ def send_joints(
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim-only", action="store_true")
-    ap.add_argument("--no-gui", action="store_true")
+    gui_options = ap.add_mutually_exclusive_group()
+    gui_options.add_argument("--gui", dest="gui", action="store_true", help="open the PyBullet visualizer")
+    gui_options.add_argument("--no-gui", dest="gui", action="store_false", help="run PyBullet headless (default)")
+    ap.set_defaults(gui=False)
+    ap.add_argument("--free-wrist-roll", action="store_true", help="allow M-FRPSO to vary wrist roll")
     ap.add_argument("--orient-down", action="store_true", help="constrain gripper to point down")
     ap.add_argument("--offset", type=float, nargs=3, default=[0.0, 0.0, -0.04], metavar=("X", "Y", "Z"),
                     help="meters added to every target, base frame")
     args = ap.parse_args()
 
-    ctrl = EEController(gui=not args.no_gui)
+    ctrl = EEController(gui=args.gui, lock_wrist_roll=not args.free_wrist_roll)
     robot = None if args.sim_only else connect_robot()
     if robot:
         ctrl.set_sim_state(read_joints_rad(robot))
@@ -230,31 +264,78 @@ def main():
                 print("Formato inválido")
                 continue
 
+            start_q = read_joints_rad(robot) if robot else ctrl.q.copy()
+            ctrl.set_sim_state(start_q)
             q, err = ctrl.solve(new + offset, orient)
-            if err > 5e-3:
-                print("Alvo fora do alcance, ignorado")
+            if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
+                if ctrl.last_ik_result is None:
+                    print("M-FRPSO não encontrou uma configuração livre de colisão")
+                else:
+                    print(f"Alvo não confirmado: erro previsto {err * 1000:.1f} mm")
                 ctrl.set_sim_state(read_joints_rad(robot) if robot else ctrl.q)
                 continue
-            ctrl.set_sim_state(q)
+            try:
+                route = ctrl.rrt.plan(start_q, q)
+            except ValueError as exc:
+                print(f"Configuração inicial inválida para o RRT-Connect: {exc}")
+                ctrl.set_sim_state(start_q)
+                continue
+            if route is None:
+                print("RRT-Connect não encontrou um caminho livre de colisão; alvo ignorado")
+                ctrl.set_sim_state(start_q)
+                continue
+            print(f"RRT-Connect: {len(route.path)} configurações, {route.iterations} iterações")
             target = new
             new = new + offset
             if robot:
-                send_joints(robot, q, gripper)
+                motion_settled = True
+                if len(route.path) == 1:
+                    motion_settled = send_joints(robot, q, gripper)
+                else:
+                    for index, waypoint in enumerate(route.path[1:], start=1):
+                        waypoint_gripper = gripper if index == len(route.path) - 1 else None
+                        motion_settled = send_joints(robot, waypoint, waypoint_gripper) and motion_settled
+                        if not motion_settled:
+                            break
                 ctrl.set_sim_state(read_joints_rad(robot))
                 final = ctrl.ee_position()
                 # Sag/backlash leave a static offset; shift the IK aim point by the measured error.
                 aim = new.copy()
                 for _ in range(3):
-                    if np.linalg.norm(final - new) < 4e-3:
+                    if not motion_settled or np.linalg.norm(final - new) < 4e-3:
                         break
                     aim = aim + (new - final)
                     q, _ = ctrl.solve(aim, orient)
-                    send_joints(robot, q)
+                    if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
+                        break
+                    current_q = read_joints_rad(robot)
+                    try:
+                        correction_route = ctrl.rrt.plan(current_q, q)
+                    except ValueError as exc:
+                        print(f"Configuração de correção inválida para o RRT-Connect: {exc}")
+                        break
+                    if correction_route is None:
+                        print("RRT-Connect não encontrou caminho para corrigir o erro de posição")
+                        break
+                    for waypoint in correction_route.path[1:]:
+                        motion_settled = send_joints(robot, waypoint) and motion_settled
+                        if not motion_settled:
+                            break
+                    if not motion_settled:
+                        break
                     ctrl.set_sim_state(read_joints_rad(robot))
                     final = ctrl.ee_position()
-                print(f"EE final: {np.round(final - offset, 3)} m | erro: {np.linalg.norm(final - new) * 1000:.1f} mm")
+                final_error = float(np.linalg.norm(final - new))
+                position_reached = final_error <= 5e-3
+                print(f"EE final: {np.round(final - offset, 3)} m | target error: {final_error * 1000:.1f} mm")
+                print(f"Position check: {'REACHED' if position_reached else 'NOT REACHED'}; joint motion settled: {motion_settled}")
             else:
-                print(f"EE final: {np.round(ctrl.ee_position() - offset, 3)} m | erro: {err * 1000:.1f} mm")
+                for waypoint in route.path[1:]:
+                    ctrl.set_sim_state(waypoint)
+                final = ctrl.ee_position()
+                final_error = float(np.linalg.norm(final - new))
+                print(f"EE final: {np.round(final - offset, 3)} m | target error: {final_error * 1000:.1f} mm")
+                print(f"Position check: {'REACHED' if final_error <= 5e-3 else 'NOT REACHED'} (simulation)")
     finally:
         if robot:
             robot.disconnect()
