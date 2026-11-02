@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import detect  # noqa: E402
 
 # ---- change these --------------------------------------------------------------------------------------
-HOVER = 0.07           # m above the grasp point the arm stops first, before going straight down
+HOVER = 0.12           # m above the grasp point the arm stops first and opens the jaws (an opening jaw swings
+                       # several cm down when the gripper is tilted), before going straight down
 GRASP_DEPTH = 0.015    # m below the object's measured top surface the tip goes (the jaws straddle it)
 MIN_TIP_Z = 0.012      # m: never aim the tip lower than this above the table (z = 0)
 PRESS = 0.008          # m: on the way down, stop when the tip is held this far above where it should be
@@ -146,9 +147,12 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None):
     `with Arm()` block folds the arm home."""
     from so101ik import Fault
 
+    print(f"\n>> to the hover point: tip {100 * poses[0].tip[2]:.1f} cm above the table, pitch {poses[0].pitch:.0f}")
     arm.move_joints(arm_only(poses[0]), speed=SPEED)              # unfolds from the rest pose first
     settle_to(arm, poses[0])                                      # the joints onto it, not a few degrees short
+    print(f">> at the hover point (measured from the servos: tip {100 * arm.where()[2]:.1f} cm up); opening the jaws")
     arm.move_joints({"gripper": OPEN}, speed=60, check=False)
+    print(f">> going down to {100 * goal[2]:.1f} cm")
     if sim_floor is not None:
         arm.sim(floor=sim_floor)
     try:

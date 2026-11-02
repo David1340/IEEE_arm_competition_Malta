@@ -46,7 +46,7 @@ What it does:
    (mean of the mask's point-cloud samples, in the ArUco TABLE frame) and the median over the frames is taken.
    The camera is closed before the arm moves.
 2. **Plan** (`so101ik`): the tip goes 1.5 cm below the object's measured top, never lower than 1.2 cm above
-   the table. A vertical descent from 7 cm above is solved at the steepest gripper pitch the arm can hold all
+   the table. A vertical descent from 12 cm above is solved at the steepest gripper pitch the arm can hold all
    the way down (straight down near the base, sloping further out). Every pose is checked against the joint
    ranges, the table and the arm's own parts.
 3. **Move**: unfold, go above the object, open the jaws, then go straight down. The descent stops early if the
