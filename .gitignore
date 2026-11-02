@@ -10,6 +10,7 @@
 !full_pipeline.py
 !qr_calibrate.py
 !camera_transform.npy
+!calibration.json
 
 # arm tools at the top level (David's pipeline and joint offsets)
 !IK_control.py
@@ -31,7 +32,6 @@ calibration/robots/so_follower/*
 !robot/
 robot/*
 !robot/*.py
-!robot/table_to_base.json
 !robot/sort_rules.json
 
 !yolo_dataset/

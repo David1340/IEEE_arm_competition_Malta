@@ -10,7 +10,8 @@ from typing import Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parent
-FINE_OFFSETS_FILE = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"
+FINE_OFFSETS_FILE = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"  # the older file
+CALIBRATION_FILE = ROOT / "calibration.json"   # every calibration in one file (robot/calibration.py): arm.joint_offsets_deg
 ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 
@@ -20,7 +21,8 @@ def _read_offsets(path: str, modified_ns: int, file_size: int) -> dict[str, floa
 	if not file_path.exists():
 		return {name: 0.0 for name in ARM_JOINTS}
 	data = json.loads(file_path.read_text())
-	values = data.get("joint_offsets_deg", {})
+	values = data.get("arm", {}).get("joint_offsets_deg") if "arm" in data else data.get("joint_offsets_deg", {})
+	values = values or {}
 	offsets = {name: float(values.get(name, 0.0)) for name in ARM_JOINTS}
 	invalid = [name for name, value in offsets.items() if not math.isfinite(value)]
 	if invalid:
@@ -28,21 +30,37 @@ def _read_offsets(path: str, modified_ns: int, file_size: int) -> dict[str, floa
 	return offsets
 
 
-def load_fine_joint_offsets(path: str | Path = FINE_OFFSETS_FILE) -> dict[str, float]:
+def _default_path() -> Path:
+	"""calibration.json when it holds the offsets, else the older fine_joint_offsets.json."""
+	if CALIBRATION_FILE.exists() and "joint_offsets_deg" in json.loads(CALIBRATION_FILE.read_text()).get("arm", {}):
+		return CALIBRATION_FILE
+	return FINE_OFFSETS_FILE
+
+
+def load_fine_joint_offsets(path: str | Path | None = None) -> dict[str, float]:
 	"""Load software corrections in degrees, refreshing the cache when JSON changes."""
-	file_path = Path(path)
+	file_path = Path(path) if path is not None else _default_path()
 	if not file_path.exists():
 		return {name: 0.0 for name in ARM_JOINTS}
 	stat = file_path.stat()
 	return _read_offsets(str(file_path.resolve()), stat.st_mtime_ns, stat.st_size)
 
 
-def save_fine_joint_offsets(offsets: Mapping[str, float], path: str | Path = FINE_OFFSETS_FILE) -> None:
-	"""Persist one finite offset in degrees for each arm joint."""
+def save_fine_joint_offsets(offsets: Mapping[str, float], path: str | Path | None = None) -> None:
+	"""Persist one finite offset in degrees for each arm joint: into calibration.json's arm section (the rest of
+	that file kept), or into the given (older format) file."""
 	values = {name: float(offsets.get(name, 0.0)) for name in ARM_JOINTS}
 	invalid = [name for name, value in values.items() if not math.isfinite(value)]
 	if invalid:
 		raise ValueError(f"Fine joint offsets must be finite degrees; invalid: {invalid}")
+	if path is None:
+		data = json.loads(CALIBRATION_FILE.read_text()) if CALIBRATION_FILE.exists() else {}
+		data.setdefault("arm", {})["joint_offsets_deg"] = values
+		temporary_path = CALIBRATION_FILE.with_suffix(".json.tmp")
+		temporary_path.write_text(json.dumps(data, indent=2) + "\n")
+		temporary_path.replace(CALIBRATION_FILE)
+		_read_offsets.cache_clear()
+		return
 	file_path = Path(path)
 	file_path.parent.mkdir(parents=True, exist_ok=True)
 	data = {

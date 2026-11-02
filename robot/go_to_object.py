@@ -64,7 +64,8 @@ GRIP_SQUEEZE = 2.5     # percent the jaws are held past where they stopped: a fi
 GRIP_EMPTY = 4.0       # jaws closing to under this percent: nothing in them
 GRIP_SLIP = 6.0        # percent the jaws may move while carrying before it counts as the object slipping
 DROP_HEIGHT = 0.15     # m: over a bin, the jaws' middle hovers this high above the table, then the jaws open
-DROP_CLEAR = 0.015     # m the carried object's bottom must clear the bin's rim by (else it hovers higher)
+DROP_CLEAR = 0.03      # m the carried object's bottom must clear the bin's rim by (else it hovers higher); the
+                       # arm sags a few cm when stretched out, so not less
 LIFT = 0.12            # m the object is lifted (straight back up the way the jaws came down)
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
 # Where the object goes without a plan's own (check_calibration, defaults): so101ik's tip frame (the tip = the fixed
@@ -78,21 +79,24 @@ PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-9
 
 # The follower's LeRobot calibration (there are several files in that folder). SO101_CALIBRATION or
 # --calibration override it.
-CALIBRATION = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json"
+import calibration as _cal  # noqa: E402  (calibration.json: every calibration in one file)
+
+CALIBRATION = _cal.lerobot_calibration()   # calibration.json's arm.lerobot_calibration, else my_follower_arm.json
 
 # Fine joint offsets from fine_joint_calibration_gui.py (degrees; true URDF angle = LeRobot angle + offset,
 # motor target = wanted angle - offset). so101ik uses the same convention for its offsets.
-FINE_OFFSETS = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"
+FINE_OFFSETS = "default"   # calibration.json's arm.joint_offsets_deg, else the older fine_joint_offsets.json
 
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 
 
-def fine_offsets(path):
-    """The offsets by joint, read with fine_joint_offsets.py as the rest of the repo reads them (0 without the file)."""
+def fine_offsets(path="default"):
+    """The offsets by joint, read with fine_joint_offsets.py as the rest of the repo reads them (calibration.json,
+    else the older fine_joint_offsets.json; 0 without either). path: another file."""
     sys.path.insert(0, str(ROOT))
     from fine_joint_offsets import load_fine_joint_offsets
 
-    return dict(load_fine_joint_offsets(path))
+    return dict(load_fine_joint_offsets(None if path in (None, "default") else path))
 
 
 def grasp_point(d):
@@ -291,6 +295,33 @@ def replan(model, place, grasp_z, like=None):
     return plan_place(model, place.goal[:2], grasp_z, like)
 
 
+CARRY_SPEED = 0.06     # m/s peak, the carry along its straight lines
+
+
+def carry_line(arm, target, poses, step=0.005):
+    """The way to a bin: straight up from where the jaws hold the object to the drop height, then straight across
+    to over the bin at that height, a pose every `step` m along both lines, each the next one along the path from
+    the one before (so101ik's ik near). The object never dips on the way. None if a point is out of reach."""
+    from so101ik import Unreachable
+
+    start = centre_of(arm.model, arm.model.pose(dict(arm.goal)), poses.centre)
+    z = max(float(target[2]), float(start[2]))
+    pts = [np.array([start[0], start[1], zz]) for zz in np.arange(start[2], z, step)[1:]] + [np.array([*start[:2], z])]
+    d = np.linalg.norm(np.asarray(target[:2]) - start[:2])
+    n = max(1, int(d / step))
+    pts += [np.array([*(start[:2] + (np.asarray(target[:2]) - start[:2]) * k / n), z]) for k in range(1, n + 1)]
+    prev = arm.model.pose(dict(arm.goal))
+    out = [{j: arm.goal[j] for j in ARM}]
+    try:
+        for c in pts:
+            prev = ik_centre(arm.model, c, None, near=prev, grip=poses.grip, centre=poses.centre)
+            out.append(arm_only(prev))
+    except Unreachable:
+        return None
+    jumps = [max(abs(a[j] - b[j]) for j in ARM) for a, b in zip(out, out[1:])]
+    return out if max(jumps, default=0) < 2.5 else None
+
+
 def carry_chain(arm, target, target_centre=None):
     """Joint-space steps (under 2 degrees) from where the arm was last sent to `target`, every one checked: no
     problem (ranges, table, the arm itself) and the jaws' middle at least 5 cm up. None if a step fails."""
@@ -397,14 +428,19 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
                        step="put down")
         else:
             print(f">> carrying it: {place}")
-            steps = carry_chain(arm, place.poses[0], place.poses.centre)
-            if steps is not None:
+            line = carry_line(arm, place.goal, poses) if place.kind == "bin" else None
+            steps = carry_chain(arm, place.poses[0], place.poses.centre) if line is None else None
+            if line is not None:       # up to the drop height first, then straight across at it
+                arm.follow(line, speed=CARRY_SPEED, lead=True, grip_range=guard, step="carry")
+                arm.pose = arm.model.pose(dict(arm.goal))
+            elif steps is not None:
                 big = max(abs(steps[-1][j] - steps[0][j]) for j in ARM)
                 arm.follow(steps, duration=max(1.5, 1.875 * big / SPEED), lead=True, grip_range=guard, step="carry")
             else:                      # the straight joint path is not clear: the checked move, without the guard
                 arm.move_joints(arm_only(place.poses[0]), speed=SPEED)
-            arm.pose = place.poses[0]
-            settle_to(arm, place.poses[0])
+            if line is None:
+                arm.pose = place.poses[0]
+                settle_to(arm, place.poses[0])
             if place.kind == "table":
                 arm.follow(chain(place.poses), speed=DOWN_SPEED, lead=True, press=PRESS, grip_range=guard,
                            step="place down")
@@ -682,7 +718,7 @@ def main():
         raise SystemExit(f"Calibration file not found: {cal}; pass --calibration")
     offsets = {j: 0.0 for j in ARM} if args.offsets == "none" else fine_offsets(args.offsets)
     print("Fine joint offsets (deg): " + ", ".join(f"{j} {v:+.2f}" for j, v in offsets.items())
-          + ("" if args.offsets == "none" or Path(args.offsets).is_file() else f"  ({args.offsets} not found)"))
+          + ("" if args.offsets in ("none", "default") or Path(args.offsets).is_file() else f"  ({args.offsets} not found)"))
     model = Model(calibration_file=cal if cal.is_file() else None, offsets=offsets)
     d = choose(dets, model, args.target, args.index)
     print()

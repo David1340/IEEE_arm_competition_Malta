@@ -7,8 +7,8 @@ noisy frame does not decide where the arm goes, and then moved from the TABLE fr
 base frame with TABLE_TO_BASE.
 
     detect_live(...)        opens the ZED, runs YOLO on `frames` frames, returns [Detection]
-    TABLE_TO_BASE           the camera-to-arm correction, from robot/table_to_base.json when
-                            robot/calibrate_camera_to_arm.py has measured it
+    TABLE_TO_BASE           identity with calibration.json (robot/calibrate.py); else the older
+                            correction from robot/table_to_base.json
     detect_from_case(path)  the same from a case saved by yolo_dataset/capture_pointcloud_case.py
                             (no camera, no YOLO: for trying the arm side on its own)
 
@@ -32,16 +32,17 @@ for _fonts in ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/truetype", 
 ROOT = Path(__file__).resolve().parent.parent
 YOLO_DIR = ROOT / "yolo_dataset"
 
-# TABLE frame (ArUco calibration) -> robot base frame: p_base = Rz(yaw) @ p_table + (x, y, z).
-# All zero means the ArUco markers were measured in the robot's own base frame. If the robot's base
-# (under the pan axis) sits at table coordinates (bx, by), unrotated, use x=-bx, y=-by.
-# Check it once: switch the torque off, run so101ik's examples/where.py, put the gripper tip on a block
-# that detect.py has located, and compare the two printouts.
-TABLE_TO_BASE = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0}
+# The camera's pose: calibration.json's camera_to_base (robot/calibrate.py) puts the point cloud straight into the
+# robot's base frame, and TABLE_TO_BASE stays identity. Without it, the older camera_transform.npy (qr_calibrate.py)
+# gives a TABLE frame, and TABLE_TO_BASE (from robot/table_to_base.json if there) moves it to the base frame:
+# p_base = Rz(yaw) @ p_table + (x, y, z).
+import calibration as _cal  # noqa: E402
 
-# Measured by robot/calibrate_camera_to_arm.py: when the file is there, it replaces the values above.
+IDENTITY_T = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0}
+TABLE_TO_BASE = dict(IDENTITY_T)
 TRANSFORM_FILE = Path(__file__).resolve().parent / "table_to_base.json"
-if TRANSFORM_FILE.is_file():
+CAMERA_TO_BASE = _cal.camera_to_base()
+if CAMERA_TO_BASE is None and TRANSFORM_FILE.is_file():
     _saved = json.loads(TRANSFORM_FILE.read_text())
     TABLE_TO_BASE = {k: float(_saved[k]) for k in ("x", "y", "z", "yaw_deg")}
 
@@ -231,9 +232,11 @@ def detect_from_case(case_dir, transform=None):
 
 
 def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, resolution="HD1080",
-                depth_mode="NEURAL", min_depth=0.10, max_depth=2.0, min_points=20, calibration=None, transform=None):
+                depth_mode="NEURAL", min_depth=0.10, max_depth=2.0, min_points=20, calibration=None, transform=None,
+                camera_to_table=None, zed=None):
     """Open the ZED, run YOLO on `frames` frames, return ([Detection], Scene of the last frame). The camera is
-    closed again before returning, so nothing else holds it while the arm moves."""
+    closed again before returning, so nothing else holds it while the arm moves. camera_to_table: the camera's
+    pose to use (default calibration.json's, else camera_transform.npy); zed: an open camera to use (left open)."""
     import cv2
     import pyzed.sl as sl
     from ultralytics import YOLO
@@ -242,24 +245,28 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
     from object_3d_live import CALIBRATION_FILE, latest_weights, load_camera_transform, roi_for_frame, visible_surface_center
 
     roi_data = json.loads((YOLO_DIR / "roi.json").read_text())
-    camera_to_table = load_camera_transform(Path(calibration) if calibration else CALIBRATION_FILE)
+    if camera_to_table is None:
+        camera_to_table = (CAMERA_TO_BASE if CAMERA_TO_BASE is not None and calibration is None
+                           else load_camera_transform(Path(calibration) if calibration else CALIBRATION_FILE))
     weights = Path(weights) if weights else latest_weights()
     model = YOLO(str(weights))
     print(f"YOLO weights: {weights}")
 
-    init = sl.InitParameters()
-    init.camera_resolution = getattr(sl.RESOLUTION, resolution)
-    init.depth_mode = getattr(sl.DEPTH_MODE, depth_mode)
-    init.coordinate_units = sl.UNIT.METER
-    init.coordinate_system = sl.COORDINATE_SYSTEM.IMAGE
-    if serial is not None:
-        init.set_from_serial_number(serial)
-    else:
-        init.set_from_camera_id(camera_id)
-    zed = sl.Camera()
-    status = zed.open(init)
-    if status != sl.ERROR_CODE.SUCCESS:
-        raise SystemExit(f"Could not open ZED camera: {status}")
+    own = zed is None
+    if own:
+        init = sl.InitParameters()
+        init.camera_resolution = getattr(sl.RESOLUTION, resolution)
+        init.depth_mode = getattr(sl.DEPTH_MODE, depth_mode)
+        init.coordinate_units = sl.UNIT.METER
+        init.coordinate_system = sl.COORDINATE_SYSTEM.IMAGE
+        if serial is not None:
+            init.set_from_serial_number(serial)
+        else:
+            init.set_from_camera_id(camera_id)
+        zed = sl.Camera()
+        status = zed.open(init)
+        if status != sl.ERROR_CODE.SUCCESS:
+            raise SystemExit(f"Could not open ZED camera: {status}")
 
     image_mat, cloud_mat, runtime = sl.Mat(), sl.Mat(), sl.RuntimeParameters()
     per_frame, frame = [], None
@@ -292,7 +299,8 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
             per_frame.append(found)
         scene = Scene(frame, np.array(cloud[:, :, :3], dtype=np.float32), camera_to_table, transform)
     finally:
-        zed.close()
+        if own:
+            zed.close()
     dets = add_colours(scene.frame, finish(merge(per_frame, min_seen=max(1, frames // 2)), transform))
     return add_fits(scene, dets), scene
 

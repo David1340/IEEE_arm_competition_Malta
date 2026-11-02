@@ -102,25 +102,34 @@ or both (`"yellow cube"`):
 Every detection gets its colour from its YOLO mask with `yolo_dataset/block_color.py` (the HSV vote; blocks lying
 in a bin are left out of the bin's vote). Each cycle the arm is folded, the camera detects again (so bins or
 objects moved by a judge are found where they are now), the most confident object that the arm can reach and
-whose bin is seen and reachable is picked and dropped into its bin (15 cm over its centre), and the arm folds.
+whose bin is seen and reachable is picked and dropped into its bin (15 cm over its centre; it goes up to that height first and then straight across, so it
+does not swing into the bin's side), and the arm folds.
 Objects already inside a bin are left; one that fails twice (slipped, jaws closed on nothing) is left too.
 The plan picture (masks in their detected colour, an arrow from each object to its bin) is saved in
 `outputs/sort_objects/`.
 
-### Camera and arm: calibrate once
+### Calibration: one file, `calibration.json`
 
-The camera gives positions in the ArUco TABLE frame; the arm works in its base frame (x forward, y to the
-arm's left, z up, origin under the shoulder pan axis). They must agree to well under the 2 cm of room between a
-block and the open jaws. Measure it once, and again if the camera or the arm is moved:
+Everything the robot needs to know about its own setup is in `calibration.json` at the repo root
+(`robot/calibration.py`): the camera's pose in the robot's base frame, the ArUco markers' positions, the table
+height, the arm's LeRobot calibration file and the fine joint offsets (`fine_joint_calibration_gui.py` saves them
+there now). `camera_transform.npy` is written from it too, for the scripts that read that.
 
 ```sh
-python robot/calibrate_camera_to_arm.py
+python robot/calibrate.py --show-ids               # which marker has which ID
+python robot/calibrate.py --marker-ids 0,1,2,3     # first time: IDs in the order TOP_RIGHT, BOTTOM_RIGHT,
+                                                   # BOTTOM_LEFT, TOP_LEFT (qr_calibrate.py's positions)
+python robot/calibrate.py arm                      # once, the most accurate: touch 4 blocks with the arm
+python robot/calibrate.py                          # after the camera is bumped: markers only, a few seconds
+python robot/calibrate.py show                     # what calibration.json holds
 ```
 
-Four times: put one block somewhere new, let the camera find it, then (torque off) put the tip of the fixed
-finger on the centre of its top face by hand. It fits a rotation and a shift and saves them to
-`robot/table_to_base.json`, which `robot/detect.py` uses from then on. `robot/check_calibration.py` (torque off)
-shows where the model puts the tip and the jaws' middle while the arm is moved by hand.
+The fit: the table plane from the point cloud gives the camera's tilt and height; two or more markers (or the
+blocks touched with the arm) give its turn and position. `arm` also measures where the markers really are in the
+arm's frame (hand-measured positions are often a few cm off) and stores them, so later marker-only calibrations
+land where the arm does. Each run saves a picture of the markers and how far each is from its stored position in
+`outputs/calibrate/`. `robot/check_calibration.py` (torque off) shows where the model puts the tip while the arm is
+moved by hand.
 
 ### Without the camera or the arm
 

@@ -135,7 +135,7 @@ def main(argv=None) -> int:
                     [saved_offsets[name] for name in ARM_JOINTS],
                     atol=0.01,
                 ) else "SAVED")
-                + f" | {FINE_OFFSETS_FILE.name}"
+                + " | calibration.json"
             )
             status_id = p.addUserDebugText(
                 status,
