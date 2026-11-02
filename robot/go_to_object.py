@@ -11,8 +11,9 @@
                    back where it was, or at the place clicked in the picture (or --place X Y) -> let go ->
                    straight up -> fold home.  --no-grasp: only go to it
 
-In the picture window: click an object to pick it, click the table to place it there; g = go, c = clear the
-place, q = quit.
+In the picture window (YOLO's masks drawn on it): click an object to pick it, click the table to place it there,
+click a bin to drop it in (the jaws' middle hovers over the bin's centre at DROP_HEIGHT, 11 cm, higher if the
+object would not clear the rim, and the jaws open); g = go, c = clear the place, q = quit. --drop-in N: bin N.
 
 The inverse kinematics and the servo driver are so101ik (github.com/LukeGrif/lerobot-so101-inverse-kinematics,
 pip install below). It reads LeRobot's calibration from ~/.cache/huggingface/lerobot/calibration/robots/so_follower/
@@ -32,6 +33,7 @@ import argparse
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 for _fonts in ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/truetype", "/usr/share/fonts"):
@@ -57,6 +59,8 @@ GRIP_RATE = 40.0       # percent/s the jaws close at, until they stop on the obj
 GRIP_SQUEEZE = 2.5     # percent the jaws are held past where they stopped: a firm hold, not a stall
 GRIP_EMPTY = 4.0       # jaws closing to under this percent: nothing in them
 GRIP_SLIP = 6.0        # percent the jaws may move while carrying before it counts as the object slipping
+DROP_HEIGHT = 0.11     # m: over a bin, the jaws' middle hovers this high above the table, then the jaws open
+DROP_CLEAR = 0.015     # m the carried object's bottom must clear the bin's rim by (else it hovers higher)
 LIFT = 0.12            # m the object is lifted (straight back up the way the jaws came down)
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
 # Where the object goes, in so101ik's tip frame (the tip = the fixed jaw's grasp point; x towards the moving jaw
@@ -156,6 +160,8 @@ def choose(dets, model, target=None, index=None):
         d.plan = None
         if index is not None and i != index:
             d.status = "not --index"
+        elif d.name == "bin":
+            d.status = "bin: click to drop in"
         elif index is None and d.name in detect.SKIP_CLASSES:
             d.status = "skipped class"
         elif index is None and target is not None and d.name != target:
@@ -184,16 +190,60 @@ def plan_pick(d, model):
     return d.plan
 
 
+@dataclass
+class Place:
+    """Where the carried object goes. kind "table": lowered until it touches the table at (x, y); "bin": the jaws'
+    middle hovers at goal over the bin's centre and the jaws open (a drop)."""
+    kind: str
+    goal: np.ndarray
+    pitch: float
+    poses: list
+    bin: object = None          # the bin's Detection
+    note: str = ""
+
+    def __str__(self):
+        x, y, z = self.goal
+        what = f"drop into the bin at x {x:+.3f} y {y:+.3f}, jaws' middle {100 * z:.1f} cm up" if self.kind == "bin" \
+            else f"put down on the table at x {x:+.3f} y {y:+.3f}"
+        return what + (f" ({self.note})" if self.note else "")
+
+
 def plan_place(model, xy, grasp_z):
-    """Where the carried object goes down: the jaws' middle at (x, y) and the height it was picked at, so the
-    object's bottom comes back to the table. (goal, pitch, poses) from HOVER above, or None if out of reach."""
+    """Put down on the table: the jaws' middle at (x, y) and the height it was picked at, so the object's bottom
+    comes back to the table. A Place (from HOVER above), or None if out of reach."""
     from so101ik import Unreachable
 
     goal = np.array([xy[0], xy[1], grasp_z])
     try:
-        return (goal, *plan(model, goal))
+        pitch, poses = plan(model, goal)
     except Unreachable:
         return None
+    return Place("table", goal, pitch, poses)
+
+
+def plan_drop(model, b, grasp_z):
+    """Drop into bin b: the jaws' middle over its centre at DROP_HEIGHT, or higher if the carried object's bottom
+    (grasp_z below the jaws' middle) would not clear the bin's rim (its measured top) by DROP_CLEAR."""
+    from so101ik import Unreachable
+
+    x, y, rim = b.base_xyz
+    need = rim + grasp_z + DROP_CLEAR
+    z = max(DROP_HEIGHT, need)
+    note = f"raised from {100 * DROP_HEIGHT:.0f} cm to clear the rim at {100 * rim:.1f} cm" if need > DROP_HEIGHT else ""
+    try:
+        pitch, poses = plan(model, np.array([x, y, z]), hover=0.0)
+    except Unreachable:
+        return None
+    return Place("bin", np.array([x, y, z]), pitch, poses, bin=b, note=note)
+
+
+def replan(model, place, grasp_z):
+    """The same Place again with another model (the arm's own) or another object's grasp height."""
+    if place is None:
+        return None
+    if place.kind == "bin":
+        return plan_drop(model, place.bin, grasp_z)
+    return plan_place(model, place.goal[:2], grasp_z)
 
 
 def carry_chain(arm, target):
@@ -299,21 +349,22 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
             arm.follow(chain(reversed(lift)), speed=DOWN_SPEED, lead=True, press=PRESS, grip_range=guard,
                        step="put down")
         else:
-            pgoal, _, pposes = place
-            print(f">> carrying it to x {pgoal[0]:+.3f} y {pgoal[1]:+.3f}")
-            steps = carry_chain(arm, pposes[0])
+            print(f">> carrying it: {place}")
+            steps = carry_chain(arm, place.poses[0])
             if steps is not None:
                 big = max(abs(steps[-1][j] - steps[0][j]) for j in ARM)
                 arm.follow(steps, duration=max(1.5, 1.875 * big / SPEED), lead=True, grip_range=guard, step="carry")
             else:                      # the straight joint path is not clear: the checked move, without the guard
-                arm.move_joints(arm_only(pposes[0]), speed=SPEED)
-            arm.pose = pposes[0]
-            settle_to(arm, pposes[0])
-            arm.follow(chain(pposes), speed=DOWN_SPEED, lead=True, press=PRESS, grip_range=guard, step="place down")
+                arm.move_joints(arm_only(place.poses[0]), speed=SPEED)
+            arm.pose = place.poses[0]
+            settle_to(arm, place.poses[0])
+            if place.kind == "table":
+                arm.follow(chain(place.poses), speed=DOWN_SPEED, lead=True, press=PRESS, grip_range=guard,
+                           step="place down")
             tip, c = measured()
-            print(f">> put down: jaws' middle at {c[0]:+.3f} {c[1]:+.3f} {c[2]:+.3f} m, "
-                  f"{1000 * np.linalg.norm(c - pgoal):.1f} mm from the place")
-            goal = pgoal               # the way up and out starts from here
+            print(f">> {'over the bin' if place.kind == 'bin' else 'put down'}: jaws' middle at "
+                  f"{c[0]:+.3f} {c[1]:+.3f} {c[2]:+.3f} m, {1000 * np.linalg.norm(c - place.goal):.1f} mm from the place")
+            goal = place.goal - [0, 0, HOVER - 0.05] if place.kind == "bin" else place.goal
     except GripLost as e:
         print(f">> it slipped ({e}): opening the jaws where the arm stands")
         arm.pose = arm.model.pose(dict(arm.goal))
@@ -336,11 +387,15 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
     """The camera picture with every detection (list number, class, confidence, base-frame position; the one to
     pick in red with a ring, other reachable ones green, out of reach orange, skipped grey) and the place to put
     it (a cross). Click an object to pick it; click the table to put it there. Saved in save_dir.
-    Returns (chosen, place) on g/Enter, None on q/Esc. place: (goal, pitch, poses) or None (put back)."""
+    Click a bin to drop it in. Returns (chosen, place) on g/Enter, None on q/Esc; place is a Place, or None (put
+    it back where it was)."""
     import cv2
 
     state = {"chosen": chosen, "place": place, "place_px": None, "place_txt": "", "msg": ""}
-    colours = {"reachable": (0, 200, 0), "out of reach": (0, 140, 255)}
+    colours = {"reachable": (0, 200, 0), "out of reach": (0, 140, 255), "bin: click to drop in": (255, 160, 0)}
+
+    def colour(d):
+        return (0, 0, 255) if d is state["chosen"] else colours.get(d.status, (160, 160, 160))
 
     def label(img, text, org, c, scale=0.6):
         cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4 if scale < 1 else 6)
@@ -349,10 +404,19 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
     def draw():
         img = scene.frame.copy()
         ch, pl = state["chosen"], state["place"]
+        shade = img.copy()             # YOLO's predictions: each mask shaded, outlined
+        for d in dets:
+            if d.polygon is not None and len(d.polygon) >= 3:
+                cv2.fillPoly(shade, [np.rint(d.polygon).astype(np.int32)], colour(d))
+        img = cv2.addWeighted(shade, 0.30, img, 0.70, 0)
+        for d in dets:
+            if d.polygon is not None and len(d.polygon) >= 3:
+                thick = 4 if (d is ch or (pl is not None and pl.bin is d)) else 2
+                cv2.polylines(img, [np.rint(d.polygon).astype(np.int32)], True, colour(d), thick)
         for i, d in enumerate(dets):
             if d.pixel is None:
                 continue
-            c = (0, 0, 255) if d is ch else colours.get(d.status, (160, 160, 160))
+            c = colour(d)
             px = tuple(map(int, d.pixel))
             cv2.circle(img, px, 7, c, -1)
             if d is ch:
@@ -361,57 +425,76 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
             label(img, f"{i}. {d.name} {d.conf:.2f}" + ("  <- PICK" if d is ch else f"  ({d.status})"),
                   (px[0] + 14, px[1] - 6), c)
             label(img, f"x {x:+.3f} y {y:+.3f} z {z:+.3f}", (px[0] + 14, px[1] + 18), c)
-        if state["place_px"] is not None:
+        if state["place_px"] is not None and pl is not None:
             u, v = state["place_px"]
             c = (255, 0, 255)
             cv2.drawMarker(img, (u, v), c, cv2.MARKER_TILTED_CROSS, 34, 4)
-            if ch is not None and ch.pixel is not None and pl is not None:
+            if ch is not None and ch.pixel is not None:
                 cv2.arrowedLine(img, tuple(map(int, ch.pixel)), (u, v), c, 3, tipLength=0.04)
-            label(img, "PLACE " + state["place_txt"], (u + 20, v + 8), c)
+            label(img, ("DROP IN BIN " if pl.kind == "bin" else "PLACE ") + state["place_txt"],
+                  (u + 20, v + (56 if pl.kind == "bin" else 8)), c)
         if ch is None:
             head = "no object to pick: click a reachable one, q = quit"
         else:
-            head = (f"pick {dets.index(ch)}. {ch.name} -> " + ("PLACE at the cross" if pl is not None
-                                                             else "put back where it is"))
+            head = (f"pick {dets.index(ch)}. {ch.name} -> " + ("put back where it is" if pl is None else
+                    f"DROP into bin {dets.index(pl.bin)}" if pl.kind == "bin" else "PLACE at the cross"))
         label(img, head, (20, 45), (255, 255, 255), 1.1)
-        label(img, "click an object = pick it   click the table = place it there   "
+        label(img, "click an object = pick it   click the table = place it there   click a bin = drop it in   "
                    "g / Enter = go   c = clear the place   q / Esc = quit", (20, 85), (255, 255, 255), 0.75)
         if state["msg"]:
             label(img, state["msg"], (20, 120), (0, 200, 255), 0.75)
         return img
 
+    def inside(d, u, v):
+        if d.polygon is not None and len(d.polygon) >= 3:
+            if cv2.pointPolygonTest(np.asarray(d.polygon, np.float32), (float(u), float(v)), False) >= 0:
+                return True
+        return d.pixel is not None and np.hypot(d.pixel[0] - u, d.pixel[1] - v) < 45
+
+    def set_place(new, px, txt, fail):
+        if new is None:                # keep the place there was
+            state["msg"] = fail
+        else:
+            state.update(place=new, place_px=px, place_txt=txt)
+
     def click(event, u, v, flags, param):
         if event != cv2.EVENT_LBUTTONDOWN:
             return
         state["msg"] = ""
-        near = [d for d in dets if d.pixel is not None and d.name not in detect.SKIP_CLASSES
-                and np.hypot(d.pixel[0] - u, d.pixel[1] - v) < 45]
-        if near:
-            d = min(near, key=lambda d: np.hypot(d.pixel[0] - u, d.pixel[1] - v))
+        hit = [d for d in dets if inside(d, u, v)]
+        objects = [d for d in hit if d.name not in detect.SKIP_CLASSES]
+        bins = [d for d in hit if d.name == "bin"]
+        if objects:                    # an object: pick it
+            d = min(objects, key=lambda d: np.hypot(d.pixel[0] - u, d.pixel[1] - v) if d.pixel else 1e9)
             if plan_pick(d, model) is None:
                 state["msg"] = f"{d.name} is out of reach"
             else:
                 state["chosen"] = d
                 if state["place"] is not None:          # the same place, at this object's grasp height
-                    state["place"] = plan_place(model, state["place"][0][:2], d.plan[0][2])
+                    state["place"] = replan(model, state["place"], d.plan[0][2])
                     if state["place"] is None:
                         state.update(place_px=None, msg="the place is out of reach for this object: click again")
-        else:
+        elif state["chosen"] is None:
+            state["msg"] = "click an object to pick first"
+        elif bins:                     # a bin: drop it in
+            b = bins[0]
+            x, y, _ = b.base_xyz
+            set_place(plan_drop(model, b, state["chosen"].plan[0][2]), tuple(map(int, b.pixel)),
+                      f"x {x:+.3f} y {y:+.3f}", f"the arm cannot reach over bin {dets.index(b)}")
+        elif hit:
+            state["msg"] = f"that is the {hit[0].name}: click an object, a bin or the table"
+        else:                          # the table: put it down there
             xyz = scene.pixel_to_base(u, v)
             if xyz is None:
                 state["msg"] = "no depth there: click again"
             elif xyz[2] > 0.025:
                 state["msg"] = f"that is not the table ({100 * xyz[2]:.1f} cm up): click an empty spot"
-            elif state["chosen"] is None:
-                state["msg"] = "click an object to pick first"
             else:
-                new = plan_place(model, xyz[:2], state["chosen"].plan[0][2])
-                if new is None:        # keep the place there was
-                    state["msg"] = f"the arm cannot put it down at x {xyz[0]:+.3f} y {xyz[1]:+.3f}: click closer"
-                else:
-                    state.update(place=new, place_px=(u, v), place_txt=f"x {xyz[0]:+.3f} y {xyz[1]:+.3f}")
+                set_place(plan_place(model, xyz[:2], state["chosen"].plan[0][2]), (u, v),
+                          f"x {xyz[0]:+.3f} y {xyz[1]:+.3f}",
+                          f"the arm cannot put it down at x {xyz[0]:+.3f} y {xyz[1]:+.3f}: click closer")
         print(f"  {state['msg']}" if state["msg"] else f"  pick: {state['chosen'].name if state['chosen'] else '-'}"
-              + (f", place at {state['place_txt']}" if state["place"] is not None else ""))
+              + (f", then {state['place']}" if state["place"] is not None else ""))
         cv2.imshow(win, draw())
 
     win = "go_to_object"
@@ -428,8 +511,8 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
     except cv2.error:                  # no display: ask in the terminal instead
         ok = state["chosen"] is not None and input("Move the arm? [y/N] ").strip().lower() == "y"
         return (state["chosen"], state["place"]) if ok else None
-    print("Picture window: click an object to pick it, click the table to place it there; "
-          "g or Enter = go, c = clear the place, q or Esc = quit")
+    print("Picture window: click an object to pick it, click the table to place it there, click a bin to drop it "
+          "in; g or Enter = go, c = clear the place, q or Esc = quit")
     try:
         while True:
             k = cv2.waitKey(100)       # short waits, so Ctrl-C gets through
@@ -474,6 +557,8 @@ def main():
     ap.add_argument("--place", type=float, nargs=2, metavar=("X", "Y"),
                     help="put the object down here (robot base frame, m) instead of back where it was; in the "
                          "picture window, clicking the table does the same")
+    ap.add_argument("--drop-in", type=int, metavar="N",
+                    help="drop the object into bin N of the printed list (clicking a bin does the same)")
     ap.add_argument("--no-grasp", action="store_true", help="only go to the object; do not close the jaws")
     ap.add_argument("--hold", type=float, default=None, help="seconds at the object; default wait for Enter")
     ap.add_argument("--yes", action="store_true", help="do not ask before moving")
@@ -513,6 +598,13 @@ def main():
         place = plan_place(model, args.place, d.plan[0][2])
         if place is None:
             raise SystemExit(f"The arm cannot put it down at {args.place}")
+    if args.drop_in is not None and d is not None:
+        b = dets[args.drop_in]
+        if b.name != "bin":
+            raise SystemExit(f"--drop-in {args.drop_in} is a {b.name}, not a bin")
+        place = plan_drop(model, b, d.plan[0][2])
+        if place is None:
+            raise SystemExit(f"The arm cannot reach over bin {args.drop_in}")
     go_ok = True
     if frame is not None:
         picked = show(scene, dets, d, model, ROOT / "outputs" / "go_to_object", place=place,
@@ -528,7 +620,7 @@ def main():
           f"pitch {'least-loaded' if pitch is None else f'{pitch} deg'}, {len(poses)} poses down")
     print(f"  hover pose: {poses[0]}\n  goal pose:  {poses[-1]}")
     if place is not None:
-        print(f"Then putting it down at x {place[0][0]:+.3f} y {place[0][1]:+.3f}, pitch {place[1]} deg")
+        print(f"Then: {place}, pitch {'least-loaded' if place.pitch is None else f'{place.pitch} deg'}")
     if args.dry:
         return
 
@@ -547,7 +639,7 @@ def main():
             arm.raw.sag = 0.0      # the simulated servos have no gravity, so no sag to make up for
         pitch, poses = plan(arm.model, goal)      # again with exactly the arm's calibration and offsets
         if place is not None:
-            place = plan_place(arm.model, place[0][:2], goal[2])
+            place = replan(arm.model, place, goal[2])
         go(arm, goal, pitch, poses, 0.5 if args.sim and args.hold is None else args.hold, args.sim_floor,
            grasp=not args.no_grasp, place=place)
     print("Done: folded home, torque off.")

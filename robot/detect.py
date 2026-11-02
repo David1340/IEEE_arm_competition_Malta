@@ -58,6 +58,7 @@ class Detection:
     seen: int = 1                  # frames it was seen in
     spread_mm: float = 0.0         # how much the per-frame centres disagreed (std, XY)
     pixel: tuple = None            # pixel centre in the full image, for drawing
+    polygon: np.ndarray = None     # YOLO's mask outline in the full image (N x 2 pixels), for drawing and clicks
     samples: list = field(default_factory=list, repr=False)
 
     def __str__(self):
@@ -135,7 +136,8 @@ def merge(per_frame, min_seen, radius=0.03):
             continue
         xyz = np.array([s.table_xyz for s in g])
         out.append(Detection(name=g[0].name, conf=float(np.mean([s.conf for s in g])), table_xyz=np.median(xyz, 0),
-                             seen=len(g), spread_mm=float(1000 * xyz[:, :2].std(0).max()), pixel=g[-1].pixel))
+                             seen=len(g), spread_mm=float(1000 * xyz[:, :2].std(0).max()), pixel=g[-1].pixel,
+                             polygon=g[-1].polygon))
     return out
 
 
@@ -148,8 +150,10 @@ def finish(dets, transform=None):
 def detect_from_case(case_dir, transform=None):
     """Detections from a saved case: its metadata.json already holds each object's centre (TABLE frame)."""
     meta = json.loads((Path(case_dir) / "metadata.json").read_text())
+    rx, ry = meta.get("roi_full_image_xywh_px", [0, 0])[:2]
     dets = [Detection(name=d["class_name"], conf=d["confidence"], table_xyz=np.array(d["center_table_xyz_m"], float),
-                      pixel=tuple(d["center_pixel_xy_full"]) if d.get("center_pixel_xy_full") else None)
+                      pixel=tuple(d["center_pixel_xy_full"]) if d.get("center_pixel_xy_full") else None,
+                      polygon=(np.array(d["polygon_roi_xy_px"], float) + [rx, ry]) if d.get("polygon_roi_xy_px") else None)
             for d in meta["detections"] if d.get("center_table_xyz_m") is not None]
     files = meta.get("files", {})
     image = Path(case_dir) / files.get("image", "image.png")
@@ -219,7 +223,8 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
                         top = top_face_centre(cloud, mask, roi, camera_to_table, min_depth, max_depth)
                         if top is not None:
                             centre = top
-                        found.append(Detection(name=model.names[cls], conf=float(c), table_xyz=np.asarray(centre), pixel=pixel))
+                        found.append(Detection(name=model.names[cls], conf=float(c), table_xyz=np.asarray(centre),
+                                               pixel=pixel, polygon=np.asarray(poly, float) + [x0, y0]))
             per_frame.append(found)
         scene = Scene(frame, np.array(cloud[:, :, :3], dtype=np.float32), camera_to_table, transform)
     finally:
