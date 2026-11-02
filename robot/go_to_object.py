@@ -7,7 +7,8 @@
                    (top-down where possible), every pose checked against the joint ranges, the table and
                    the arm's own parts
     4. move        unfold -> above the object -> jaws open -> straight down, stopping early if the tip touches
-                   something -> hold -> straight up -> fold home
+                   something -> close the jaws on the object -> lift it 12 cm (stops if it slips) -> Enter -> put it
+                   back where it was -> let go -> straight up -> fold home.  --no-grasp: only go to it
 
 The inverse kinematics and the servo driver are so101ik (github.com/LukeGrif/lerobot-so101-inverse-kinematics,
 pip install below). It reads LeRobot's calibration from ~/.cache/huggingface/lerobot/calibration/robots/so_follower/
@@ -48,6 +49,11 @@ MIN_GRASP_Z = 0.03     # m: never aim the middle of the jaws lower than this abo
 PRESS = 0.008          # m: on the way down, stop when the tip is held this far above where it should be
 OPEN = 50.0            # gripper opening (0 closed .. 100 open) before going down: 50 = 6.8 cm between the jaw
                        # ends (the blocks are 3 to 5.5 cm); wider swings the moving jaw back from the tip
+GRIP_RATE = 40.0       # percent/s the jaws close at, until they stop on the object
+GRIP_SQUEEZE = 2.5     # percent the jaws are held past where they stopped: a firm hold, not a stall
+GRIP_EMPTY = 4.0       # jaws closing to under this percent: nothing in them
+GRIP_SLIP = 6.0        # percent the jaws may move while carrying before it counts as the object slipping
+LIFT = 0.12            # m the object is lifted (straight back up the way the jaws came down)
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
 # Where the object goes, in so101ik's tip frame (the tip = the fixed jaw's grasp point; x towards the moving jaw
 # is negative, z along the fingers): halfway between the jaws at OPEN = 50 (6.7 cm gap there), 2.5 cm back from
@@ -171,10 +177,10 @@ def settle_to(arm, pose):
     arm.follow(chain, duration=max(0.6, 0.15 * n), lead=True, within=0.5, settle=1.0, step="settle")
 
 
-def go(arm, goal, pitch, poses, hold, sim_floor=None):
-    """Drive it: to the hover pose, jaws open, down (stopping on contact), hold, up. Leaving the caller's
-    `with Arm()` block folds the arm home."""
-    from so101ik import Fault
+def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True):
+    """Drive it: to the hover pose, jaws open, down (stopping on contact), close on the object, lift it, put it
+    back down, let go, up. Leaving the caller's `with Arm()` block folds the arm home."""
+    from so101ik import Fault, GripLost
 
     def measured():
         deg = arm.read()[0]
@@ -205,16 +211,64 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None):
     err = 1000 * np.linalg.norm(c - goal)
     print(f"\nJAWS' MIDDLE at {c[0]:+.3f} {c[1]:+.3f} {c[2]:+.3f} m (tip {100 * tip[2]:.1f} cm up); object point "
           f"{np.round(goal, 3)}; {err:.1f} mm off" + ("  (stopped on contact)" if touched else ""))
-    if hold is None:
-        input("At the object. Enter to go back up and fold home ... ")
-    else:
-        time.sleep(hold)
-    if sim_floor is not None:
-        arm.sim(floor=-1.0)            # the test floor away again, so the arm can fold onto the "table"
-    if arm.pose is None:               # after a stall: the pose where the joints stand
+    def wait(text):
+        if hold is None:
+            input(text)
+        else:
+            time.sleep(hold)
+
+    def up_and_out(z):
+        if sim_floor is not None:
+            arm.sim(floor=-1.0)        # the test floor away again, so the arm can fold onto the "table"
+        if arm.pose is None:           # after a stop: the pose where the joints stand
+            arm.pose = arm.model.pose(dict(arm.goal))
+        arm.rise(float(z), speed=DOWN_SPEED)
+
+    def chain(seq):                    # from where the joints were last sent, then the planned poses
+        return [{j: arm.goal[j] for j in ARM}] + [arm_only(p) for p in seq]
+
+    if touched or not grasp:
+        print(">> stopped on something before the grasp point: the jaws stay open" if touched else ">> --no-grasp")
+        wait("Enter to go back up and fold home ... ")
+        up_and_out(goal[2] + HOVER)
+        return touched, err
+
+    # close on it
+    if arm_is_sim(arm):
+        arm.sim(block={"gripper": (SIM_OBJECT, None)})            # a simulated object that stops the jaws
+    at = arm.grasp(rate=GRIP_RATE, squeeze=GRIP_SQUEEZE, empty=GRIP_EMPTY)
+    if at < GRIP_EMPTY:
+        print(f">> the jaws closed on nothing (stopped at {at:.0f} %): opening, back up and home")
+        arm.move_joints({"gripper": OPEN}, speed=60, check=False)
+        up_and_out(goal[2] + HOVER)
+        return touched, err
+    guard = (max(0.0, at - GRIP_SLIP), min(100.0, at + GRIP_SLIP))
+    print(f">> holding it: the jaws stopped at {at:.0f} % (it counts as slipping outside {guard[0]:.0f}-{guard[1]:.0f} %)")
+
+    # lift it straight back up the way the jaws came down, watching the grip
+    lift = [p for p in reversed(poses) if centre_of(arm.model, p)[2] <= goal[2] + LIFT + 1e-6]
+    try:
+        arm.follow(chain(lift), speed=DOWN_SPEED, lead=True, grip_range=guard, step="lift")
+        print(f">> lifted {100 * LIFT:.0f} cm")
+        wait("Holding it up. Enter to put it back down where it was ... ")
+        arm.follow(chain(reversed(lift)), speed=DOWN_SPEED, lead=True, press=PRESS, grip_range=guard,
+                   step="put down")
+    except GripLost as e:
+        print(f">> it slipped ({e}): opening the jaws where the arm stands")
         arm.pose = arm.model.pose(dict(arm.goal))
-    arm.rise(float(goal[2] + HOVER), speed=DOWN_SPEED)
+    if arm_is_sim(arm):
+        arm.sim(block={})
+    arm.move_joints({"gripper": OPEN}, speed=60, check=False)    # let go
+    print(">> let go: back up and home")
+    up_and_out(goal[2] + HOVER)
     return touched, err
+
+
+def arm_is_sim(arm):
+    return getattr(arm, "_sim", False)
+
+
+SIM_OBJECT = 25.0      # with --sim: where the simulated object stops the closing jaws (percent)
 
 
 def show(frame, dets, chosen, save_dir, wait=True):
@@ -294,6 +348,7 @@ def main():
     ap.add_argument("--sim", action="store_true", help="drive so101ik's simulated servos instead of the arm")
     ap.add_argument("--sim-floor", type=float, default=None,
                     help="with --sim: a surface at this height (m) the tip stops on, to try the contact stop")
+    ap.add_argument("--no-grasp", action="store_true", help="only go to the object; do not close the jaws")
     ap.add_argument("--hold", type=float, default=None, help="seconds at the object; default wait for Enter")
     ap.add_argument("--yes", action="store_true", help="do not ask before moving")
     args = ap.parse_args()
@@ -348,10 +403,12 @@ def main():
     print(f"Calibration: {cal}")
     with Arm(port="sim" if args.sim else None, calibration_file=cal if cal.is_file() else None, offsets=offsets,
              name="go_to_object") as arm:
+        arm._sim = args.sim
         if args.sim:
             arm.raw.sag = 0.0      # the simulated servos have no gravity, so no sag to make up for
         pitch, poses = plan(arm.model, goal)      # again with exactly the arm's calibration and offsets
-        go(arm, goal, pitch, poses, 0.5 if args.sim and args.hold is None else args.hold, args.sim_floor)
+        go(arm, goal, pitch, poses, 0.5 if args.sim and args.hold is None else args.hold, args.sim_floor,
+           grasp=not args.no_grasp)
     print("Done: folded home, torque off.")
 
 

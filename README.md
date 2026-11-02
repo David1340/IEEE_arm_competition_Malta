@@ -53,7 +53,9 @@ What it does:
    down. Every pose is checked against the joint ranges, the table and the arm's own parts.
 3. **Move**: unfold, go above the object, open the jaws to 50 % (6.8 cm between the jaw ends; the blocks are
    3 to 5.5 cm), then go straight down. The descent stops early if the tip is held up by something (a contact,
-   not a stall), or if a joint stalls. It waits for Enter, goes straight up, then folds home.
+   not a stall), or if a joint stalls. Then it closes the jaws until they stop on the object (holding it
+   2.5 % past that), lifts it 12 cm watching the grip (it stops if the object slips), waits for Enter, puts it
+   back down where it was, lets go, goes straight up and folds home. `--no-grasp` only goes to the object.
 
 Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the arm).
 
