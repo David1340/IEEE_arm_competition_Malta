@@ -57,6 +57,12 @@ What it does:
    2.5 % past that), lifts it 12 cm watching the grip (it stops if the object slips), waits for Enter, puts it
    back down where it was, lets go, goes straight up and folds home. `--no-grasp` only goes to the object.
 
+**Pick and place by clicking**: in the picture window, click an object to pick it (red ring) and click an empty
+spot on the table to put it there (purple cross; its position comes from the ZED point cloud under the click).
+`g` or Enter goes, `c` clears the place (the object is then put back where it was), `q` quits. Without a
+window: `--place X Y` (robot base frame, m). The object is carried from 12 cm above the pick spot to 12 cm above
+the place, every step checked and the grip watched, then lowered until it touches the table and let go.
+
 Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the arm).
 
 **Calibration**: the LeRobot file `~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json`

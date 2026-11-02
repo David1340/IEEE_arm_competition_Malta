@@ -87,6 +87,29 @@ def top_face_centre(cloud, mask, roi, camera_to_table, min_depth, max_depth, min
     return np.array([*top[:, :2].mean(axis=0), z_top])
 
 
+@dataclass
+class Scene:
+    """The last camera frame and its point cloud, to turn a clicked pixel into a place on the table."""
+    frame: np.ndarray                  # BGR image (None if there is none)
+    cloud: np.ndarray                  # H x W x 3, ZED camera frame (m)
+    camera_to_table: np.ndarray        # 4 x 4
+    transform: dict = None             # TABLE -> base (None: TABLE_TO_BASE)
+
+    def pixel_to_base(self, u, v, r=4):
+        """The table point (robot base frame, m) under pixel (u, v): the median of the valid point-cloud samples
+        within r pixels. None where the camera has no depth."""
+        h, w = self.cloud.shape[:2]
+        u, v = int(round(u)), int(round(v))
+        if not (0 <= u < w and 0 <= v < h):
+            return None
+        win = np.asarray(self.cloud[max(0, v - r):v + r + 1, max(0, u - r):u + r + 1, :3], float).reshape(-1, 3)
+        win = win[np.isfinite(win).all(axis=1)]
+        if len(win) < 5:
+            return None
+        c = np.median(win, axis=0)
+        return table_to_base(self.camera_to_table[:3, :3] @ c + self.camera_to_table[:3, 3], self.transform)
+
+
 def table_to_base(xyz, t=None):
     t = TABLE_TO_BASE if t is None else t
     a = math.radians(t["yaw_deg"])
@@ -128,18 +151,21 @@ def detect_from_case(case_dir, transform=None):
     dets = [Detection(name=d["class_name"], conf=d["confidence"], table_xyz=np.array(d["center_table_xyz_m"], float),
                       pixel=tuple(d["center_pixel_xy_full"]) if d.get("center_pixel_xy_full") else None)
             for d in meta["detections"] if d.get("center_table_xyz_m") is not None]
-    image = Path(case_dir) / meta.get("files", {}).get("image", "image.png")
+    files = meta.get("files", {})
+    image = Path(case_dir) / files.get("image", "image.png")
     frame = None
     if image.is_file():
         import cv2
         frame = cv2.imread(str(image))
-    return finish(dets, transform), frame
+    cloud = np.load(Path(case_dir) / files.get("point_cloud_xyzrgba", "point_cloud_xyzrgba.npy"), mmap_mode="r")
+    T = np.load(Path(case_dir) / files.get("camera_transform", "camera_transform.npy"))
+    return finish(dets, transform), Scene(frame, cloud, T, transform)
 
 
 def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, resolution="HD1080",
                 depth_mode="NEURAL", min_depth=0.10, max_depth=2.0, min_points=20, calibration=None, transform=None):
-    """Open the ZED, run YOLO on `frames` frames, return ([Detection], last BGR frame). The camera is closed
-    again before returning, so nothing else holds it while the arm moves."""
+    """Open the ZED, run YOLO on `frames` frames, return ([Detection], Scene of the last frame). The camera is
+    closed again before returning, so nothing else holds it while the arm moves."""
     import cv2
     import pyzed.sl as sl
     from ultralytics import YOLO
@@ -195,9 +221,10 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
                             centre = top
                         found.append(Detection(name=model.names[cls], conf=float(c), table_xyz=np.asarray(centre), pixel=pixel))
             per_frame.append(found)
+        scene = Scene(frame, np.array(cloud[:, :, :3], dtype=np.float32), camera_to_table, transform)
     finally:
         zed.close()
-    return finish(merge(per_frame, min_seen=max(1, frames // 2)), transform), frame
+    return finish(merge(per_frame, min_seen=max(1, frames // 2)), transform), scene
 
 
 if __name__ == "__main__":
