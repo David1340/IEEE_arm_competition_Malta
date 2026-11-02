@@ -59,7 +59,7 @@ What it does:
 
 **Pick and place by clicking**: in the picture window, click an object to pick it (red ring) and click an empty
 spot on the table to put it there (purple cross; its position comes from the ZED point cloud under the click).
-Click a **bin** to drop the object in it: the jaws' middle hovers over the bin's centre 11 cm above the table
+Click a **bin** to drop the object in it: the jaws' middle hovers over the bin's centre 15 cm above the table
 (`DROP_HEIGHT`; higher if the carried object would not clear the rim by 1.5 cm) and the jaws open. YOLO's masks
 are drawn on the picture. `g` or Enter goes, `c` clears the place (the object is then put back where it was), `q` quits. Without a
 window: `--place X Y` (robot base frame, m) or `--drop-in N` (bin N of the printed list). The object is carried from 12 cm above the pick spot to 12 cm above
@@ -102,7 +102,7 @@ or both (`"yellow cube"`):
 Every detection gets its colour from its YOLO mask with `yolo_dataset/block_color.py` (the HSV vote; blocks lying
 in a bin are left out of the bin's vote). Each cycle the arm is folded, the camera detects again (so bins or
 objects moved by a judge are found where they are now), the most confident object that the arm can reach and
-whose bin is seen and reachable is picked and dropped into its bin (11 cm over its centre), and the arm folds.
+whose bin is seen and reachable is picked and dropped into its bin (15 cm over its centre), and the arm folds.
 Objects already inside a bin are left; one that fails twice (slipped, jaws closed on nothing) is left too.
 The plan picture (masks in their detected colour, an arrow from each object to its bin) is saved in
 `outputs/sort_objects/`.

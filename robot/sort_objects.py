@@ -6,7 +6,7 @@ Each cycle, with the arm folded out of the way:
                    "shape": cube -> red, cylinder -> blue, dodecahedron -> green, hexagonal -> yellow)
     3. pick one    the most confident object whose bin is there and which the arm can reach (and its bin);
                    objects already inside a bin are left alone
-    4. move        go_to_object's pick and drop: down to it, close, lift, carry over the bin at 11 cm, open,
+    4. move        go_to_object's pick and drop: down to it, close, lift, carry over the bin at 15 cm, open,
                    fold home
 and again, until nothing is left to sort. Detecting again every cycle finds bins and objects where they are
 now (round 3 moves them). An object that fails twice (it slipped, the jaws closed on nothing) is left.

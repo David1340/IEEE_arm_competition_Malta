@@ -12,7 +12,7 @@
                    straight up -> fold home.  --no-grasp: only go to it
 
 In the picture window (YOLO's masks drawn on it): click an object to pick it, click the table to place it there,
-click a bin to drop it in (the jaws' middle hovers over the bin's centre at DROP_HEIGHT, 11 cm, higher if the
+click a bin to drop it in (the jaws' middle hovers over the bin's centre at DROP_HEIGHT, 15 cm, higher if the
 object would not clear the rim, and the jaws open); g = go, c = clear the place, q = quit. --drop-in N: bin N.
 
 The inverse kinematics and the servo driver are so101ik (github.com/LukeGrif/lerobot-so101-inverse-kinematics,
@@ -63,7 +63,7 @@ GRIP_RATE = 40.0       # percent/s the jaws close at, until they stop on the obj
 GRIP_SQUEEZE = 2.5     # percent the jaws are held past where they stopped: a firm hold, not a stall
 GRIP_EMPTY = 4.0       # jaws closing to under this percent: nothing in them
 GRIP_SLIP = 6.0        # percent the jaws may move while carrying before it counts as the object slipping
-DROP_HEIGHT = 0.11     # m: over a bin, the jaws' middle hovers this high above the table, then the jaws open
+DROP_HEIGHT = 0.15     # m: over a bin, the jaws' middle hovers this high above the table, then the jaws open
 DROP_CLEAR = 0.015     # m the carried object's bottom must clear the bin's rim by (else it hovers higher)
 LIFT = 0.12            # m the object is lifted (straight back up the way the jaws came down)
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
