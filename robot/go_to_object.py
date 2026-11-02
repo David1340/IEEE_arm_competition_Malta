@@ -24,9 +24,12 @@ Ctrl-C switches the torque off (hold the arm). A stall or overload stops the mov
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
+
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")   # as the other scripts: quiets Qt
 
 import numpy as np
 
@@ -43,6 +46,10 @@ SPEED = 40.0           # deg/s peak, the moves in joint space (unfold, to the ho
 DOWN_SPEED = 0.03      # m/s peak, the vertical descent and the rise
 PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-90 = pointing straight down)
 # --------------------------------------------------------------------------------------------------------
+
+# The follower's LeRobot calibration (there are several files in that folder). SO101_CALIBRATION or
+# --calibration override it.
+CALIBRATION = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json"
 
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 
@@ -179,9 +186,11 @@ def main():
     ap.add_argument("--weights", help="YOLO weights; default the newest runs/segment/*/weights/best.pt")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--serial", type=int)
-    ap.add_argument("--depth-mode", default="QUALITY", choices=["QUALITY", "ULTRA", "NEURAL"])
+    ap.add_argument("--depth-mode", default="NEURAL", choices=["QUALITY", "ULTRA", "NEURAL"])
     ap.add_argument("--base-offset", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW"),
                     help="TABLE -> robot base frame: m, m, m, degrees (default detect.TABLE_TO_BASE)")
+    ap.add_argument("--calibration", default=os.environ.get("SO101_CALIBRATION") or str(CALIBRATION),
+                    help=f"the arm's LeRobot calibration file (default {CALIBRATION.name})")
     ap.add_argument("--dry", action="store_true", help="detect and plan only; the arm does not move")
     ap.add_argument("--sim", action="store_true", help="drive so101ik's simulated servos instead of the arm")
     ap.add_argument("--sim-floor", type=float, default=None,
@@ -207,7 +216,10 @@ def main():
         print(f"  {i:2d}. {d}")
 
     # 2-3. pick and plan, with the arm's own calibration when there is one (offline: the one compiled in).
-    model = Model()
+    cal = Path(args.calibration).expanduser()
+    if not (args.sim or args.dry) and not cal.is_file():
+        raise SystemExit(f"Calibration file not found: {cal}; pass --calibration")
+    model = Model(calibration_file=cal) if cal.is_file() else Model()
     pick = choose(dets, model, args.target, args.index)
     if pick is None:
         raise SystemExit("No reachable object" + (f" of class {args.target!r}" if args.target else "")
@@ -226,7 +238,9 @@ def main():
                 return
         elif input("Move the arm? [y/N] ").strip().lower() != "y":
             return
-    with Arm(port="sim" if args.sim else None, name="go_to_object") as arm:
+    print(f"Calibration: {cal}")
+    with Arm(port="sim" if args.sim else None, calibration_file=cal if cal.is_file() else None,
+             name="go_to_object") as arm:
         if args.sim:
             arm.raw.sag = 0.0      # the simulated servos have no gravity, so no sag to make up for
         pitch, poses = plan(arm.model, goal)      # again with exactly the arm's calibration and offsets

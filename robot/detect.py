@@ -16,11 +16,14 @@ origin under the shoulder pan axis.
 
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")
 
 ROOT = Path(__file__).resolve().parent.parent
 YOLO_DIR = ROOT / "yolo_dataset"
@@ -98,7 +101,7 @@ def detect_from_case(case_dir, transform=None):
 
 
 def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, resolution="HD1080",
-                depth_mode="QUALITY", min_depth=0.10, max_depth=2.0, min_points=20, calibration=None, transform=None):
+                depth_mode="NEURAL", min_depth=0.10, max_depth=2.0, min_points=20, calibration=None, transform=None):
     """Open the ZED, run YOLO on `frames` frames, return ([Detection], last BGR frame). The camera is closed
     again before returning, so nothing else holds it while the arm moves."""
     import cv2
