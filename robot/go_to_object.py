@@ -45,16 +45,20 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import detect  # noqa: E402
+import gripper  # noqa: E402
 
 # ---- change these --------------------------------------------------------------------------------------
 HOVER = 0.12           # m above the grasp point the arm stops first and opens the jaws (an opening jaw swings
                        # several cm down when the gripper is tilted), before going straight down
-GRASP_DEPTH = 0.015    # m below the object's measured top surface the middle of the jaws goes
-MIN_GRASP_Z = 0.03     # m: never aim the middle of the jaws lower than this above the table (z = 0); the
-                       # fixed finger's tip is lower than the middle when the gripper is tilted
+GRASP_DEPTH = 0.015    # m below the object's top the middle of the jaws goes
+MIN_GRASP_Z = 0.015    # m: the middle of the jaws never lower than this above the table
+TIP_MIN = 0.012        # m: the fixed finger's tip never lower than this above the table: the object sits less deep
+                       # in the jaws when the gripper is steep (near the base), so the tip does not hit the table
 PRESS = 0.008          # m: on the way down, stop when the tip is held this far above where it should be
-OPEN = 50.0            # gripper opening (0 closed .. 100 open) before going down: 50 = 6.8 cm between the jaw
-                       # ends (the blocks are 3 to 5.5 cm); wider swings the moving jaw back from the tip
+JAW_DEPTH = 0.025      # m: the object sits this far in from the finger ends when the gripper is not steep
+JAW_MARGIN = 0.008     # m of room each side between the object and the jaws as they come down
+OPEN_MIN, OPEN_MAX = 15.0, 60.0   # % the jaws open to: just wider than the object across the jaws, within this
+DEFAULT_WIDTH = {"cube": 0.057, "cylinder": 0.040, "dodecahedron": 0.055, "hexagonal": 0.047}  # m, without a fit
 GRIP_RATE = 40.0       # percent/s the jaws close at, until they stop on the object
 GRIP_SQUEEZE = 2.5     # percent the jaws are held past where they stopped: a firm hold, not a stall
 GRIP_EMPTY = 4.0       # jaws closing to under this percent: nothing in them
@@ -63,10 +67,10 @@ DROP_HEIGHT = 0.11     # m: over a bin, the jaws' middle hovers this high above 
 DROP_CLEAR = 0.015     # m the carried object's bottom must clear the bin's rim by (else it hovers higher)
 LIFT = 0.12            # m the object is lifted (straight back up the way the jaws came down)
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
-# Where the object goes, in so101ik's tip frame (the tip = the fixed jaw's grasp point; x towards the moving jaw
-# is negative, z along the fingers): halfway between the jaws at OPEN = 50 (6.7 cm gap there), 2.5 cm back from
-# the jaw ends, so the object sits well inside the gripper, nearer the palm.
+# Where the object goes without a plan's own (check_calibration, defaults): so101ik's tip frame (the tip = the fixed
+# jaw's grasp point; x towards the moving jaw is negative, z along the fingers): the middle of the jaws at 50 %.
 JAW_CENTRE = np.array([-0.030, 0.0, -0.025])
+OPEN = 50.0
 SPEED = 20.0           # deg/s peak, the moves in joint space (unfold, to the hover point)
 DOWN_SPEED = 0.03      # m/s peak, the vertical descent and the rise
 PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-90 = pointing straight down)
@@ -92,56 +96,97 @@ def fine_offsets(path):
 
 
 def grasp_point(d):
-    """Where the middle of the jaws goes: the object's x, y, GRASP_DEPTH below its measured top (the mask's mean
-    height), not below MIN_GRASP_Z. The ZED reads dark objects too flat, so the floor matters."""
-    x, y, z_top = d.base_xyz
-    return np.array([x, y, max(z_top - GRASP_DEPTH, MIN_GRASP_Z)])
+    """Where the middle of the jaws goes: the object's centre, GRASP_DEPTH below its top, at least MIN_GRASP_Z above
+    the table. With a shape fit (robot/shape_fit.py) the centre and the top are the fitted STL's (true height,
+    on the table under it, or z = 0 if that is higher); without one the camera's (dark objects read too flat)."""
+    if d.fit is not None:
+        table = max(d.fit.table_z, 0.0)
+        x, y = d.fit.centre[:2]
+        top = table + d.fit.height
+    else:
+        table = 0.0
+        x, y, top = d.base_xyz
+    return np.array([x, y, max(top - GRASP_DEPTH, table + MIN_GRASP_Z)])
 
 
-def centre_of(model, pose):
-    """Where the middle of the open jaws is (m, base frame) for a pose."""
+def width_across(d):
+    """How wide the object is across the jaws (m): the jaws close across the direction the arm reaches in (roll
+    -90), so across the line from the base to the object. From the fitted outline, else the class's largest."""
+    x, y = (d.fit.centre if d.fit is not None else d.base_xyz)[:2]
+    across = np.array([-y, x]) / max(np.hypot(x, y), 1e-6)
+    if d.fit is not None:
+        return d.fit.width_across(across)
+    return DEFAULT_WIDTH.get(d.name, 0.055)
+
+
+class Poses(list):
+    """A planned chain of so101ik Poses, with the gripper opening (%) and the jaw centre (tip frame) it uses."""
+    grip = OPEN
+    centre = JAW_CENTRE
+
+
+def centre_of(model, pose, centre=None):
+    """Where the middle of the open jaws is (m, base frame) for a pose (centre: tip frame, default JAW_CENTRE)."""
     T = model.frames(pose.deg)["gripper_frame_link"]
-    return T[:3, :3] @ JAW_CENTRE + T[:3, 3]
+    return T[:3, :3] @ (JAW_CENTRE if centre is None else centre) + T[:3, 3]
 
 
-def ik_centre(model, c, pitch, near=None):
-    """The pose (roll ROLL, gripper OPEN) that puts the middle of the jaws at c: the tip aimed at c minus the
-    jaw-centre offset, three rounds since the offset turns with the pose. pitch None: the least-loaded pose, or
+def ik_centre(model, c, pitch, near=None, grip=OPEN, centre=None):
+    """The pose (roll ROLL, gripper grip) that puts the middle of the jaws (centre, tip frame) at c: the tip aimed at
+    c minus the offset, three rounds since the offset turns with the pose. pitch None: the least-loaded pose, or
     with near the next one along a path (its roll and gripper kept)."""
     c = np.asarray(c, float)
     tip = c.copy()
     for _ in range(3):
         if pitch is not None:
-            pose = model.ik(*tip, pitch=pitch, roll=ROLL, gripper=OPEN)
+            pose = model.ik(*tip, pitch=pitch, roll=ROLL, gripper=grip)
         elif near is not None:
             pose = model.ik(*tip, near=near)
         else:
-            pose = model.ik(*tip, roll=ROLL, gripper=OPEN)
-        tip = tip + (c - centre_of(model, pose))
+            pose = model.ik(*tip, roll=ROLL, gripper=grip)
+        tip = tip + (c - centre_of(model, pose, centre))
     return pose
 
 
-def plan(model, goal, hover=HOVER, step=0.004):
-    """(pitch, [Pose]) from goal + hover straight down to goal, one pose every `step` m, all at one pitch so the
-    gripper keeps its angle on the way down. Steepest pitch first; None (the least-loaded pose at every point)
-    last. Raises so101ik.Unreachable when nothing works."""
+def depth_for(z, pitch):
+    """How far in from the finger ends the object can sit (m) with the jaws' middle at height z and the gripper at
+    pitch, so the fixed finger's tip stays TIP_MIN above the table: JAW_DEPTH, less when the gripper is steep."""
+    s = np.sin(np.radians(abs(pitch if pitch is not None else 45.0)))
+    return float(np.clip((z - TIP_MIN) / max(s, 0.2), 0.005, JAW_DEPTH))
+
+
+def plan(model, goal, hover=HOVER, step=0.004, width=None, like=None):
+    """(pitch, Poses) from goal + hover straight down to goal, one pose every `step` m, all at one pitch so the
+    gripper keeps its angle on the way down; the middle of the jaws on the goal. Steepest pitch first; None (the
+    least-loaded pose at every point) last. The opening and the jaw centre: like's (a carried object stays where
+    it is in the jaws), else from the object's width across the jaws (just wider, at the depth this pitch allows).
+    Raises so101ik.Unreachable when nothing works."""
     from so101ik import Unreachable
 
     x, y, zg = goal
     zs = list(np.arange(zg + hover, zg, -step)) + [zg]
     for pitch in PITCHES + [None]:
+        if like is not None:
+            grip, centre = like.grip, like.centre
+        else:
+            depth = depth_for(zg, pitch)
+            grip, _ = gripper.opening_for(width if width is not None else 0.055, depth, JAW_MARGIN, OPEN_MIN, OPEN_MAX)
+            centre = gripper.centre(grip, depth)
         try:
-            poses, prev = [], None
+            poses, prev = Poses(), None
             for z in zs:
-                prev = ik_centre(model, (x, y, z), pitch, near=prev if pitch is None else None)
+                prev = ik_centre(model, (x, y, z), pitch, near=prev if pitch is None else None, grip=grip, centre=centre)
                 poses.append(prev)
         except Unreachable:
             continue
-        if np.linalg.norm(centre_of(model, poses[-1]) - goal) > 0.002:
+        if np.linalg.norm(centre_of(model, poses[-1], centre) - goal) > 0.002:
+            continue
+        if poses[-1].tip[2] < TIP_MIN - 0.002:
             continue
         # follow() wants neighbours within 3 degrees of each other: a jump means the IK flipped branch.
         jumps = [max(abs(a.deg[j] - b.deg[j]) for j in ARM) for a, b in zip(poses, poses[1:])]
         if max(jumps, default=0) < 2.5:
+            poses.grip, poses.centre = grip, centre
             return pitch, poses
     raise Unreachable(f"no pose reaches {100 * x:.1f} {100 * y:.1f} {100 * zg:.1f} cm from {100 * hover:.0f} cm above")
 
@@ -167,11 +212,8 @@ def choose(dets, model, target=None, index=None):
         elif index is None and target is not None and d.name != target:
             d.status = "not --target"
         else:
-            try:
-                d.plan = (grasp_point(d), *plan(model, grasp_point(d)))
-                d.status = "reachable"
-            except Unreachable:
-                d.status = "out of reach"
+            d.plan = None
+            plan_pick(d, model)
         if pick is None and d.plan is not None:
             pick = d
     return pick
@@ -182,8 +224,9 @@ def plan_pick(d, model):
     from so101ik import Unreachable
 
     if d.plan is None:
+        d.width = width_across(d)
         try:
-            d.plan = (grasp_point(d), *plan(model, grasp_point(d)))
+            d.plan = (grasp_point(d), *plan(model, grasp_point(d), width=d.width))
             d.status = "reachable"
         except Unreachable:
             d.status = "out of reach"
@@ -208,20 +251,20 @@ class Place:
         return what + (f" ({self.note})" if self.note else "")
 
 
-def plan_place(model, xy, grasp_z):
+def plan_place(model, xy, grasp_z, like=None):
     """Put down on the table: the jaws' middle at (x, y) and the height it was picked at, so the object's bottom
     comes back to the table. A Place (from HOVER above), or None if out of reach."""
     from so101ik import Unreachable
 
     goal = np.array([xy[0], xy[1], grasp_z])
     try:
-        pitch, poses = plan(model, goal)
+        pitch, poses = plan(model, goal, like=like)
     except Unreachable:
         return None
     return Place("table", goal, pitch, poses)
 
 
-def plan_drop(model, b, grasp_z):
+def plan_drop(model, b, grasp_z, like=None):
     """Drop into bin b: the jaws' middle over its centre at DROP_HEIGHT, or higher if the carried object's bottom
     (grasp_z below the jaws' middle) would not clear the bin's rim (its measured top) by DROP_CLEAR."""
     from so101ik import Unreachable
@@ -231,22 +274,24 @@ def plan_drop(model, b, grasp_z):
     z = max(DROP_HEIGHT, need)
     note = f"raised from {100 * DROP_HEIGHT:.0f} cm to clear the rim at {100 * rim:.1f} cm" if need > DROP_HEIGHT else ""
     try:
-        pitch, poses = plan(model, np.array([x, y, z]), hover=0.0)
+        pitch, poses = plan(model, np.array([x, y, z]), hover=0.0, like=like)
     except Unreachable:
         return None
     return Place("bin", np.array([x, y, z]), pitch, poses, bin=b, note=note)
 
 
-def replan(model, place, grasp_z):
-    """The same Place again with another model (the arm's own) or another object's grasp height."""
+def replan(model, place, grasp_z, like=None):
+    """The same Place again with another model (the arm's own) or another object (its grasp height and its plan,
+    like, for the opening and where it sits in the jaws)."""
     if place is None:
         return None
+    like = like if like is not None else place.poses
     if place.kind == "bin":
-        return plan_drop(model, place.bin, grasp_z)
-    return plan_place(model, place.goal[:2], grasp_z)
+        return plan_drop(model, place.bin, grasp_z, like)
+    return plan_place(model, place.goal[:2], grasp_z, like)
 
 
-def carry_chain(arm, target):
+def carry_chain(arm, target, target_centre=None):
     """Joint-space steps (under 2 degrees) from where the arm was last sent to `target`, every one checked: no
     problem (ranges, table, the arm itself) and the jaws' middle at least 5 cm up. None if a step fails."""
     start = {j: arm.goal[j] for j in ARM}
@@ -255,7 +300,7 @@ def carry_chain(arm, target):
     steps = [{j: start[j] + (end[j] - start[j]) * k / n for j in ARM} for k in range(n + 1)]
     for q in steps:
         pose = arm.model.pose(dict(q, gripper=arm.goal["gripper"]))
-        if arm.model.problems(pose) or centre_of(arm.model, pose)[2] < 0.05:
+        if arm.model.problems(pose) or centre_of(arm.model, pose, target_centre)[2] < 0.05:
             return None
     return steps
 
@@ -280,17 +325,18 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
     def measured():
         deg = arm.read()[0]
         pose = arm.model.pose(deg)
-        return pose.tip, centre_of(arm.model, pose)
+        return pose.tip, centre_of(arm.model, pose, poses.centre)
 
-    c0 = centre_of(arm.model, poses[0])
+    c0 = centre_of(arm.model, poses[0], poses.centre)
     print(f"\n>> to the hover point: jaws' middle {100 * c0[2]:.1f} cm above the table (tip {100 * poses[0].tip[2]:.1f}),"
           f" pitch {poses[0].pitch:.0f}, roll {ROLL:.0f}")
     arm.move_joints(arm_only(poses[0]), speed=SPEED)              # unfolds from the rest pose first
     settle_to(arm, poses[0])                                      # the joints onto it, not a few degrees short
     tip, c = measured()
     print(f">> at the hover point (from the servos: jaws' middle {100 * c[2]:.1f} cm, tip {100 * tip[2]:.1f} cm up);"
-          f" opening the jaws to {OPEN:.0f}")
-    arm.move_joints({"gripper": OPEN}, speed=60, check=False)
+          f" opening the jaws to {poses.grip:.0f} % ({100 * gripper.gap(poses.grip, -poses.centre[2]):.1f} cm), "
+          f"the object {100 * -poses.centre[2]:.1f} cm in from the finger ends")
+    arm.move_joints({"gripper": poses.grip}, speed=60, check=False)
     print(f">> going down: jaws' middle to {100 * goal[2]:.1f} cm")
     if sim_floor is not None:
         arm.sim(floor=sim_floor)
@@ -330,18 +376,18 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
 
     # close on it
     if arm_is_sim(arm):
-        arm.sim(block={"gripper": (SIM_OBJECT, None)})            # a simulated object that stops the jaws
+        arm.sim(block={"gripper": (max(2.0, poses.grip - SIM_OBJECT), None)})   # a simulated object stops the jaws
     at = arm.grasp(rate=GRIP_RATE, squeeze=GRIP_SQUEEZE, empty=GRIP_EMPTY)
     if at < GRIP_EMPTY:
         print(f">> the jaws closed on nothing (stopped at {at:.0f} %): opening, back up and home")
-        arm.move_joints({"gripper": OPEN}, speed=60, check=False)
+        arm.move_joints({"gripper": poses.grip}, speed=60, check=False)
         up_and_out(goal[2] + HOVER)
         return "empty"
     guard = (max(0.0, at - GRIP_SLIP), min(100.0, at + GRIP_SLIP))
     print(f">> holding it: the jaws stopped at {at:.0f} % (it counts as slipping outside {guard[0]:.0f}-{guard[1]:.0f} %)")
 
     # lift it straight back up the way the jaws came down, watching the grip
-    lift = [p for p in reversed(poses) if centre_of(arm.model, p)[2] <= goal[2] + LIFT + 1e-6]
+    lift = [p for p in reversed(poses) if centre_of(arm.model, p, poses.centre)[2] <= goal[2] + LIFT + 1e-6]
     try:
         arm.follow(chain(lift), speed=DOWN_SPEED, lead=True, grip_range=guard, step="lift")
         print(f">> lifted {100 * LIFT:.0f} cm")
@@ -351,7 +397,7 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
                        step="put down")
         else:
             print(f">> carrying it: {place}")
-            steps = carry_chain(arm, place.poses[0])
+            steps = carry_chain(arm, place.poses[0], place.poses.centre)
             if steps is not None:
                 big = max(abs(steps[-1][j] - steps[0][j]) for j in ARM)
                 arm.follow(steps, duration=max(1.5, 1.875 * big / SPEED), lead=True, grip_range=guard, step="carry")
@@ -373,7 +419,7 @@ def go(arm, goal, pitch, poses, hold, sim_floor=None, grasp=True, place=None):
         status = "slipped"
     if arm_is_sim(arm):
         arm.sim(block={})
-    arm.move_joints({"gripper": OPEN}, speed=60, check=False)    # let go
+    arm.move_joints({"gripper": poses.grip}, speed=60, check=False)    # let go
     print(">> let go: back up and home")
     up_and_out(goal[2] + HOVER)
     return status
@@ -383,7 +429,7 @@ def arm_is_sim(arm):
     return getattr(arm, "_sim", False)
 
 
-SIM_OBJECT = 25.0      # with --sim: where the simulated object stops the closing jaws (percent)
+SIM_OBJECT = 12.0      # with --sim: the simulated object stops the closing jaws this many % below the opening
 
 
 def reach_outline(scene, model, z=0.04, step=12):
@@ -470,7 +516,8 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
             if d is ch:
                 cv2.circle(img, px, 28, c, 4)
             x, y, z = d.base_xyz
-            label(img, f"{i}. {d.name} {d.conf:.2f}" + ("  <- PICK" if d is ch else f"  ({d.status})"),
+            size = f"{d.fit.size} " if d.fit is not None else ""
+            label(img, f"{i}. {size}{d.name} {d.conf:.2f}" + ("  <- PICK" if d is ch else f"  ({d.status})"),
                   (px[0] + 14, px[1] - 6), c)
             label(img, f"x {x:+.3f} y {y:+.3f} z {z:+.3f}", (px[0] + 14, px[1] + 18), c)
         if state["place_px"] is not None and pl is not None:
@@ -519,7 +566,7 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
             else:
                 state["chosen"] = d
                 if state["place"] is not None:          # the same place, at this object's grasp height
-                    state["place"] = replan(model, state["place"], d.plan[0][2])
+                    state["place"] = replan(model, state["place"], d.plan[0][2], like=d.plan[2])
                     if state["place"] is None:
                         state.update(place_px=None, msg="the place is out of reach for this object: click again")
         elif state["chosen"] is None:
@@ -527,7 +574,7 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
         elif bins:                     # a bin: drop it in
             b = bins[0]
             x, y, _ = b.base_xyz
-            set_place(plan_drop(model, b, state["chosen"].plan[0][2]), tuple(map(int, b.pixel)),
+            set_place(plan_drop(model, b, state["chosen"].plan[0][2], state["chosen"].plan[2]), tuple(map(int, b.pixel)),
                       f"x {x:+.3f} y {y:+.3f}", f"the arm cannot reach over bin {dets.index(b)}")
         elif hit:
             state["msg"] = f"that is the {hit[0].name}: click an object, a bin or the table"
@@ -538,7 +585,7 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
             elif xyz[2] > 0.025:
                 state["msg"] = f"that is not the table ({100 * xyz[2]:.1f} cm up): click an empty spot"
             else:
-                set_place(plan_place(model, xyz[:2], state["chosen"].plan[0][2]), (u, v),
+                set_place(plan_place(model, xyz[:2], state["chosen"].plan[0][2], state["chosen"].plan[2]), (u, v),
                           f"x {xyz[0]:+.3f} y {xyz[1]:+.3f}",
                           f"the arm cannot put it down at x {xyz[0]:+.3f} y {xyz[1]:+.3f}: click closer")
         print(f"  {state['msg']}" if state["msg"] else f"  pick: {state['chosen'].name if state['chosen'] else '-'}"
@@ -643,14 +690,14 @@ def main():
         print(f"  {i:2d}. {x.name:<14} {x.status}")
     place = None
     if args.place and d is not None:
-        place = plan_place(model, args.place, d.plan[0][2])
+        place = plan_place(model, args.place, d.plan[0][2], d.plan[2])
         if place is None:
             raise SystemExit(f"The arm cannot put it down at {args.place}")
     if args.drop_in is not None and d is not None:
         b = dets[args.drop_in]
         if b.name != "bin":
             raise SystemExit(f"--drop-in {args.drop_in} is a {b.name}, not a bin")
-        place = plan_drop(model, b, d.plan[0][2])
+        place = plan_drop(model, b, d.plan[0][2], d.plan[2])
         if place is None:
             raise SystemExit(f"The arm cannot reach over bin {args.drop_in}")
     go_ok = True
@@ -685,9 +732,9 @@ def main():
         arm._sim = args.sim
         if args.sim:
             arm.raw.sag = 0.0      # the simulated servos have no gravity, so no sag to make up for
-        pitch, poses = plan(arm.model, goal)      # again with exactly the arm's calibration and offsets
+        pitch, poses = plan(arm.model, goal, width=d.width)    # again with exactly the arm's calibration and offsets
         if place is not None:
-            place = replan(arm.model, place, goal[2])
+            place = replan(arm.model, place, goal[2], like=poses)
         go(arm, goal, pitch, poses, 0.5 if args.sim and args.hold is None else args.hold, args.sim_floor,
            grasp=not args.no_grasp, place=place)
     print("Done: folded home, torque off.")

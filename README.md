@@ -65,6 +65,13 @@ are drawn on the picture. `g` or Enter goes, `c` clears the place (the object is
 window: `--place X Y` (robot base frame, m) or `--drop-in N` (bin N of the printed list). The object is carried from 12 cm above the pick spot to 12 cm above
 the place, every step checked and the grip watched, then lowered until it touches the table and let go.
 
+**Size, height and opening**: every object's official STL is fitted to its YOLO mask
+(`robot/shape_fit.py`, the render-and-compare fit from `point_cloud_matching/silhouette.py`): small or large,
+yaw, and its true height (the ZED reads dark objects too flat). The jaws open just wider than the object is
+*across the jaws* (`JAW_MARGIN`, 8 mm each side; from the gripper's meshes, `robot/gripper.py`), not to a fixed
+50 %. Near the base the gripper comes down steeply, so the object then sits less deep in the jaws, keeping the
+fixed finger's tip `TIP_MIN` (1.2 cm) above the table: it used to touch the table there and stop.
+
 Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the arm).
 
 **Calibration**: the LeRobot file `~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json`

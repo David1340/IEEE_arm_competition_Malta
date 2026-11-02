@@ -61,11 +61,16 @@ class Detection:
     polygon: np.ndarray = None     # YOLO's mask outline in the full image (N x 2 pixels), for drawing and clicks
     colour: str = "unknown"        # red / yellow / green / blue, from yolo_dataset/block_color.py (HSV vote)
     colour_conf: float = 0.0       # the winning colour's share of the vote
+    fit: object = None             # shape_fit.Fit: size, true height, outline (the STL fitted to the mask), or None
+    plan: tuple = None             # go_to_object: (goal, pitch, Poses) to pick it, once planned
+    width: float = None            # go_to_object: how wide it is across the jaws (m)
+    status: str = ""               # go_to_object: reachable / out of reach / ...
     samples: list = field(default_factory=list, repr=False)
 
     def __str__(self):
         x, y, z = self.base_xyz
-        return (f"{self.colour:>7} {self.name:<13} conf {self.conf:.2f}  base x {x:+.3f} y {y:+.3f} z {z:+.3f} m"
+        size = f"{self.fit.size} " if self.fit is not None else ""
+        return (f"{self.colour:>7} {size + self.name:<19} conf {self.conf:.2f}  base x {x:+.3f} y {y:+.3f} z {z:+.3f} m"
                 f"  (seen {self.seen}x, spread {self.spread_mm:.1f} mm)")
 
 
@@ -151,6 +156,16 @@ def add_colours(frame, dets):
     return dets
 
 
+def add_fits(scene, dets):
+    """The STL silhouette fit for each object (robot/shape_fit.py); skipped with a note if it cannot run."""
+    try:
+        import shape_fit
+        shape_fit.fit_all(scene, dets, table_to_base_many)
+    except Exception as e:          # e.g. scipy missing: the rest works without the fits
+        print(f"(shape fit skipped: {type(e).__name__}: {e})")
+    return dets
+
+
 def table_to_base_many(xyz, t=None):
     """table_to_base for an array of points (..., 3)."""
     t = TABLE_TO_BASE if t is None else t
@@ -211,7 +226,8 @@ def detect_from_case(case_dir, transform=None):
         frame = cv2.imread(str(image))
     cloud = np.load(Path(case_dir) / files.get("point_cloud_xyzrgba", "point_cloud_xyzrgba.npy"), mmap_mode="r")
     T = np.load(Path(case_dir) / files.get("camera_transform", "camera_transform.npy"))
-    return add_colours(frame, finish(dets, transform)), Scene(frame, cloud, T, transform)
+    scene = Scene(frame, cloud, T, transform)
+    return add_fits(scene, add_colours(frame, finish(dets, transform))), scene
 
 
 def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, resolution="HD1080",
@@ -277,7 +293,8 @@ def detect_live(frames=15, weights=None, conf=0.25, serial=None, camera_id=0, re
         scene = Scene(frame, np.array(cloud[:, :, :3], dtype=np.float32), camera_to_table, transform)
     finally:
         zed.close()
-    return add_colours(scene.frame, finish(merge(per_frame, min_seen=max(1, frames // 2)), transform)), scene
+    dets = add_colours(scene.frame, finish(merge(per_frame, min_seen=max(1, frames // 2)), transform))
+    return add_fits(scene, dets), scene
 
 
 if __name__ == "__main__":

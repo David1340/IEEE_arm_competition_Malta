@@ -122,7 +122,7 @@ def plan_tasks(dets, model, rules):
         if t.pick is None:
             t.status = "out of reach"
             continue
-        t.drop = g.plan_drop(model, t.bin, t.pick[0][2])
+        t.drop = g.plan_drop(model, t.bin, t.pick[0][2], like=t.pick[2])
         if t.drop is None:
             t.status = f"the {t.bin_colour} bin is out of reach"
             continue
@@ -165,7 +165,9 @@ def draw_plan(scene, dets, tasks, path, head, model=None):
         if t.ok:
             c = (0, 0, 255) if n == 0 else (255, 255, 255)
             cv2.arrowedLine(img, px, tuple(map(int, t.bin.pixel)), c, 4 if n == 0 else 2, tipLength=0.03)
-            label(f"{d.colour} {d.name} -> {t.bin_colour} bin" + ("  (NEXT)" if n == 0 else ""), (px[0] + 12, px[1] - 8), c)
+            size = f"{d.fit.size} " if d.fit is not None else ""
+            label(f"{d.colour} {size}{d.name} -> {t.bin_colour} bin" + ("  (NEXT)" if n == 0 else ""),
+                  (px[0] + 12, px[1] - 8), c)
         else:
             label(f"{d.colour} {d.name}: {t.status}", (px[0] + 12, px[1] - 8), (0, 140, 255))
     label(head, (20, 45), (255, 255, 255), 1.0)
@@ -282,8 +284,8 @@ def main():
             if args.sim:
                 arm.raw.sag = 0.0
             goal = t.pick[0]
-            pitch, poses = g.plan(arm.model, goal)
-            drop = g.replan(arm.model, t.drop, goal[2])
+            pitch, poses = g.plan(arm.model, goal, width=t.obj.width)
+            drop = g.replan(arm.model, t.drop, goal[2], like=poses)
             status = g.go(arm, goal, pitch, poses, hold=0.0, place=drop)
         print(f"<<< {status}")
         if status == "placed":
