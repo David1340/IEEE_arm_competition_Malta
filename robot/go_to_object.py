@@ -29,7 +29,9 @@ import sys
 import time
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")   # as the other scripts: quiets Qt
+for _fonts in ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/truetype", "/usr/share/fonts"):
+    if os.path.isdir(_fonts) and not os.path.isdir(os.environ.get("QT_QPA_FONTDIR", "")):
+        os.environ["QT_QPA_FONTDIR"] = _fonts      # OpenCV's Qt has no fonts of its own: stops its warnings
 
 import numpy as np
 
@@ -205,19 +207,29 @@ def show(frame, dets, chosen, save_dir, wait=True):
     print(f"Picture: {path}")
     if not wait:
         return False
+    win = "go_to_object"
     try:
-        cv2.namedWindow("go_to_object", cv2.WINDOW_NORMAL)
-        cv2.imshow("go_to_object", img)
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        cv2.imshow(win, img)
     except cv2.error:                  # no display: ask in the terminal instead
         return chosen is not None and input("Move the arm? [y/N] ").strip().lower() == "y"
-    while True:
-        k = cv2.waitKey(0) & 0xFF
-        if chosen is None or k in (ord("q"), 27):
-            cv2.destroyAllWindows()
-            return False
-        if k in (ord("g"), 13, 10):
-            cv2.destroyAllWindows()
-            return True
+    print("Picture window: click on it, then " + ("g or Enter = go, q or Esc = quit" if chosen else "any key closes it")
+          + " (closing the window or Ctrl-C here also quits)")
+    try:
+        while True:
+            k = cv2.waitKey(100)       # short waits, so Ctrl-C gets through
+            if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                return False
+            if k == -1:
+                continue
+            k &= 0xFF
+            if chosen is not None and k in (ord("g"), 13, 10):
+                return True
+            if chosen is None or k in (ord("q"), 27):
+                return False
+    finally:
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
 
 
 def main():

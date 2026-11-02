@@ -23,7 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
-os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")
+for _fonts in ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/truetype", "/usr/share/fonts"):
+    if os.path.isdir(_fonts) and not os.path.isdir(os.environ.get("QT_QPA_FONTDIR", "")):
+        os.environ["QT_QPA_FONTDIR"] = _fonts      # OpenCV's Qt has no fonts of its own: stops its warnings
 
 ROOT = Path(__file__).resolve().parent.parent
 YOLO_DIR = ROOT / "yolo_dataset"
