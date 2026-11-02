@@ -151,6 +151,14 @@ def add_colours(frame, dets):
     return dets
 
 
+def table_to_base_many(xyz, t=None):
+    """table_to_base for an array of points (..., 3)."""
+    t = TABLE_TO_BASE if t is None else t
+    a = math.radians(t["yaw_deg"])
+    rz = np.array([[math.cos(a), -math.sin(a), 0], [math.sin(a), math.cos(a), 0], [0, 0, 1]])
+    return np.asarray(xyz, float) @ rz.T + np.array([t["x"], t["y"], t["z"]])
+
+
 def table_to_base(xyz, t=None):
     t = TABLE_TO_BASE if t is None else t
     a = math.radians(t["yaw_deg"])

@@ -386,6 +386,49 @@ def arm_is_sim(arm):
 SIM_OBJECT = 25.0      # with --sim: where the simulated object stops the closing jaws (percent)
 
 
+def reach_outline(scene, model, z=0.04, step=12):
+    """The outline (OpenCV contours, image pixels) of the table area the jaws can reach at height z, wrist roll
+    ROLL: every step-th pixel's table point (point cloud -> base frame) tried with the IK. Roughly where
+    objects can be picked and bins reached; the exact answer is each object's own plan."""
+    import cv2
+    from so101ik import Unreachable
+
+    h, w = scene.cloud.shape[:2]
+    vs, us = np.arange(step // 2, h, step), np.arange(step // 2, w, step)
+    pts = np.asarray(scene.cloud[np.ix_(vs, us)], float)[..., :3]
+    ok = np.isfinite(pts).all(axis=-1)
+    T = scene.camera_to_table
+    base = detect.table_to_base_many(pts @ T[:3, :3].T + T[:3, 3], scene.transform)
+    reach = np.zeros(ok.shape, np.uint8)
+    for i, j in zip(*np.nonzero(ok)):
+        x, y, _ = base[i, j]
+        if not 0.08 < np.hypot(x, y) < 0.6:
+            continue
+        try:
+            model.ik(x, y, z, roll=ROLL)
+            reach[i, j] = 255
+        except Unreachable:
+            pass
+    big = cv2.resize(reach, (len(us) * step, len(vs) * step), interpolation=cv2.INTER_LINEAR)[:h, :w]
+    big = cv2.GaussianBlur(big, (0, 0), step)
+    big = cv2.morphologyEx((big > 127).astype(np.uint8) * 255, cv2.MORPH_CLOSE, np.ones((3 * step, 3 * step), np.uint8))
+    contours, _ = cv2.findContours(big, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return [c for c in contours if cv2.contourArea(c) > 50 * step * step]
+
+
+def draw_reach(img, contours):
+    """The reach outline: a white line with a dark edge and its name."""
+    import cv2
+
+    cv2.drawContours(img, contours, -1, (0, 0, 0), 6)
+    cv2.drawContours(img, contours, -1, (255, 255, 255), 2)
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        x, y = c[c[:, 0, 1].argmin(), 0]
+        cv2.putText(img, "arm reach", (int(x) + 8, int(y) + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 5)
+        cv2.putText(img, "arm reach", (int(x) + 8, int(y) + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+
 def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
     """The camera picture with every detection (list number, class, confidence, base-frame position; the one to
     pick in red with a ring, other reachable ones green, out of reach orange, skipped grey) and the place to put
@@ -395,6 +438,7 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
     import cv2
 
     state = {"chosen": chosen, "place": place, "place_px": None, "place_txt": "", "msg": ""}
+    reach = reach_outline(scene, model)
     colours = {"reachable": (0, 200, 0), "out of reach": (0, 140, 255), "bin: click to drop in": (255, 160, 0)}
 
     def colour(d):
@@ -412,6 +456,7 @@ def show(scene, dets, chosen, model, save_dir, place=None, wait=True):
             if d.polygon is not None and len(d.polygon) >= 3:
                 cv2.fillPoly(shade, [np.rint(d.polygon).astype(np.int32)], colour(d))
         img = cv2.addWeighted(shade, 0.30, img, 0.70, 0)
+        draw_reach(img, reach)
         for d in dets:
             if d.polygon is not None and len(d.polygon) >= 3:
                 thick = 4 if (d is ch or (pl is not None and pl.bin is d)) else 2

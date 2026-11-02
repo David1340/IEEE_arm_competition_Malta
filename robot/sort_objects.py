@@ -131,7 +131,7 @@ def plan_tasks(dets, model, rules):
     return tasks
 
 
-def draw_plan(scene, dets, tasks, path, head):
+def draw_plan(scene, dets, tasks, path, head, model=None):
     """The picture: masks shaded in their detected colour, an arrow from each object to its bin, saved."""
     import cv2
 
@@ -141,6 +141,8 @@ def draw_plan(scene, dets, tasks, path, head):
         if d.polygon is not None and len(d.polygon) >= 3:
             cv2.fillPoly(shade, [np.rint(d.polygon).astype(np.int32)], DRAW.get(d.colour, (160, 160, 160)))
     img = cv2.addWeighted(shade, 0.35, img, 0.65, 0)
+    if model is not None:
+        g.draw_reach(img, g.reach_outline(scene, model))
 
     def label(text, org, c, scale=0.6):
         cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 5)
@@ -258,7 +260,7 @@ def main():
                 f"{todo[0].bin_colour} bin" if todo else "") + "   (g = start, q = quit)" * (not asked))
         img = None
         if scene is not None and scene.frame is not None:
-            img = draw_plan(scene, dets, tasks, out / time.strftime("plan_%Y%m%d_%H%M%S.jpg"), head)
+            img = draw_plan(scene, dets, tasks, out / time.strftime("plan_%Y%m%d_%H%M%S.jpg"), head, model)
             print(f"Picture: {sorted(out.glob('plan_*.jpg'))[-1]}")
         if args.dry or not todo:
             if not todo:
