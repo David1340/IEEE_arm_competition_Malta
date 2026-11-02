@@ -68,7 +68,7 @@ DROP_CLEAR = 0.03      # m the carried object's bottom must clear the bin's rim 
                        # arm sags a few cm when stretched out, so not less
 LIFT = 0.12            # m the object is lifted (straight back up the way the jaws came down)
 ROLL = -90.0           # wrist roll, degrees, for every pose: the jaws open sideways (the camera is on one side)
-# Where the object goes without a plan's own (check_calibration, defaults): so101ik's tip frame (the tip = the fixed
+# Where the object goes without a plan's own (calibrate.py check, defaults): so101ik's tip frame (the tip = the fixed
 # jaw's grasp point; x towards the moving jaw is negative, z along the fingers): the middle of the jaws at 50 %.
 JAW_CENTRE = np.array([-0.030, 0.0, -0.025])
 OPEN = 50.0
@@ -79,11 +79,11 @@ PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-9
 
 # The follower's LeRobot calibration (there are several files in that folder). SO101_CALIBRATION or
 # --calibration override it.
-import calibration as _cal  # noqa: E402  (calibration.json: every calibration in one file)
+import calibrate as _cal  # noqa: E402  (calibration.json: every calibration in one file)
 
 CALIBRATION = _cal.lerobot_calibration()   # calibration.json's arm.lerobot_calibration, else my_follower_arm.json
 
-# Fine joint offsets from fine_joint_calibration_gui.py (degrees; true URDF angle = LeRobot angle + offset,
+# Fine joint offsets from `python robot/calibrate.py offsets` (degrees; true URDF angle = LeRobot angle + offset,
 # motor target = wanted angle - offset). so101ik uses the same convention for its offsets.
 FINE_OFFSETS = "default"   # calibration.json's arm.joint_offsets_deg, else the older fine_joint_offsets.json
 
@@ -680,7 +680,7 @@ def main():
     ap.add_argument("--calibration", default=os.environ.get("SO101_CALIBRATION") or str(CALIBRATION),
                     help=f"the arm's LeRobot calibration file (default {CALIBRATION.name})")
     ap.add_argument("--offsets", default=str(FINE_OFFSETS),
-                    help="fine joint offsets JSON (fine_joint_calibration_gui.py); 'none' for no offsets")
+                    help="fine joint offsets JSON (default: calibration.json's); 'none' for no offsets")
     ap.add_argument("--dry", action="store_true", help="detect and plan only; the arm does not move")
     ap.add_argument("--sim", action="store_true", help="drive so101ik's simulated servos instead of the arm")
     ap.add_argument("--sim-floor", type=float, default=None,

@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parent
 FINE_OFFSETS_FILE = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"  # the older file
-CALIBRATION_FILE = ROOT / "calibration.json"   # every calibration in one file (robot/calibration.py): arm.joint_offsets_deg
+CALIBRATION_FILE = ROOT / "calibration.json"   # every calibration in one file (robot/calibrate.py): arm.joint_offsets_deg
 ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 

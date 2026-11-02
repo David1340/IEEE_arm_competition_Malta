@@ -33,10 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 YOLO_DIR = ROOT / "yolo_dataset"
 
 # The camera's pose: calibration.json's camera_to_base (robot/calibrate.py) puts the point cloud straight into the
-# robot's base frame, and TABLE_TO_BASE stays identity. Without it, the older camera_transform.npy (qr_calibrate.py)
+# robot's base frame, and TABLE_TO_BASE stays identity. Without it, the older camera_transform.npy (the old qr_calibrate.py)
 # gives a TABLE frame, and TABLE_TO_BASE (from robot/table_to_base.json if there) moves it to the base frame:
 # p_base = Rz(yaw) @ p_table + (x, y, z).
-import calibration as _cal  # noqa: E402
+import calibrate as _cal  # noqa: E402
 
 IDENTITY_T = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_deg": 0.0}
 TABLE_TO_BASE = dict(IDENTITY_T)

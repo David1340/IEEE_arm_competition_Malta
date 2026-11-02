@@ -11,7 +11,7 @@ must be added to `.gitignore` to be committed.**
 
 | folder | what |
 |---|---|
-| top level | David's pipeline: `Full_pipeline.py` (RRT-Connect + FRPSO IK in PyBullet), `IK_control.py`, `fine_joint_calibration_gui.py` / `fine_joint_offsets.py` (per-joint offsets), `set_so101_joint_positions.py` |
+| top level | David's pipeline: `Full_pipeline.py` (RRT-Connect + FRPSO IK in PyBullet), `IK_control.py`, `fine_joint_offsets.py` (per-joint offsets, read by the pipeline), `set_so101_joint_positions.py` |
 | `robot/` | the arm. `go_to_object.py`: detect, then move the gripper to an object. `detect.py`: object positions in the robot's base frame. `gripper_current_gui.py`: live gripper current plot and grip detection |
 | `yolo_dataset/` | the vision. Capturing images (`capture_images.py`), labelling, training (`train_seg.py`), live views (`live_seg.py`, `object_3d_live.py`), the ROI (`roi.py`, `roi.json`), HSV colour of the blocks (`block_color.py`, `color_flow_viewer.py`, `white_balance.py`), point-cloud cases (`capture_pointcloud_case.py`) |
 | `point_cloud_matching/` | fitting the official STL models to the point cloud (true centre and pose); saved cases in `cases/` |
@@ -76,11 +76,11 @@ Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the a
 
 **Calibration**: the LeRobot file `~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json`
 (`--calibration` to change it). **Fine joint offsets**: `calibration/robots/so_follower/fine_joint_offsets.json`,
-set with `python fine_joint_calibration_gui.py` and read with `fine_joint_offsets.py`, as the rest of the repo does
+set with `python robot/calibrate.py offsets` and read with `fine_joint_offsets.py`, as the rest of the repo does
 (true angle = LeRobot reading + offset; motor target = wanted angle - offset). `--offsets none` runs without them.
 
 The settings are at the top of `robot/go_to_object.py` (`HOVER`, `GRASP_DEPTH`, `MIN_GRASP_Z`, `OPEN`, `ROLL`,
-`JAW_CENTRE`, `PRESS`, speeds). `robot/check_calibration.py` (torque off) shows where the model puts the tip while
+`JAW_CENTRE`, `PRESS`, speeds). `python robot/calibrate.py check` (torque off) shows where the model puts the tip while
 the arm is moved by hand.
 
 ## Game 1: sort the objects into the bins
@@ -108,28 +108,28 @@ Objects already inside a bin are left; one that fails twice (slipped, jaws close
 The plan picture (masks in their detected colour, an arrow from each object to its bin) is saved in
 `outputs/sort_objects/`.
 
-### Calibration: one file, `calibration.json`
+### Calibration: one script, one file
 
-Everything the robot needs to know about its own setup is in `calibration.json` at the repo root
-(`robot/calibration.py`): the camera's pose in the robot's base frame, the ArUco markers' positions, the table
-height, the arm's LeRobot calibration file and the fine joint offsets (`fine_joint_calibration_gui.py` saves them
-there now). `camera_transform.npy` is written from it too, for the scripts that read that.
+Every calibration is a mode of one script, `robot/calibrate.py`, and every value lives in one file,
+`calibration.json` at the repo root: the camera's pose in the robot's base frame, the ArUco markers' positions,
+the table height, the arm's LeRobot calibration file and the fine joint offsets. `camera_transform.npy` is
+written from it for the scripts that read that.
 
 ```sh
-python robot/calibrate.py --show-ids               # which marker has which ID
+python robot/calibrate.py ids                      # live view: which marker has which ID
 python robot/calibrate.py --marker-ids 0,1,2,3     # first time: IDs in the order TOP_RIGHT, BOTTOM_RIGHT,
-                                                   # BOTTOM_LEFT, TOP_LEFT (qr_calibrate.py's positions)
+                                                   # BOTTOM_LEFT, TOP_LEFT (the measured marker positions)
 python robot/calibrate.py arm                      # once, the most accurate: touch 4 blocks with the arm
 python robot/calibrate.py                          # after the camera is bumped: markers only, a few seconds
+python robot/calibrate.py check                    # torque off: the model's tip and jaws while you move the arm
+python robot/calibrate.py offsets                  # fine joint offsets: PyBullet sliders over the live arm
 python robot/calibrate.py show                     # what calibration.json holds
 ```
 
-The fit: the table plane from the point cloud gives the camera's tilt and height; two or more markers (or the
-blocks touched with the arm) give its turn and position. `arm` also measures where the markers really are in the
-arm's frame (hand-measured positions are often a few cm off) and stores them, so later marker-only calibrations
-land where the arm does. Each run saves a picture of the markers and how far each is from its stored position in
-`outputs/calibrate/`. `robot/check_calibration.py` (torque off) shows where the model puts the tip while the arm is
-moved by hand.
+The camera fit: the table plane from the point cloud gives the camera's tilt and height; two or more markers (or
+the blocks touched with the arm) give its turn and position. `arm` also measures where the markers really are in
+the arm's frame (hand-measured positions are often a few cm off) and stores them, so later marker-only
+calibrations land where the arm does. Each run saves a picture in `outputs/calibrate/`.
 
 ### Without the camera or the arm
 

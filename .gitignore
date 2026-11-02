@@ -8,14 +8,12 @@
 
 # local scripts that belong to the project (were silently ignored before)
 !full_pipeline.py
-!qr_calibrate.py
 !camera_transform.npy
 !calibration.json
 
 # arm tools at the top level (David's pipeline and joint offsets)
 !IK_control.py
 !fine_joint_offsets.py
-!fine_joint_calibration_gui.py
 !Full_pipeline.py
 !pipeline_control.py
 !modified_frpso_ik.py

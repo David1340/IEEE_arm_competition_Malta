@@ -1,7 +1,7 @@
 """Show YOLO objects with calibrated 3D centers from the YOLO mask and ZED point cloud.
 
 Coordinates are transformed into the robot/table frame defined by the known
-ArUco marker positions in qr_calibrate.py. The center is the mean of valid
+ArUco marker positions (robot/calibrate.py). The center is the mean of valid
 point-cloud samples across the full segmented object mask, after depth outlier rejection.
 
 Usage:
@@ -69,7 +69,7 @@ def load_camera_transform(path):
     if not path.exists():
         raise SystemExit(
             f"Camera calibration not found: {path}\n"
-            "Run qr_calibrate.py --show-ids, then calibrate with the measured marker IDs first."
+            "Run python robot/calibrate.py --marker-ids ... (see python robot/calibrate.py ids) first."
         )
     transform = np.load(path)
     if transform.shape != (4, 4) or not np.isfinite(transform).all():
@@ -287,7 +287,7 @@ def main():
     ap.add_argument("--camera-id", type=int, default=0)
     ap.add_argument("--weights", default=None, help="default: most recently modified best.pt under runs/segment")
     ap.add_argument("--calibration", type=Path, default=CALIBRATION_FILE,
-                    help="camera-to-robot transform saved by qr_calibrate.py")
+                    help="camera-to-robot transform saved by robot/calibrate.py")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=None, help="default: longest ROI side")
     ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD1080")
