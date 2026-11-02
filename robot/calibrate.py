@@ -13,7 +13,8 @@
 
 calibration.json (at the repo root):
     camera_to_base     4 x 4: ZED left camera (IMAGE frame: x right, y down, z forward) -> robot base frame
-                       (x forward, y to the arm's left, z up, origin under the shoulder pan axis), metres
+                       (x forward, y to the arm's left, z up; origin: the URDF base_link's, at the bottom of the
+                       base, 3.9 cm BEHIND the shoulder pan axis, which stands at x 0.039, y 0), metres
     camera             when, how (aruco / arm) and how well it was fitted; the ZED serial
     table_z            the table's height in the base frame (m)
     aruco              the marker dictionary (DICT_4X4_50) and each marker's centre in the base frame

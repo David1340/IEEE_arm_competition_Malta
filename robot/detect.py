@@ -12,8 +12,8 @@ base frame with TABLE_TO_BASE.
     detect_from_case(path)  the same from a case saved by yolo_dataset/capture_pointcloud_case.py
                             (no camera, no YOLO: for trying the arm side on its own)
 
-The robot's base frame is the URDF's (so101ik's): metres, x forward, y to the arm's left, z up,
-origin under the shoulder pan axis.
+The robot's base frame is the URDF's (so101ik's): metres, x forward, y to the arm's left, z up; the origin is
+base_link's, at the bottom of the base (table level), 3.9 cm behind the shoulder pan axis (x 0.039, y 0).
 """
 
 import json

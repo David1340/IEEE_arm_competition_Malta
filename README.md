@@ -108,6 +108,13 @@ Objects already inside a bin are left; one that fails twice (slipped, jaws close
 The plan picture (masks in their detected colour, an arrow from each object to its bin) is saved in
 `outputs/sort_objects/`.
 
+### Coordinates
+
+The arm's frame (so101ik's, the URDF's `base_link`), used everywhere (positions printed, `calibration.json`,
+`--place X Y`): metres, **x** forward (the way the arm faces at pan 0), **y** to the arm's left, **z** up. The
+**origin** is at the bottom of the base (table level), on its centre line, **3.9 cm behind the shoulder pan axis**:
+the axis the arm turns about stands at x = 0.039, y = 0. Hand measurements: from that point, not from the axis.
+
 ### Calibration: one script, one file
 
 Every calibration is a mode of one script, `robot/calibrate.py`, and every value lives in one file,

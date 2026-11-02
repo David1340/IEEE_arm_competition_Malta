@@ -87,6 +87,8 @@ CALIBRATION = _cal.lerobot_calibration()   # calibration.json's arm.lerobot_cali
 # motor target = wanted angle - offset). so101ik uses the same convention for its offsets.
 FINE_OFFSETS = "default"   # calibration.json's arm.joint_offsets_deg, else the older fine_joint_offsets.json
 
+PAN_X = 0.0388         # m: the shoulder pan axis stands here on x (y 0) in the base frame (so101ik Model.pan_axis)
+
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 
 
@@ -115,8 +117,10 @@ def grasp_point(d):
 
 def width_across(d):
     """How wide the object is across the jaws (m): the jaws close across the direction the arm reaches in (roll
-    -90), so across the line from the base to the object. From the fitted outline, else the class's largest."""
+    -90), so across the line from the shoulder pan axis to the object. From the fitted outline, else the class's
+    largest."""
     x, y = (d.fit.centre if d.fit is not None else d.base_xyz)[:2]
+    x -= PAN_X
     across = np.array([-y, x]) / max(np.hypot(x, y), 1e-6)
     if d.fit is not None:
         return d.fit.width_across(across)
