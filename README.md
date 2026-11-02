@@ -11,10 +11,11 @@ must be added to `.gitignore` to be committed.**
 
 | folder | what |
 |---|---|
+| top level | David's pipeline: `Full_pipeline.py` (RRT-Connect + FRPSO IK in PyBullet), `IK_control.py`, `fine_joint_calibration_gui.py` / `fine_joint_offsets.py` (per-joint offsets), `set_so101_joint_positions.py` |
 | `robot/` | the arm. `go_to_object.py`: detect, then move the gripper to an object. `detect.py`: object positions in the robot's base frame. `gripper_current_gui.py`: live gripper current plot and grip detection |
 | `yolo_dataset/` | the vision. Capturing images (`capture_images.py`), labelling, training (`train_seg.py`), live views (`live_seg.py`, `object_3d_live.py`), the ROI (`roi.py`, `roi.json`), HSV colour of the blocks (`block_color.py`, `color_flow_viewer.py`, `white_balance.py`), point-cloud cases (`capture_pointcloud_case.py`) |
 | `point_cloud_matching/` | fitting the official STL models to the point cloud (true centre and pose); saved cases in `cases/` |
-| `stl/` | the game objects (cube, cylinder, dodecahedron, pentagonal prism; small and large) |
+| `stl/` | the game objects (cube, cylinder, dodecahedron, hexagonal (really pentagonal) prism; small and large) |
 | `docs/` | competition rules |
 
 ## Install
@@ -53,6 +54,11 @@ What it does:
    straight up, then folds home.
 
 Ctrl-C stops and folds home. A second Ctrl-C switches the torque off (hold the arm).
+
+**Calibration**: the LeRobot file `~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json`
+(`--calibration` to change it). **Fine joint offsets**: `calibration/robots/so_follower/fine_joint_offsets.json`,
+set with `python fine_joint_calibration_gui.py` and read with `fine_joint_offsets.py`, as the rest of the repo does
+(true angle = LeRobot reading + offset; motor target = wanted angle - offset). `--offsets none` runs without them.
 
 The settings are at the top of `robot/go_to_object.py` (`HOVER`, `GRASP_DEPTH`, `MIN_TIP_Z`, `PRESS`, `OPEN`,
 speeds).

@@ -52,7 +52,19 @@ PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-9
 # --calibration override it.
 CALIBRATION = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json"
 
+# Fine joint offsets from fine_joint_calibration_gui.py (degrees; true URDF angle = LeRobot angle + offset,
+# motor target = wanted angle - offset). so101ik uses the same convention for its offsets.
+FINE_OFFSETS = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"
+
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
+
+
+def fine_offsets(path):
+    """The offsets by joint, read with fine_joint_offsets.py as the rest of the repo reads them (0 without the file)."""
+    sys.path.insert(0, str(ROOT))
+    from fine_joint_offsets import load_fine_joint_offsets
+
+    return dict(load_fine_joint_offsets(path))
 
 
 def grasp_point(d):
@@ -222,6 +234,8 @@ def main():
                     help="TABLE -> robot base frame: m, m, m, degrees (default detect.TABLE_TO_BASE)")
     ap.add_argument("--calibration", default=os.environ.get("SO101_CALIBRATION") or str(CALIBRATION),
                     help=f"the arm's LeRobot calibration file (default {CALIBRATION.name})")
+    ap.add_argument("--offsets", default=str(FINE_OFFSETS),
+                    help="fine joint offsets JSON (fine_joint_calibration_gui.py); 'none' for no offsets")
     ap.add_argument("--dry", action="store_true", help="detect and plan only; the arm does not move")
     ap.add_argument("--sim", action="store_true", help="drive so101ik's simulated servos instead of the arm")
     ap.add_argument("--sim-floor", type=float, default=None,
@@ -250,7 +264,10 @@ def main():
     cal = Path(args.calibration).expanduser()
     if not (args.sim or args.dry) and not cal.is_file():
         raise SystemExit(f"Calibration file not found: {cal}; pass --calibration")
-    model = Model(calibration_file=cal) if cal.is_file() else Model()
+    offsets = {j: 0.0 for j in ARM} if args.offsets == "none" else fine_offsets(args.offsets)
+    print("Fine joint offsets (deg): " + ", ".join(f"{j} {v:+.2f}" for j, v in offsets.items())
+          + ("" if args.offsets == "none" or Path(args.offsets).is_file() else f"  ({args.offsets} not found)"))
+    model = Model(calibration_file=cal if cal.is_file() else None, offsets=offsets)
     d = choose(dets, model, args.target, args.index)
     print()
     for i, x in enumerate(dets):
@@ -275,7 +292,7 @@ def main():
         elif input("Move the arm? [y/N] ").strip().lower() != "y":
             return
     print(f"Calibration: {cal}")
-    with Arm(port="sim" if args.sim else None, calibration_file=cal if cal.is_file() else None,
+    with Arm(port="sim" if args.sim else None, calibration_file=cal if cal.is_file() else None, offsets=offsets,
              name="go_to_object") as arm:
         if args.sim:
             arm.raw.sag = 0.0      # the simulated servos have no gravity, so no sag to make up for

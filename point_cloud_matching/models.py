@@ -20,15 +20,15 @@ ROOT = Path(__file__).resolve().parent.parent
 STL_DIR = ROOT / "stl"
 
 # YOLO class name -> STL base name. The organisers' "hexagonal prism" is a pentagonal prism
-# in the official 3MF, and the YOLO class was named "hexagonal".
+# in the official 3MF; the YOLO class is "hexagonal" and the STLs are hexagonal_prism_*.stl.
 CLASS_TO_STL = {
     "cube": "cube",
     "cylinder": "cylinder",
     "dodecahedron": "dodecahedron",
-    "hexagonal": "pentagonal_prism",
-    "hexagonal_prism": "pentagonal_prism",
-    "pentagonal": "pentagonal_prism",
-    "pentagonal_prism": "pentagonal_prism",
+    "hexagonal": "hexagonal_prism",
+    "hexagonal_prism": "hexagonal_prism",
+    "pentagonal": "hexagonal_prism",
+    "pentagonal_prism": "hexagonal_prism",
 }
 SIZES = ("small", "large")
 
@@ -202,7 +202,7 @@ def symmetry_order(points, tol=0.6e-3):
 def _pose_name(shape, pose_index, n_poses, height, xy_extent):
     if n_poses == 1:
         return "resting"
-    if shape in ("cylinder", "pentagonal_prism"):
+    if shape in ("cylinder", "hexagonal_prism"):
         return "upright" if height >= max(xy_extent) - 1e-4 else "on side"
     return f"pose {pose_index + 1}"
 

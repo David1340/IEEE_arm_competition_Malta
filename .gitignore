@@ -11,6 +11,23 @@
 !qr_calibrate.py
 !camera_transform.npy
 
+# arm tools at the top level (David's pipeline and joint offsets)
+!IK_control.py
+!fine_joint_offsets.py
+!fine_joint_calibration_gui.py
+!Full_pipeline.py
+!pipeline_control.py
+!modified_frpso_ik.py
+!rrt_connect.py
+!set_so101_joint_positions.py
+!calibration/
+calibration/*
+!calibration/robots/
+calibration/robots/*
+!calibration/robots/so_follower/
+calibration/robots/so_follower/*
+!calibration/robots/so_follower/fine_joint_offsets.json
+
 !robot/
 robot/*
 !robot/*.py
