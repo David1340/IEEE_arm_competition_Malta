@@ -45,7 +45,7 @@ GRASP_DEPTH = 0.015    # m below the object's measured top surface the tip goes 
 MIN_TIP_Z = 0.012      # m: never aim the tip lower than this above the table (z = 0)
 PRESS = 0.008          # m: on the way down, stop when the tip is held this far above where it should be
 OPEN = 70.0            # gripper opening (0 closed .. 100 open) before going down
-SPEED = 40.0           # deg/s peak, the moves in joint space (unfold, to the hover point)
+SPEED = 20.0           # deg/s peak, the moves in joint space (unfold, to the hover point)
 DOWN_SPEED = 0.03      # m/s peak, the vertical descent and the rise
 PITCHES = list(range(-90, -19, 5))   # gripper pitches tried, steepest first (-90 = pointing straight down)
 # --------------------------------------------------------------------------------------------------------
