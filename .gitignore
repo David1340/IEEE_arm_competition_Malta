@@ -39,3 +39,16 @@ stl/*
 point_cloud_matching/*
 !point_cloud_matching/*.py
 !point_cloud_matching/*.md
+!sim_plan.py
+!robot_urdfs/
+robot_urdfs/*
+!robot_urdfs/so101/
+robot_urdfs/so101/*
+!robot_urdfs/so101/robot.urdf
+!robot_urdfs/so101/assets/
+robot_urdfs/so101/assets/*
+!robot_urdfs/so101/assets/*.stl
+!robot_urdfs/so101/assets/collision/
+robot_urdfs/so101/assets/collision/*
+!robot_urdfs/so101/assets/collision/*.stl
+!robot_urdfs/so101/assets/collision/*.obj
