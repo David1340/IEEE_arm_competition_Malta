@@ -251,13 +251,19 @@ class ModifiedFRPSOIK:
         allowed_collision_body_ids: Sequence[int] = (),
         enforce_joint_limits: bool = True,
         check_joint_limits: bool = True,
+        free_states: Sequence[Sequence[float]] = (),
     ) -> bool:
-        """Check interpolated states along an edge; useful as an RRT edge validator."""
+        """Check interpolated states along an edge; useful as an RRT edge validator.
+
+        States equal to one of free_states (e.g. a tree root) are accepted without any check.
+        """
         start = np.asarray(q_start, dtype=float)
         end = np.asarray(q_end, dtype=float)
         steps = max(1, int(np.ceil(np.max(np.abs(end - start)) / max_joint_step_rad)))
         for fraction in np.linspace(0.0, 1.0, steps + 1):
             q = start + fraction * (end - start)
+            if any(np.allclose(q, free, atol=1e-9, rtol=0.0) for free in free_states):
+                continue
             if not self.state_is_collision_free(
                 q,
                 allowed_collision_body_ids,

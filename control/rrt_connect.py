@@ -60,12 +60,14 @@ class RRTConnectPlanner:
         self.upper = collision_checker.upper[self.active_offsets]
         self.ranges = self.upper - self.lower
 
-    def _reduce(self, configuration) -> np.ndarray:
+    def _reduce(self, configuration, allow_outside_limits: bool = False) -> np.ndarray:
         configuration = np.asarray(configuration, dtype=float)
         checker = self.collision_checker
         if configuration.shape != checker.lower.shape or not np.isfinite(configuration).all():
             raise ValueError(f"Configurations must be finite vectors of length {len(checker.lower)}")
-        if np.any(configuration < checker.lower) or np.any(configuration > checker.upper):
+        if not allow_outside_limits and (
+            np.any(configuration < checker.lower) or np.any(configuration > checker.upper)
+        ):
             raise ValueError("Configuration is outside the joint limits")
         for offset, value in checker.fixed_joint_offsets.items():
             if not np.isclose(configuration[offset], value, atol=1e-6, rtol=0.0):
@@ -88,6 +90,7 @@ class RRTConnectPlanner:
             self._expand(second),
             max_joint_step_rad=self.max_joint_step_rad,
             allowed_collision_body_ids=allowed_collision_body_ids,
+            free_states=[self._expand(self._root)],
         )
 
     def _extend(self, tree: _Tree, target: np.ndarray, allowed_collision_body_ids):
@@ -147,13 +150,24 @@ class RRTConnectPlanner:
         seed: int = 0,
     ) -> RRTConnectResult | None:
         """Return full joint configurations from start to goal, or None if blocked."""
-        start = self._reduce(start_configuration)
+        # The start (root) is always considered free, even outside the joint limits or in collision.
+        start = self._reduce(start_configuration, allow_outside_limits=True)
         goal = self._reduce(goal_configuration)
         checker = self.collision_checker
         allowed = tuple(allowed_collision_body_ids)
+        self._root = start
+        # Widen the checker's limits to include the root, so edges leaving it are not rejected.
+        saved = checker.lower.copy(), checker.upper.copy()
+        full_root = self._expand(start)
+        checker.lower = np.minimum(checker.lower, full_root)
+        checker.upper = np.maximum(checker.upper, full_root)
+        try:
+            return self._plan(start, goal, allowed, seed)
+        finally:
+            checker.lower, checker.upper = saved
 
-        if not checker.state_is_collision_free(self._expand(start), allowed):
-            return None
+    def _plan(self, start, goal, allowed, seed) -> RRTConnectResult | None:
+        checker = self.collision_checker
         if not checker.state_is_collision_free(self._expand(goal), allowed):
             return None
         if self._distance(start, goal) <= 1e-12:
