@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from modified_frpso_ik import ModifiedFRPSOIK
+from control.modified_frpso_ik import ModifiedFRPSOIK
 
 
 @dataclass

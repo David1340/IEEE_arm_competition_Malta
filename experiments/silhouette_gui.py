@@ -1,7 +1,7 @@
 """GUI: see how render-and-compare finds each object's top-face centre.
 
-    python point_cloud_matching/silhouette_gui.py                 # newest case
-    python point_cloud_matching/silhouette_gui.py <case_dir>
+    python experiments/silhouette_gui.py                 # newest case
+    python experiments/silhouette_gui.py <case_dir>
 
 What you see:
   * Close-up (middle): the camera image of the selected object.
@@ -33,8 +33,8 @@ os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")  # s
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 # matplotlib must be imported before OpenCV: the opencv-python wheel bundles its own Qt,
 # which can stop matplotlib from finding a window backend (the GUI then exits silently).
 import matplotlib  # noqa: E402
@@ -43,11 +43,10 @@ import cv2  # noqa: E402
 from matplotlib.path import Path as MplPath  # noqa: E402
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider  # noqa: E402
 
-import cases  # noqa: E402
-import models  # noqa: E402
-from matching import rot_z  # noqa: E402
-from silhouette import SS, Camera, SilhouetteMatcher  # noqa: E402
-from top_face import estimate_intrinsics  # noqa: E402
+from vision import cases, models  # noqa: E402
+from vision.matching import rot_z  # noqa: E402
+from vision.silhouette import SS, Camera, SilhouetteMatcher  # noqa: E402
+from vision.top_face import estimate_intrinsics  # noqa: E402
 
 TOGGLES = ["overlap colours", "top face", "start point"]
 

@@ -4,27 +4,31 @@ Torque is disabled after connection. PyBullet shows measured joint angles plus
 the live slider offsets. Press s to save; q/Escape discards unsaved changes.
 
 Usage:
-    python fine_joint_calibration_gui.py
-    python fine_joint_calibration_gui.py --no-robot
-    python fine_joint_calibration_gui.py --reset-offsets
+    python calibration/fine_joint_calibration_gui.py
+    python calibration/fine_joint_calibration_gui.py --no-robot
+    python calibration/fine_joint_calibration_gui.py --reset-offsets
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import pybullet as p
 
-from fine_joint_offsets import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from control.fine_joint_offsets import (  # noqa: E402
     ARM_JOINTS,
     FINE_OFFSETS_FILE,
     load_fine_joint_offsets,
     save_fine_joint_offsets,
 )
-from IK_control import URDF, connect_robot
+from control.IK_control import URDF, connect_robot  # noqa: E402
 
 
 def main(argv=None) -> int:

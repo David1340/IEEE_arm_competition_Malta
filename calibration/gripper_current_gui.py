@@ -17,9 +17,9 @@ Grip protection (change the values below, or override them on the command line):
     they stopped, so the servo keeps a light grip instead of stalling at full force.
 
 Usage:
-    python gripper_current_gui.py --port /dev/ttyACM0
-    python gripper_current_gui.py --port /dev/ttyACM0 --grip-current 150 --grip-squeeze 3
-    python gripper_current_gui.py --port /dev/ttyACM0 --calib path/to/my_follower_arm.json
+    python calibration/gripper_current_gui.py --port /dev/ttyACM0
+    python calibration/gripper_current_gui.py --port /dev/ttyACM0 --grip-current 150 --grip-squeeze 3
+    python calibration/gripper_current_gui.py --port /dev/ttyACM0 --calib path/to/my_follower_arm.json
 """
 
 import argparse

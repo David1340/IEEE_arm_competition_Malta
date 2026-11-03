@@ -3,8 +3,8 @@
 Keys (preview window): s = save one image, a = toggle auto-capture, q/ESC = quit.
 The current ROI is outlined when yolo_dataset/roi.json exists. Use --roi to save crops.
 Usage:
-    python dataset_generation.py --list
-    python dataset_generation.py --serial 12345678 --out yolo_dataset/images --interval 1.0
+    python yolo_dataset/dataset_generation.py --list
+    python yolo_dataset/dataset_generation.py --serial 12345678 --out yolo_dataset/images --interval 1.0
 """
 
 import argparse
@@ -19,7 +19,7 @@ os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")
 import cv2
 import pyzed.sl as sl
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "yolo_dataset"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from roi import ROI_FILE, crop, load_roi
 
 

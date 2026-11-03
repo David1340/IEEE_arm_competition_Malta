@@ -5,13 +5,13 @@ every frame only refines last frame's pose with small steps (~2-5 ms per object)
 re-fit runs again when the overlap (IoU) drops, every --refit-every frames, or on 'r'.
 
 Sources:
-    python point_cloud_matching/silhouette_live.py                      # live ZED + YOLO
-    python point_cloud_matching/silhouette_live.py --weights runs/segment/train-3/weights/best.pt
-    python point_cloud_matching/silhouette_live.py --replay point_cloud_mathing/case_...   # no camera
+    python -m vision.silhouette_live                      # live ZED + YOLO
+    python -m vision.silhouette_live --weights runs/segment/train-3/weights/best.pt
+    python -m vision.silhouette_live --replay point_cloud_mathing/case_...   # no camera
 
 Keys (click the window first):
     q / ESC quit      r  re-fit all objects      p  pause      c  centres only / full overlay
-    s  save the current centres to point_cloud_matching/live_results/
+    s  save the current centres to point_cloud_mathing/live_results/
 
 Display: white = YOLO mask, green = STL outline as the camera should see it, red + = top-face
 centre, label = track id, class, size/pose, table X Y Z (mm), IoU.
@@ -31,13 +31,10 @@ os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")  # s
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-sys.path.insert(0, str(HERE))
-import cases  # noqa: E402
-import models  # noqa: E402
-from silhouette import SS, Camera, SilhouetteMatcher  # noqa: E402
-from top_face import estimate_intrinsics  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+from vision import cases, models
+from vision.silhouette import SS, Camera, SilhouetteMatcher
+from vision.top_face import estimate_intrinsics
 
 SHAPE_CLASSES = set(models.CLASS_TO_STL)
 
@@ -215,8 +212,7 @@ class ZedYoloSource:
     def __init__(self, args):
         import pyzed.sl as sl
         from ultralytics import YOLO
-        sys.path.insert(0, str(ROOT / "yolo_dataset"))
-        from object_3d_live import CALIBRATION_FILE, latest_weights, load_camera_transform, roi_for_frame
+        from vision.detection import CALIBRATION_FILE, latest_weights, load_camera_transform, roi_for_frame
 
         self.sl = sl
         self.roi_for_frame = roi_for_frame
@@ -395,7 +391,7 @@ def main():
                 if key == ord("c"):
                     centres_only = not centres_only
                 if key == ord("s"):
-                    save(tracks, HERE / "live_results")
+                    save(tracks, ROOT / "point_cloud_mathing" / "live_results")
             if args.snapshot and frame_i == args.frames:
                 cv2.imwrite(str(args.snapshot), draw(frame, tracks, fitter, src.roi, centres_only, fps, timing, False))
             if args.frames and frame_i >= args.frames:

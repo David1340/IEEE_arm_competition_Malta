@@ -7,12 +7,12 @@ object's true centre (and later its top face), instead of the mean of the visibl
 
 1. Capture a case (ZED + YOLO -> `point_cloud_mathing/case_*/`):
 
-       python yolo_dataset/capture_pointcloud_case.py
+       python experiments/capture_pointcloud_case.py
 
 2. Open the comparison GUI (newest case by default):
 
-       python point_cloud_matching/match_gui.py
-       python point_cloud_matching/match_gui.py point_cloud_mathing/case_20261101T165958_770293Z
+       python experiments/match_gui.py
+       python experiments/match_gui.py point_cloud_mathing/case_20261101T165958_770293Z
 
 Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralytics).
 
@@ -23,9 +23,10 @@ Needs numpy, scipy, matplotlib, opencv-python (all already pulled in by ultralyt
 | `models.py` | loads the STLs, finds each shape's stable resting poses (e.g. cylinder upright / on side), samples surface points + normals, in metres |
 | `cases.py` | loads a capture case, converts it to the table frame, and fits the local table plane from a ring of pixels around each mask |
 | `matching.py` | 4-DoF ICP (X, Y, yaw, optional Z) of every size x pose candidate against the data, comparing only the model faces the camera can see |
-| `match_gui.py` | the GUI |
+| `match_gui.py` | the GUI (lives in `experiments/`) |
+| `detection.py` | YOLO/ZED helpers shared by all scripts: ROI, camera calibration, point-cloud centres, `top_face_fits` |
 
-`python point_cloud_matching/models.py` prints every candidate with its height and centre.
+`python -m vision.models` prints every candidate with its height and centre.
 
 ## How the fit works
 

@@ -1,4 +1,4 @@
-"""Load point-cloud cases saved by yolo_dataset/capture_pointcloud_case.py.
+"""Load point-cloud cases saved by experiments/capture_pointcloud_case.py.
 
 A case folder holds image.png, point_cloud_xyzrgba.npy, camera_transform.npy, roi.json,
 metadata.json and objects/object_XXX.npz (per YOLO detection). This module turns it into
@@ -18,8 +18,8 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-# capture_pointcloud_case.py writes to point_cloud_mathing/ (sic); look in both.
-CASE_ROOTS = [ROOT / "point_cloud_mathing", ROOT / "point_cloud_matching"]
+# experiments/capture_pointcloud_case.py writes to point_cloud_mathing/ (sic).
+CASE_ROOTS = [ROOT / "point_cloud_mathing"]
 SKIP_CLASSES = {"bin", "gripper"}
 
 

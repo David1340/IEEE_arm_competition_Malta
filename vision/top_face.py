@@ -15,8 +15,8 @@ Steps per object:
      score = IoU (overlap / union). Best IoU wins -> size, pose, yaw, centre.
 
 Usage:
-    python point_cloud_matching/top_face.py                       # newest case
-    python point_cloud_matching/top_face.py <case_dir> --band 5 --out top_faces.png
+    python -m vision.top_face                       # newest case
+    python -m vision.top_face <case_dir> --band 5 --out top_faces.png
 """
 
 import argparse
@@ -28,10 +28,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import cases  # noqa: E402
-import models  # noqa: E402
+from vision import cases, models
 
 GRID = 0.5e-3  # m per raster cell
 

@@ -1,8 +1,8 @@
 """Capture one ZED frame, YOLO predictions, and per-object point-cloud samples.
 
 Usage:
-    python yolo_dataset/capture_pointcloud_case.py
-    python yolo_dataset/capture_pointcloud_case.py --weights runs/segment/train-3/weights/best.pt
+    python experiments/capture_pointcloud_case.py
+    python experiments/capture_pointcloud_case.py --weights runs/segment/train-3/weights/best.pt
 
 Creates a unique case folder under point_cloud_mathing/ containing the source image,
 full XYZRGBA point cloud, YOLO overlay, metadata, and one NPZ per detected instance.
@@ -25,8 +25,8 @@ from ultralytics import YOLO
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(HERE))
-from object_3d_live import (  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from vision.detection import (  # noqa: E402
     CALIBRATION_FILE,
     camera_intrinsics,
     latest_weights,
@@ -57,7 +57,7 @@ def main():
     parser.add_argument("--out", type=Path, default=ROOT / "point_cloud_mathing")
     args = parser.parse_args()
 
-    roi_file = HERE / "roi.json"
+    roi_file = ROOT / "yolo_dataset" / "roi.json"
     if not roi_file.exists():
         raise SystemExit(f"ROI config not found: {roi_file}")
     roi_data = json.loads(roi_file.read_text())

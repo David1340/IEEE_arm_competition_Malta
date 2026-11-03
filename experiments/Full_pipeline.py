@@ -5,13 +5,13 @@ builds a PyBullet scene, plans with M-FRPSO and RRT-Connect, and only moves when
 --execute is supplied and the operator confirms.
 
 Usage:
-	python Full_pipeline.py                 # show one camera frame, then headless PyBullet
-	python Full_pipeline.py --gui            # show the snapshot scene
-	python Full_pipeline.py --gui --no-robot # inspect with the URDF zero pose
-	python Full_pipeline.py --no-frame-preview # skip the camera window
-	python Full_pipeline.py --simulate --gui # camera-seeded simulation; no physical robot connection
-	python Full_pipeline.py --execute        # plan, then explicitly authorize arm motion
-	python Full_pipeline.py --execute --gui   # animate the real arm feedback in PyBullet
+	python experiments/Full_pipeline.py                 # show one camera frame, then headless PyBullet
+	python experiments/Full_pipeline.py --gui            # show the snapshot scene
+	python experiments/Full_pipeline.py --gui --no-robot # inspect with the URDF zero pose
+	python experiments/Full_pipeline.py --no-frame-preview # skip the camera window
+	python experiments/Full_pipeline.py --simulate --gui # camera-seeded simulation; no physical robot connection
+	python experiments/Full_pipeline.py --execute        # plan, then explicitly authorize arm motion
+	python experiments/Full_pipeline.py --execute --gui   # animate the real arm feedback in PyBullet
 """
 
 from __future__ import annotations
@@ -21,13 +21,15 @@ import json
 import contextlib
 import io
 import math
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 ROI_FILE = ROOT / "yolo_dataset" / "roi.json"
 CALIBRATION_FILE = ROOT / "camera_transform.npy"
 URDF_FILE = ROOT / "robot_urdfs" / "so101" / "robot.urdf"
@@ -195,7 +197,6 @@ def object_cloud_from_mask(
 	return table_xyz.astype(np.float32), center.astype(np.float32), pixel_center
 
 
-SILHOUETTE_DIR = ROOT / "point_cloud_matching"
 SILHOUETTE_MIN_IOU = 0.7
 SILHOUETTE_SHAPE_BY_CLASS = {"hexagonal": "hexagonal_prism", "pentagonal": "pentagonal_prism"}
 
@@ -210,11 +211,9 @@ def fit_silhouettes(detections, full_polygons, cloud_xyz, camera_to_robot, intri
 
 	import cv2
 
-	if str(SILHOUETTE_DIR) not in sys.path:
-		sys.path.insert(0, str(SILHOUETTE_DIR))
-	import models as silhouette_models
-	from silhouette import Camera, SilhouetteMatcher
-	from silhouette_live import Detection, local_table_z
+	from vision import models as silhouette_models
+	from vision.silhouette import Camera, SilhouetteMatcher
+	from vision.silhouette_live import Detection, local_table_z
 
 	camera = Camera(camera_to_robot, intrinsics)
 	height, width = cloud_xyz.shape[:2]
@@ -261,7 +260,7 @@ def camera_intrinsics(camera, cloud_xyz):
 		return left.fx, left.fy, left.cx, left.cy
 	except Exception as error:
 		print(f"Could not read ZED intrinsics ({error}); estimating them from the point cloud")
-		from silhouette_live import intrinsics_from_cloud
+		from vision.silhouette_live import intrinsics_from_cloud
 
 		return intrinsics_from_cloud(cloud_xyz)
 
@@ -271,7 +270,7 @@ def capture_one_frame(args):
 	import cv2
 	import pyzed.sl as sl
 	from ultralytics import YOLO
-	from yolo_dataset.object_3d_live import latest_weights, load_camera_transform, roi_for_frame
+	from vision.detection import latest_weights, load_camera_transform, roi_for_frame
 
 	if not ROI_FILE.exists():
 		raise FileNotFoundError(f"ROI config not found: {ROI_FILE}")
@@ -608,7 +607,7 @@ def restore_pybullet_robot_pose(robot_id, joint_names, joint_positions, gripper_
 def sync_pybullet_from_observation(robot_id, joint_names, observation, physics_client_id):
 	"""Mirror one measured LeRobot observation into its PyBullet twin."""
 	import pybullet as p
-	from fine_joint_offsets import corrected_observation
+	from control.fine_joint_offsets import corrected_observation
 
 	logical_observation = corrected_observation(observation)
 	joint_indices = {
@@ -654,7 +653,7 @@ def animate_simulated_path(robot_id, joint_indices, path, *, physics_client_id, 
 
 def load_robot_state(no_robot: bool):
 	"""Read the SO-101 joints once and keep the connection open for optional execution."""
-	from IK_control import ARM_JOINTS, connect_robot, read_joints_rad
+	from control.IK_control import ARM_JOINTS, connect_robot, read_joints_rad
 
 	if no_robot:
 		print("Using simulated home pose; robot was not connected")
@@ -681,8 +680,8 @@ def build_planning_scene(
 ):
 	"""Build the table, measured arm, point-cloud obstacles, M-FRPSO, and RRT-Connect."""
 	import pybullet as p
-	from modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision
-	from rrt_connect import RRTConnectPlanner
+	from control.modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision
+	from control.rrt_connect import RRTConnectPlanner
 
 	client = p.connect(p.GUI if gui else p.DIRECT)
 	if client < 0:
@@ -883,7 +882,7 @@ def main(argv=None):
 	robot = None
 	client = None
 	import pybullet as p
-	from IK_control import read_joints_rad, send_joints
+	from control.IK_control import read_joints_rad, send_joints
 	try:
 		robot, joint_names, joint_positions = load_robot_state(args.no_robot or args.simulate)
 		measured_gripper_position = (

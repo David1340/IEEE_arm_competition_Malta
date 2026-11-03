@@ -4,8 +4,8 @@ Assumes the URDF zero pose matches the calibration midpoint (so101_new_calib),
 so LeRobot degrees (use_degrees=True) map directly to URDF joint angles.
 
 Usage:
-    python IK_control.py --sim-only            # PyBullet GUI only, no hardware
-    python IK_control.py                         # drives the real arm
+    python -m control.IK_control --sim-only            # PyBullet GUI only, no hardware
+    python -m control.IK_control                         # drives the real arm
 Commands in the prompt (meters, base frame):
     x y z [gripper 0-100]    absolute target
     d dx dy dz               relative move
@@ -22,9 +22,9 @@ import numpy as np
 import logging
 
 import pybullet as p
-from modified_frpso_ik import IKResult, ModifiedFRPSOIK
-from rrt_connect import RRTConnectPlanner
-from fine_joint_offsets import correct_joint_position_deg, load_fine_joint_offsets, motor_position_deg
+from control.modified_frpso_ik import IKResult, ModifiedFRPSOIK
+from control.rrt_connect import RRTConnectPlanner
+from control.fine_joint_offsets import correct_joint_position_deg, load_fine_joint_offsets, motor_position_deg
 
 logging.getLogger("lerobot.robots.utils").setLevel(logging.ERROR)
 

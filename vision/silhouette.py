@@ -11,8 +11,8 @@ used for the local table height around each object (the table depth is good), an
 estimate the camera lens parameters.
 
 Usage:
-    python point_cloud_matching/silhouette.py                 # newest case
-    python point_cloud_matching/silhouette.py <case_dir>
+    python -m vision.silhouette                 # newest case
+    python -m vision.silhouette <case_dir>
 
 Writes into the case folder:
     silhouette_centres.png   camera image with only the top-face centres (+ close-ups);
@@ -30,12 +30,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import cases  # noqa: E402
-import models  # noqa: E402
-from matching import rot_z  # noqa: E402
-from top_face import estimate_intrinsics, fit_top_face  # noqa: E402
+from vision import cases, models
+from vision.matching import rot_z
+from vision.top_face import estimate_intrinsics, fit_top_face
 
 SS = 2  # supersampling of the comparison raster
 

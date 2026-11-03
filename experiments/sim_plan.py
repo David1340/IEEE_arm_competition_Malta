@@ -2,10 +2,10 @@
 
 No camera, no robot. Edit OBJECTS / START_Q / TARGET below, or pass --target X Y.
 
-    python sim_plan.py                  # steps 1-3, press Enter between steps
-    python sim_plan.py --target 0.35 0.05 --height 0.04
-    python sim_plan.py --no-pause       # run everything without waiting
-    python sim_plan.py --direct         # no window (headless check)
+    python experiments/sim_plan.py                  # steps 1-3, press Enter between steps
+    python experiments/sim_plan.py --target 0.35 0.05 --height 0.04
+    python experiments/sim_plan.py --no-pause       # run everything without waiting
+    python experiments/sim_plan.py --direct         # no window (headless check)
 
 Steps:
   1. scene: table (top at z=0), robot at START_Q, objects
@@ -14,16 +14,19 @@ Steps:
 """
 import argparse
 import math
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import pybullet as p
 
-from modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision
-from rrt_connect import RRTConnectPlanner
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-ROOT = Path(__file__).resolve().parent
+from control.modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision  # noqa: E402
+from control.rrt_connect import RRTConnectPlanner  # noqa: E402
+
 URDF_FILE = ROOT / "robot_urdfs" / "so101" / "robot.urdf"
 STL_DIR = ROOT / "stl"
 
@@ -75,6 +78,7 @@ def main():
     ap.add_argument("--height", type=float, default=HEIGHT)
     ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--speed", type=float, default=1.0, help="playback speed factor")
     ap.add_argument("--no-pause", action="store_true")
     ap.add_argument("--direct", action="store_true", help="headless, no pauses or playback")
     args = ap.parse_args()
@@ -164,16 +168,21 @@ def main():
         raise SystemExit("RRT-Connect found no collision-free path")
     path = route.path
     print(f"   path: {len(path)} configurations, {route.iterations} iterations")
-    wait(args, "3/3 RRT-Connect path (playback from the start pose)")
-    for a, b in zip(path[:-1], path[1:]):
-        for t in np.linspace(0, 1, 15):
-            show((1 - t) * np.asarray(a) + t * np.asarray(b))
-            if not args.direct:
-                time.sleep(0.02)
-    show(path[-1])
-    print("   done: end of path reached")
-    if not args.direct:
-        input("Enter to close the window... ")
+    wait(args, "3/3 RRT-Connect path (the robot returns to the start pose and moves along the path)")
+    while True:
+        show(START_Q)
+        if not args.direct:
+            time.sleep(0.7)
+        for a, b in zip(path[:-1], path[1:]):
+            a, b = np.asarray(a), np.asarray(b)
+            steps = max(2, int(np.ceil(np.degrees(np.abs(b - a).max()) / 0.5)))   # 0.5 deg per frame
+            for t in np.linspace(0, 1, steps):
+                show((1 - t) * a + t * b)
+                if not args.direct:
+                    time.sleep(0.02 / args.speed)
+        print("   path finished")
+        if args.direct or input("   Enter = replay, q = quit: ").strip().lower() == "q":
+            break
     p.disconnect(client)
 
 

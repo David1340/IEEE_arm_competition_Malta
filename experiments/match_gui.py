@@ -5,9 +5,9 @@ model candidate of its YOLO class (small / large x each resting pose) is fitted 
 with ICP, and the data and fitted models are shown in 3D in the calibrated table frame (mm).
 
 Usage:
-    python point_cloud_matching/match_gui.py                    # newest case
-    python point_cloud_matching/match_gui.py point_cloud_mathing/case_20261101T165958_770293Z
-    python point_cloud_matching/match_gui.py --list
+    python experiments/match_gui.py                    # newest case
+    python experiments/match_gui.py point_cloud_mathing/case_20261101T165958_770293Z
+    python experiments/match_gui.py --list
 
 Panels:
     model candidates   tick a model to show it, untick to hide it (each has its own colour);
@@ -34,8 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 import matplotlib  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
@@ -43,9 +43,7 @@ from matplotlib.path import Path as MplPath  # noqa: E402
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider  # noqa: E402
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # noqa: E402
 
-import cases  # noqa: E402
-import matching  # noqa: E402
-import models  # noqa: E402
+from vision import cases, matching, models  # noqa: E402
 
 VIEW_LABELS = ["data", "visible faces", "hidden faces", "mesh", "colour by distance", "lock base to table"]
 MODEL_COLOURS = ["#ff7f0e", "#e040fb", "#00bcd4", "#7cb342", "#8d6e63", "#ffd600"]

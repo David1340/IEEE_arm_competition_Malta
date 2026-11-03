@@ -11,8 +11,8 @@ The camera intrinsics are not saved with a case, so the pinhole model is estimat
 saved point cloud itself (every pixel stores its camera-frame XYZ).
 
 Usage:
-    python point_cloud_matching/render_centres.py                 # newest case
-    python point_cloud_matching/render_centres.py <case_dir> --out centres.png
+    python experiments/render_centres.py                 # newest case
+    python experiments/render_centres.py <case_dir> --out centres.png
 """
 
 import argparse
@@ -23,11 +23,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import cases  # noqa: E402
-import matching  # noqa: E402
-import models  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from vision import cases, matching, models  # noqa: E402
 
 RED, ORANGE, GREEN, BLUE, WHITE = (0, 0, 255), (0, 140, 255), (0, 220, 0), (255, 120, 0), (255, 255, 255)
 

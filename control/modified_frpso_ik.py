@@ -6,7 +6,7 @@ joint configurations that collide with the supplied scene bodies.
 
 Minimal setup:
     import pybullet as p
-    from modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision
+    from control.modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision
 
     client = p.connect(p.DIRECT)
     robot = load_robot_for_collision("robot.urdf", physics_client_id=client)
@@ -29,10 +29,10 @@ from typing import Mapping, Sequence
 
 import numpy as np
 import pybullet as p
-from fine_joint_offsets import load_fine_joint_offsets
+from control.fine_joint_offsets import load_fine_joint_offsets
 
 DEFAULT_CALIBRATION_PATH = (
-    Path(__file__).resolve().parent
+    Path(__file__).resolve().parents[1]
     / "calibration"
     / "robots"
     / "so_follower"

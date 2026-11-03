@@ -4,9 +4,9 @@ Unspecified joints remain at their measured positions. Without --execute this
 script connects read-only, displays the proposed pose, and sends no commands.
 
 Examples:
-    python set_so101_joint_positions.py --shoulder-pan 5
-    python set_so101_joint_positions.py --shoulder-pan 5 --wrist-roll -90 --execute
-    python set_so101_joint_positions.py --degrees 0 0 0 0 0
+    python experiments/set_so101_joint_positions.py --shoulder-pan 5
+    python experiments/set_so101_joint_positions.py --shoulder-pan 5 --wrist-roll -90 --execute
+    python experiments/set_so101_joint_positions.py --degrees 0 0 0 0 0
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
+from pathlib import Path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,7 +54,8 @@ def main(argv=None) -> int:
     if any(value is not None and not math.isfinite(value) for value in requested.values()):
         parser.error("joint targets must be finite")
 
-    from IK_control import CALIB, ARM_JOINTS, calib_limits_deg, connect_robot, read_joints_rad, send_joints
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from control.IK_control import CALIB, ARM_JOINTS, calib_limits_deg, connect_robot, read_joints_rad, send_joints
 
     robot = connect_robot()
     try:

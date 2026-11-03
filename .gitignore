@@ -1,13 +1,5 @@
 *
 !.gitignore
-!dataset_generation.py
-!fine_joint_offsets.py
-!fine_joint_calibration_gui.py
-!Full_pipeline.py
-!pipeline_control.py
-!modified_frpso_ik.py
-!rrt_connect.py
-!set_so101_joint_positions.py
 !calibration/
 !calibration/robots/
 !calibration/robots/so_follower/
@@ -25,7 +17,6 @@ yolo_dataset/images/*
 !yolo_dataset/images/*.png
 yolo_dataset/labels/*
 !yolo_dataset/labels/*.txt
-!gripper_current_gui.py
 !docs/*
 !docs/*.pdf
 !docs/
@@ -35,11 +26,6 @@ stl/*
 !stl/*.stl
 !stl/*.3mf
 !stl/*.py
-!point_cloud_matching/
-point_cloud_matching/*
-!point_cloud_matching/*.py
-!point_cloud_matching/*.md
-!sim_plan.py
 !robot_urdfs/
 robot_urdfs/*
 !robot_urdfs/so101/
@@ -52,3 +38,18 @@ robot_urdfs/so101/assets/*
 robot_urdfs/so101/assets/collision/*
 !robot_urdfs/so101/assets/collision/*.stl
 !robot_urdfs/so101/assets/collision/*.obj
+!README.md
+!vision/
+vision/*
+!vision/*.py
+!vision/*.md
+!control/
+control/*
+!control/*.py
+!calibration/*.py
+!experiments/
+experiments/*
+!experiments/*.py
+# local-only, never tracked before the reorganisation
+experiments/unified_pipeline.py
+experiments/test_ik.py

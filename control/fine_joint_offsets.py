@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 FINE_OFFSETS_FILE = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"
 ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
