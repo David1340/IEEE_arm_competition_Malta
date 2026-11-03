@@ -97,6 +97,10 @@ class World:
             allowed_robot_obstacle_link_pairs=[(self.table, -1, -1)],   # the base sits on the table
             minimum_link_heights={link[n]: clearance for n in GRIPPER_LINKS},
         )
+        # Artificial joint limits that also contain the current joint reading, so a start pose
+        # slightly outside the URDF limits is valid for both M-FRPSO and RRT-Connect.
+        self.checker.lower = np.minimum(self.checker.lower, self.start_q)
+        self.checker.upper = np.maximum(self.checker.upper, self.start_q)
         self.rrt = RRTConnectPlanner(self.checker, max_joint_step_rad=math.radians(3.0))
         # Visual-only balls (no collision shape, not in the obstacle list): blue = target,
         # red = the point the IK uses (grasp_center_link), which follows the robot.

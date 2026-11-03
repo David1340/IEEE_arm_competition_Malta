@@ -153,18 +153,9 @@ class RRTConnectPlanner:
         # The start (root) is always considered free, even outside the joint limits or in collision.
         start = self._reduce(start_configuration, allow_outside_limits=True)
         goal = self._reduce(goal_configuration)
-        checker = self.collision_checker
         allowed = tuple(allowed_collision_body_ids)
         self._root = start
-        # Widen the checker's limits to include the root, so edges leaving it are not rejected.
-        saved = checker.lower.copy(), checker.upper.copy()
-        full_root = self._expand(start)
-        checker.lower = np.minimum(checker.lower, full_root)
-        checker.upper = np.maximum(checker.upper, full_root)
-        try:
-            return self._plan(start, goal, allowed, seed)
-        finally:
-            checker.lower, checker.upper = saved
+        return self._plan(start, goal, allowed, seed)
 
     def _plan(self, start, goal, allowed, seed) -> RRTConnectResult | None:
         checker = self.collision_checker
