@@ -96,6 +96,7 @@ def main():
         # 5. execute
         if not args.execute:
             print("Plan only (add --execute to move the arm).")
+            input("Final pose shown. Press Enter to end... ")
             return
         if input("Type 'yes' to move the real arm along this path: ").strip().lower() != "yes":
             print("Not executed.")
@@ -106,6 +107,7 @@ def main():
             for t in np.linspace(0, 1, n + 1)[1:]:
                 send_joints(robot, (1 - t) * a + t * b, gripper=GRIPPER_OPEN)
         print("Path finished.")
+        input("Final pose held. Press Enter to end... ")
     finally:
         if robot is not None:
             robot.disconnect()
