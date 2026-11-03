@@ -25,8 +25,8 @@ CLASS_TO_STL = {
     "cube": "cube",
     "cylinder": "cylinder",
     "dodecahedron": "dodecahedron",
-    "hexagonal": "pentagonal_prism",
-    "hexagonal_prism": "pentagonal_prism",
+    "hexagonal": "hexagonal_prism",
+    "hexagonal_prism": "hexagonal_prism",
     "pentagonal": "pentagonal_prism",
     "pentagonal_prism": "pentagonal_prism",
 }

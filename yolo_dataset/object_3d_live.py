@@ -4,6 +4,11 @@ Coordinates are transformed into the robot/table frame defined by the known
 ArUco marker positions in qr_calibrate.py. The center is the mean of valid
 point-cloud samples across the full segmented object mask, after depth outlier rejection.
 
+With the silhouette fit on (default) the STL is fitted to each YOLO mask by render-and-compare
+(point_cloud_matching/silhouette_live.py) and the reported center is the CENTRE OF THE TOP FACE
+of the fitted STL; the green outline is that top face. Objects the fit cannot match (IoU below
+--silhouette-min-iou) keep the point-cloud center. --no-silhouette restores the old behaviour.
+
 Usage:
     python yolo_dataset/object_3d_live.py
     python yolo_dataset/object_3d_live.py --weights runs/segment/train/weights/best.pt
@@ -81,6 +86,78 @@ def load_camera_transform(path):
 
 def transform_point(transform, point):
     return (transform @ np.append(np.asarray(point, dtype=float), 1.0))[:3]
+
+
+def camera_intrinsics(zed, cloud_xyz=None):
+    """fx, fy, cx, cy of the left ZED camera; falls back to fitting a pinhole model to the cloud."""
+    try:
+        info = zed.get_camera_information()
+        left = getattr(info, "camera_configuration", info).calibration_parameters.left_cam
+        return left.fx, left.fy, left.cx, left.cy
+    except Exception as error:
+        if cloud_xyz is None:
+            raise
+        print(f"Could not read ZED intrinsics ({error}); estimating them from the point cloud")
+        sys.path.insert(0, str(ROOT / "point_cloud_matching"))
+        from silhouette_live import intrinsics_from_cloud
+
+        return intrinsics_from_cloud(np.asarray(cloud_xyz)[..., :3])
+
+
+def top_face_fits(items, cloud, camera_to_table, intrinsics, min_iou=0.7):
+    """Shared one-frame top-face silhouette fit, used by every script that detects objects.
+
+    items: [(class_name, confidence, polygon_full_image_xy)]. Returns one entry per item, None when
+    the class has no STL or the fit is weaker than min_iou, else a dict with
+      center      top-face centre in the table/robot frame (m)
+      center_px   its image pixel (x, y)
+      outline_px  convex outline of the projected top face, int32 (N, 2)
+      iou, label, fit
+    Scripts should use `center` instead of the point-cloud mean when it is not None.
+    """
+    sys.path.insert(0, str(ROOT / "point_cloud_matching"))
+    import models as silhouette_models
+    from silhouette import Camera, SilhouetteMatcher
+    from silhouette_live import Detection, local_table_z
+
+    cloud_xyz = np.asarray(cloud)[..., :3]
+    camera = Camera(camera_to_table, intrinsics)
+    all_mask = np.zeros(cloud_xyz.shape[:2], np.uint8)
+    for _, _, polygon in items:
+        cv2.fillPoly(all_mask, [np.rint(polygon).astype(np.int32)], 1)
+    all_mask = cv2.dilate(all_mask, np.ones((3, 3), np.uint8), iterations=8)
+    candidates_by_shape = {}
+    results = []
+    for class_name, confidence, polygon in items:
+        name = str(class_name).strip().casefold()
+        shape = silhouette_models.CLASS_TO_STL.get(name)
+        if shape is None or len(polygon) < 3:
+            results.append(None)
+            continue
+        if shape not in candidates_by_shape:
+            candidates_by_shape[shape] = silhouette_models.load_candidates(shape)
+        candidates = candidates_by_shape[shape]
+        if not candidates:
+            results.append(None)
+            continue
+        detection = Detection(name, float(confidence), np.asarray(polygon, dtype=float))
+        table_z = local_table_z(cloud_xyz, camera_to_table, detection, all_mask)
+        matcher = SilhouetteMatcher(camera, detection)
+        fit = max((matcher.fit(candidate, table_z) for candidate in candidates), key=lambda item: item.iou)
+        if fit.iou < min_iou:
+            results.append(None)
+            continue
+        top_vertices = np.asarray(fit.candidate.top_tris, dtype=float).reshape(-1, 3)
+        outline = camera.project(fit.pose_points(top_vertices))
+        results.append({
+            "center": np.asarray(fit.top_center, dtype=float),
+            "center_px": tuple(int(round(v)) for v in camera.project(fit.top_center)[0]),
+            "outline_px": cv2.convexHull(np.rint(outline).astype(np.int32)).reshape(-1, 2),
+            "iou": float(fit.iou),
+            "label": fit.candidate.label,
+            "fit": fit,
+        })
+    return results
 
 
 def visible_surface_center(
@@ -297,6 +374,10 @@ def main():
     ap.add_argument("--max-depth", type=float, default=2.00, help="ignore points farther than this (meters)")
     ap.add_argument("--min-points", type=int, default=20, help="minimum valid mask points for a center estimate")
     ap.add_argument("--max-width", type=int, default=1400)
+    ap.add_argument("--no-silhouette", action="store_true",
+                    help="use the point-cloud mean instead of the fitted STL top-face center")
+    ap.add_argument("--silhouette-min-iou", type=float, default=0.7,
+                    help="minimum mask/silhouette IoU to trust the top-face center")
     ap.add_argument("--no-pybullet-gui", action="store_true", help="run the twin headless")
     ap.add_argument("--no-robot", action="store_true", help="use the URDF zero pose instead of live joint readings")
     args = ap.parse_args()
@@ -332,6 +413,21 @@ def main():
 
     image_mat, cloud_mat = sl.Mat(), sl.Mat()
     runtime = sl.RuntimeParameters()
+    fitter = None
+    if not args.no_silhouette:
+        sys.path.insert(0, str(ROOT / "point_cloud_matching"))
+        from silhouette import Camera
+        from silhouette_live import Detection, LiveFitter, SHAPE_CLASSES, intrinsics_from_cloud
+
+        try:
+            intrinsics = camera_intrinsics(zed)
+        except Exception as error:
+            print(f"Could not read ZED intrinsics ({error}); estimating them from the point cloud")
+            while zed.grab(runtime) != sl.ERROR_CODE.SUCCESS:
+                pass
+            zed.retrieve_measure(cloud_mat, sl.MEASURE.XYZRGBA)
+            intrinsics = intrinsics_from_cloud(cloud_mat.get_data()[..., :3])
+        fitter = LiveFitter(Camera(camera_to_robot, intrinsics), camera_to_robot)
     win = "YOLO + ZED 3D centers"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     last_report = 0.0
@@ -372,9 +468,19 @@ def main():
             if result.masks is not None:
                 classes = result.boxes.cls.int().tolist()
                 confidences = result.boxes.conf.tolist()
-                for index, (polygon, class_id, confidence) in enumerate(zip(result.masks.xy, classes, confidences), 1):
-                    if len(polygon) < 3:
-                        continue
+                valid = [(polygon, class_id, confidence)
+                         for polygon, class_id, confidence in zip(result.masks.xy, classes, confidences)
+                         if len(polygon) >= 3]
+                track_by_detection = {}
+                if fitter is not None:
+                    shape_items = [item for item in valid if names[item[1]] in SHAPE_CLASSES]
+                    tracks, _ = fitter.update(
+                        [Detection(names[class_id], confidence, polygon + [x0, y0])
+                         for polygon, class_id, confidence in shape_items],
+                        cloud[..., :3],
+                    )
+                    track_by_detection = {id(item[0]): track for item, track in zip(shape_items, tracks)}
+                for index, (polygon, class_id, confidence) in enumerate(valid, 1):
                     points = np.rint(polygon + [x0, y0]).astype(np.int32)
                     color = COLORS[class_id % len(COLORS)]
                     center, count, pixel_center, top_mask = visible_surface_center(
@@ -382,7 +488,20 @@ def main():
                         camera_to_robot,
                     )
                     class_name = names[class_id]
-                    if center is None:
+                    track = track_by_detection.get(id(polygon))
+                    if track is not None and track.fit is not None and track.fit.iou >= args.silhouette_min_iou:
+                        # Top face of the fitted STL: its centre sits above the object axis.
+                        top = fitter.cam.project(track.fit.pose_points(
+                            np.asarray(track.fit.candidate.top_tris, dtype=float).reshape(-1, 3)))
+                        cv2.polylines(canvas, [cv2.convexHull(np.rint(top).astype(np.int32))], True, color, 2)
+                        center = np.asarray(track.top_center, dtype=float)
+                        count = len(track.fit.candidate.points)
+                        cx, cy = (int(round(value)) for value in fitter.cam.project(center)[0])
+                        cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+                        text = (f"{class_name} {confidence:.2f} TOP X{center[0]:+.3f} Y{center[1]:+.3f} "
+                                f"Z{center[2]:+.3f}m IoU{track.fit.iou:.2f}")
+                        objects.append((class_name, confidence, center, count))
+                    elif center is None:
                         cv2.polylines(canvas, [points], True, (128, 128, 128), 1)
                         text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"
                         objects.append((class_name, confidence, None, count))

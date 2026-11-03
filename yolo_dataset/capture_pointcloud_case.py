@@ -28,9 +28,11 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from object_3d_live import (  # noqa: E402
     CALIBRATION_FILE,
+    camera_intrinsics,
     latest_weights,
     load_camera_transform,
     roi_for_frame,
+    top_face_fits,
     visible_surface_center,
 )
 
@@ -49,6 +51,9 @@ def main():
     parser.add_argument("--depth-mode", choices=["QUALITY", "ULTRA", "NEURAL"], default="QUALITY")
     parser.add_argument("--min-depth", type=float, default=0.10)
     parser.add_argument("--max-depth", type=float, default=2.00)
+    parser.add_argument("--no-silhouette", action="store_true",
+                        help="use the point-cloud mean instead of the fitted STL top-face center")
+    parser.add_argument("--silhouette-min-iou", type=float, default=0.7)
     parser.add_argument("--out", type=Path, default=ROOT / "point_cloud_mathing")
     args = parser.parse_args()
 
@@ -88,6 +93,7 @@ def main():
         camera.retrieve_measure(cloud_mat, sl.MEASURE.XYZRGBA)
         frame = cv2.cvtColor(image_mat.get_data(), cv2.COLOR_BGRA2BGR)
         point_cloud = cloud_mat.get_data().copy()
+        intrinsics = None if args.no_silhouette else camera_intrinsics(camera, point_cloud)
     finally:
         camera.close()
 
@@ -104,6 +110,13 @@ def main():
     annotated = frame.copy()
     detections = []
     object_data = []
+    top_fits = []
+    if result.masks is not None and not args.no_silhouette:
+        top_fits = top_face_fits(
+            [(str(names[c]), conf, np.asarray(poly, dtype=float) + [x0, y0])
+             for poly, c, conf in zip(result.masks.xy, result.boxes.cls.int().tolist(), result.boxes.conf.tolist())],
+            point_cloud, camera_to_table, intrinsics, args.silhouette_min_iou,
+        )
     if result.masks is not None:
         for index, (polygon, class_id, confidence) in enumerate(
             zip(result.masks.xy, result.boxes.cls.int().tolist(), result.boxes.conf.tolist()), start=1
@@ -136,6 +149,10 @@ def main():
                 20,
                 camera_to_table,
             )
+            top_fit = top_fits[index - 1] if top_fits else None
+            if top_fit is not None:
+                center_table = top_fit["center"].astype(np.float32)
+                center_pixel = top_fit["center_px"]
             object_id = f"object_{index:03d}"
             object_data.append((object_id, mask, {
                 "pixel_xy_full": pixel_xy,
@@ -149,7 +166,11 @@ def main():
             color = (0, 220, 0) if center_table is not None else (128, 128, 128)
             full_polygon = np.rint(polygon + [x0, y0]).astype(np.int32)
             cv2.polylines(annotated, [full_polygon], True, color, 3)
-            if center_table is not None and center_pixel is not None:
+            if top_fit is not None:
+                cv2.polylines(annotated, [top_fit["outline_px"]], True, (0, 255, 0), 2)
+                cv2.drawMarker(annotated, center_pixel, (0, 0, 255), cv2.MARKER_CROSS, 24, 2)
+                label = f"{class_name} {confidence:.2f} TOP {np.round(center_table, 3)}m IoU {top_fit['iou']:.2f}"
+            elif center_table is not None and center_pixel is not None:
                 cv2.circle(annotated, center_pixel, 7, (255, 255, 255), -1)
                 label = f"{class_name} {confidence:.2f} TABLE {np.round(center_table, 3)}m"
             else:
@@ -170,6 +191,8 @@ def main():
                 "center_inlier_point_count": int(center_points),
                 "center_table_xyz_m": center_table.tolist() if center_table is not None else None,
                 "center_pixel_xy_full": list(center_pixel) if center_pixel is not None else None,
+                "center_source": "silhouette_top_face" if top_fit is not None else "point_cloud_mean",
+                "silhouette_iou": top_fit["iou"] if top_fit is not None else None,
             })
 
     cv2.putText(annotated, "ENTER/SPACE/S = save case | Q/ESC = discard", (20, frame.shape[0] - 25),
