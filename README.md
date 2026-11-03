@@ -6,7 +6,7 @@ Run everything from the repository root.
 |---|---|---|
 | `vision/` | libraries: YOLO/ZED helpers (`detection.py`), STL models, silhouette / top-face fitting | `from vision.detection import ...` |
 | `control/` | libraries: M-FRPSO IK, RRT-Connect, arm connection (`IK_control.py`), fine joint offsets | `from control.modified_frpso_ik import ...` |
-| `calibration/` | calibration tools (fine joint offsets GUI, gripper current GUI) and the saved offsets in `robots/` | `python calibration/fine_joint_calibration_gui.py` |
+| `calibration/` | calibration tools (`calibrate.py`: ArUco camera calibration; fine joint offsets GUI, gripper current GUI) and the saved offsets in `robots/` | `python calibration/calibrate.py` |
 | `experiments/` | runnable scripts: `Full_pipeline.py`, `sim_plan.py` (simulation only), `object_3d_live.py`, `match_gui.py`, `silhouette_gui.py`, ... | `python experiments/sim_plan.py` |
 | `yolo_dataset/` | dataset, labels, ROI and YOLO training / capture tools | `python yolo_dataset/train_seg.py` |
 | `stl/`, `robot_urdfs/`, `docs/` | object models, robot model, documents | |
