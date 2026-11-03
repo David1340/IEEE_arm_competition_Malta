@@ -30,6 +30,7 @@ from vision.live import Vision, add_vision_args  # noqa: E402
 
 GRIPPER_OPEN = 80.0      # LeRobot 0-100 scale
 WAYPOINT_STEP_DEG = 4.0  # the motors lag on long moves, so send short steps
+HOME_Q = np.radians([0.0, 0.0, 0.0, 0.0, -90.0])  # shoulder_pan, lift, elbow, wrist_flex, wrist_roll
 GRIP_CURRENT_MA = 80.0   # gripper motor current that means the object is held
 GRIP_CONFIRM_READINGS = 3
 GRIP_SQUEEZE_UNITS = 2.0  # units held past the contact position
@@ -71,6 +72,15 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
     return False, position, position, current_ma
 
 
+def move_along(robot, path, send_joints):
+    """Send the joint path in short steps, gripper open."""
+    for a, b in zip(path[:-1], path[1:]):
+        a, b = np.asarray(a), np.asarray(b)
+        n = max(1, int(np.ceil(np.degrees(np.abs(b - a).max()) / WAYPOINT_STEP_DEG)))
+        for t in np.linspace(0, 1, n + 1)[1:]:
+            send_joints(robot, (1 - t) * a + t * b, gripper=GRIPPER_OPEN)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_vision_args(ap)
@@ -90,6 +100,19 @@ def main():
     args = ap.parse_args()
     if args.execute and args.no_robot:
         raise SystemExit("--execute needs the arm: drop --no-robot")
+
+    # 0. robot: go to the home pose before anything else (--execute)
+    robot = None
+    if not args.no_robot:
+        from control.IK_control import connect_robot, read_joints_rad, send_joints
+
+        robot = connect_robot()
+        if args.execute:
+            print(f"Home pose [deg]: {np.round(np.degrees(HOME_Q), 1)}; now at {np.round(np.degrees(read_joints_rad(robot)), 1)}")
+            if input("Type 'yes' to move the real arm to the home pose: ").strip().lower() != "yes":
+                robot.disconnect()
+                raise SystemExit("Not executed.")
+            move_along(robot, [read_joints_rad(robot), HOME_Q], send_joints)
 
     # 1. vision
     vision = Vision(args)
@@ -112,13 +135,7 @@ def main():
     target = np.array([*objects[args.object - 1][2][:2], args.height])
 
     # 2. world, starting from the real arm pose
-    robot = None
-    start_q = START_Q
-    if not args.no_robot:
-        from control.IK_control import connect_robot, read_joints_rad, send_joints
-
-        robot = connect_robot()
-        start_q = read_joints_rad(robot)
+    start_q = START_Q if robot is None else read_joints_rad(robot)
     try:
         world = World([(OBJECT_STL_FILES[name.casefold()], c[0], c[1], 0.0) for name, _, c, _ in objects],
                       start_q, gui=not args.no_gui, clearance=args.clearance)
@@ -148,11 +165,7 @@ def main():
         if input("Type 'yes' to move the real arm along this path: ").strip().lower() != "yes":
             print("Not executed.")
             return
-        for a, b in zip(route.path[:-1], route.path[1:]):
-            a, b = np.asarray(a), np.asarray(b)
-            n = max(1, int(np.ceil(np.degrees(np.abs(b - a).max()) / WAYPOINT_STEP_DEG)))
-            for t in np.linspace(0, 1, n + 1)[1:]:
-                send_joints(robot, (1 - t) * a + t * b, gripper=GRIPPER_OPEN)
+        move_along(robot, route.path, send_joints)
         print("Path finished.")
         if args.close_gripper and input("Type CLOSE to close the gripper on the object: ").strip().upper() == "CLOSE":
             grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
