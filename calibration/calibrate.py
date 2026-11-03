@@ -1,7 +1,7 @@
 """Every calibration of the robot, in one script; every calibration value, in one file: calibration.json.
 
     python calibration/calibrate.py                          # after the camera moved: the ArUco markers, a few s, no arm
-    python calibration/calibrate.py --marker-ids 0,1,2,3     # the first time: which ID is TOP_RIGHT, BOTTOM_RIGHT,
+    python calibration/calibrate.py --marker-ids 3,2,1,0     # the first time: which ID is TOP_RIGHT, BOTTOM_RIGHT,
                                                        # BOTTOM_LEFT, TOP_LEFT (remembered afterwards)
     python calibration/calibrate.py ids                      # live view: which marker has which ID
     python calibration/calibrate.py arm                      # the most accurate camera fit: touch 4 blocks with the arm
