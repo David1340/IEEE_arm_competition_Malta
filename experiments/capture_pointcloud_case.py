@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--weights", default=None, help="default: latest best.pt under runs/segment")
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--imgsz", type=int, default=None, help="default: longest ROI side")
-    parser.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD1080")
+    parser.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD720")
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--depth-mode", choices=["QUALITY", "ULTRA", "NEURAL"], default="QUALITY")
     parser.add_argument("--min-depth", type=float, default=0.10)

@@ -46,7 +46,7 @@ def main():
     ap.add_argument("--weights", default=None, help="default: most recent run")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=None, help="default: longest side of the ROI")
-    ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD1080")
+    ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD720")
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument("--max-width", type=int, default=1400)
     ap.add_argument("--save-dir", default=str(HERE / "live_captures"))

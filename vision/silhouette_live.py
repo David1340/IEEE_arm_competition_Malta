@@ -338,7 +338,7 @@ def main():
     ap.add_argument("--calibration", default=None, help="default: camera_transform.npy in the repo root")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=None)
-    ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD1080")
+    ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD720")
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument("--depth-mode", choices=["PERFORMANCE", "QUALITY", "ULTRA", "NEURAL"], default="QUALITY")
     ap.add_argument("--refit-every", type=int, default=60, help="full re-fit every N frames per object")

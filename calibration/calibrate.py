@@ -226,7 +226,7 @@ def open_zed(serial=None):
     import pyzed.sl as sl
 
     init = sl.InitParameters()
-    init.camera_resolution = sl.RESOLUTION.HD1080
+    init.camera_resolution = sl.RESOLUTION.HD720
     init.depth_mode = sl.DEPTH_MODE.NEURAL
     init.coordinate_units = sl.UNIT.METER
     init.coordinate_system = sl.COORDINATE_SYSTEM.IMAGE
