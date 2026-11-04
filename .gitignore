@@ -39,6 +39,7 @@ robot_urdfs/so101/assets/collision/*
 !robot_urdfs/so101/assets/collision/*.stl
 !robot_urdfs/so101/assets/collision/*.obj
 !README.md
+!teleoperate.sh
 !vision/
 vision/*
 !vision/*.py
