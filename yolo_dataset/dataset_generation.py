@@ -52,7 +52,7 @@ def main():
     ap.add_argument("--out", default="yolo_dataset/images")
     ap.add_argument("--prefix", default="img")
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between auto-captures")
-    ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD1080")
+    ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD2K")
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument("--ext", choices=["jpg", "png"], default="jpg")
     ap.add_argument("--roi", action="store_true", help="save only the ROI from yolo_dataset/roi.json")
