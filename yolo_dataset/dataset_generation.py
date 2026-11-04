@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument("--ext", choices=["jpg", "png"], default="jpg")
     ap.add_argument("--roi", action="store_true", help="save only the ROI from yolo_dataset/roi.json")
+    ap.add_argument("--preview-width", type=int, default=1000,
+                    help="initial preview window width in pixels (the window is resizable)")
     args = ap.parse_args()
 
     if args.list:
@@ -73,6 +75,10 @@ def main():
     auto, last_save, count = False, 0.0, 0
     existing = sum(1 for f in out.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png"))
     print(f"{existing} images already in {out}")
+
+    win = "ZED capture"
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    window_sized = False
 
     def save(frame):
         nonlocal count
@@ -98,11 +104,15 @@ def main():
             if roi:
                 x, y, rw, rh = roi
                 cv2.rectangle(view, (x, y), (x + rw, y + rh), (0, 255, 0), 4)
-            view = cv2.resize(view, None, fx=0.5, fy=0.5)
+            scale = min(1.0, args.preview_width / view.shape[1])
+            view = cv2.resize(view, None, fx=scale, fy=scale)
             roi_label = "ROI shown / crop save" if args.roi and roi else "ROI shown / full-frame save" if roi else "ROI not configured"
             label = f"saved={count} total={existing + count} auto={'ON' if auto else 'OFF'} | {roi_label}"
             cv2.putText(view, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.imshow("ZED capture", view)
+            cv2.imshow(win, view)
+            if not window_sized:
+                cv2.resizeWindow(win, view.shape[1], view.shape[0])
+                window_sized = True
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
