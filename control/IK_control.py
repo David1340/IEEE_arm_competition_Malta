@@ -151,15 +151,16 @@ class EEController:
         return q, result.position_error_m
 
 
-def connect_robot(arm: str | None = None):
+def connect_robot(arm: str | None = None, port: str | None = None):
+    """Connect a follower: its port from ports/<arm>.txt (or `port`), its LeRobot calibration <arm>.json."""
     from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 
     port_file, calib = arm_files(arm)
-    for f in (port_file, calib):
+    for f in ([] if port else [port_file]) + [calib]:
         if not f.is_file():
             raise SystemExit(f"{f} not found" + ("" if arm is None else f" (needed for --arm {arm})"))
     cfg = SOFollowerRobotConfig(
-        port=port_file.read_text().strip(),
+        port=port or port_file.read_text().strip(),
         id=calib.stem,
         calibration_dir=calib.parent,
         use_degrees=True,

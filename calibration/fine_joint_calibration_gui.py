@@ -5,6 +5,9 @@ the live slider offsets. Press s to save; q/Escape discards unsaved changes.
 
 Usage:
     python calibration/fine_joint_calibration_gui.py
+    python calibration/fine_joint_calibration_gui.py --arm follower_blue     # port from ports/follower_blue.txt,
+                                                                             # saves that arm's own offsets
+    python calibration/fine_joint_calibration_gui.py --port /dev/ttyACM2     # any port (with or without --arm)
     python calibration/fine_joint_calibration_gui.py --no-robot
     python calibration/fine_joint_calibration_gui.py --reset-offsets
 """
@@ -24,8 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from control.fine_joint_offsets import (  # noqa: E402
     ARM_JOINTS,
-    FINE_OFFSETS_FILE,
     load_fine_joint_offsets,
+    own_offsets_file,
     save_fine_joint_offsets,
 )
 from control.IK_control import URDF, connect_robot  # noqa: E402
@@ -34,6 +37,9 @@ from control.IK_control import URDF, connect_robot  # noqa: E402
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-robot", action="store_true", help="adjust offsets against a zero-pose preview only")
+    parser.add_argument("--arm", default=None, help="which arm (follower_pink, follower_blue): its port file "
+                        "ports/<arm>.txt, its LeRobot calibration and its own offsets file")
+    parser.add_argument("--port", default=None, help="serial port, e.g. /dev/ttyACM2 (default: the arm's port file)")
     parser.add_argument("--offset-range-deg", type=float, default=10.0,
                         help="default +/- range for each PyBullet fine-offset slider")
     parser.add_argument("--reset-offsets", action="store_true", help="reset all saved offsets to zero")
@@ -41,13 +47,15 @@ def main(argv=None) -> int:
     if not math.isfinite(args.offset_range_deg) or args.offset_range_deg <= 0:
         parser.error("--offset-range-deg must be finite and positive")
 
-    offsets = load_fine_joint_offsets()
+    offsets_file = own_offsets_file(args.arm)
+    offsets = load_fine_joint_offsets(arm=args.arm)
+    print(f"Fine offsets of {args.arm or 'the arm'}: saved to {offsets_file}")
     if args.reset_offsets:
         if input("Type RESET to set every fine offset to 0 degrees: ").strip().upper() != "RESET":
             print("Cancelled; saved fine offsets were not changed.")
             return 1
         zero_offsets = {name: 0.0 for name in ARM_JOINTS}
-        save_fine_joint_offsets(zero_offsets)
+        save_fine_joint_offsets(zero_offsets, offsets_file)
         print("All saved fine offsets reset to 0 degrees.")
         return 0
 
@@ -57,7 +65,7 @@ def main(argv=None) -> int:
         raise RuntimeError("Could not open the PyBullet calibration GUI")
     try:
         if not args.no_robot:
-            robot = connect_robot()
+            robot = connect_robot(args.arm, port=args.port)
             robot.bus.disable_torque()
             print("SO-101 torque disabled. Move the arm by hand; no motor commands will be sent.")
         else:
@@ -139,7 +147,7 @@ def main(argv=None) -> int:
                     [saved_offsets[name] for name in ARM_JOINTS],
                     atol=0.01,
                 ) else "SAVED")
-                + f" | {FINE_OFFSETS_FILE.name}"
+                + f" | {offsets_file.name}"
             )
             status_id = p.addUserDebugText(
                 status,
@@ -154,7 +162,7 @@ def main(argv=None) -> int:
 
             keys = p.getKeyboardEvents(physicsClientId=client)
             if ord("s") in keys and keys[ord("s")] & p.KEY_WAS_TRIGGERED:
-                save_fine_joint_offsets(offsets)
+                save_fine_joint_offsets(offsets, offsets_file)
                 saved_offsets = offsets.copy()
                 print("Saved fine offsets (deg):", {name: round(offsets[name], 2) for name in ARM_JOINTS})
             if (ord("q") in keys and keys[ord("q")] & p.KEY_WAS_TRIGGERED) or (
