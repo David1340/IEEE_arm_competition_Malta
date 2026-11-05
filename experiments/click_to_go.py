@@ -64,7 +64,11 @@ def main():
     ap.add_argument("--orient-down", action="store_true", help="constrain the gripper to point down")
     ap.add_argument("--serial", type=int, help="the ZED's serial number (default: the first camera)")
     ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
+    from control.IK_control import add_motion_args, apply_motion_args
+
+    add_motion_args(ap)
     args = ap.parse_args()
+    apply_motion_args(args)
 
     T_table = camera_to_table()
     if T_table is None:
@@ -77,7 +81,7 @@ def main():
 
     import pybullet as p
     import pyzed.sl as sl
-    from control.IK_control import EEController, connect_robot, move_to, read_joints_rad, send_joints
+    from control.IK_control import EEController, connect_robot, follow_path, move_to, read_joints_rad
 
     ctrls, robots = {}, {}
     try:
@@ -173,7 +177,7 @@ def main():
                 for name in names:
                     if robots[name]:
                         print(f"{name}: going home ...")
-                        send_joints(robots[name], list(HOME_Q))
+                        follow_path(robots[name], [read_joints_rad(robots[name]), list(HOME_Q)])
                         ctrls[name].set_sim_state(read_joints_rad(robots[name]))
                     else:
                         ctrls[name].set_sim_state(list(HOME_Q))

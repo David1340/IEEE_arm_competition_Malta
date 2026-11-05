@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / "yolo_dataset"))
 from block_color import classify, load_colors, object_pixels, to_hsv  # noqa: E402
 from calibration.calibrate import arm_from_table, arms, default_arm  # noqa: E402
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
-                                       GRIPPER_OPEN, HOME_Q, WAYPOINT_STEP_DEG,
+                                       GRIPPER_OPEN, HOME_Q,
                                        close_gripper_with_current_feedback)
 from experiments.sim_plan import TABLE_CLEARANCE, World  # noqa: E402
 from vision.detection import OBJECT_STL_FILES  # noqa: E402
@@ -124,13 +124,12 @@ def plan_sequence(world, start_q, waypoints, seed):
     return plans
 
 
-def follow(robot, path, gripper, send_joints):
-    """Send a joint path in short steps, holding the gripper at `gripper`."""
-    for a, b in zip(path[:-1], path[1:]):
-        a, b = np.asarray(a), np.asarray(b)
-        n = max(1, int(np.ceil(np.degrees(np.abs(b - a).max()) / WAYPOINT_STEP_DEG)))
-        for t in np.linspace(0, 1, n + 1)[1:]:
-            send_joints(robot, (1 - t) * a + t * b, gripper=gripper)
+def follow(robot, path, gripper, send_joints=None):
+    """Move along a joint path in one smooth motion (control/IK_control.py follow_path), the gripper going to
+    `gripper` on the way. send_joints is not used any more (kept for older callers)."""
+    from control.IK_control import follow_path
+
+    return follow_path(robot, path, gripper)
 
 
 def go_home(robot, send_joints, read_joints_rad):
@@ -159,7 +158,11 @@ def main():
     ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
+    from control.IK_control import add_motion_args, apply_motion_args
+
+    add_motion_args(ap)
     args = ap.parse_args()
+    apply_motion_args(args)
     if args.execute and args.no_robot:
         raise SystemExit("--execute needs the arms: drop --no-robot")
 

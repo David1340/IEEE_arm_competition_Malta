@@ -237,6 +237,99 @@ def send_joints(
     return False
 
 
+# ---------------------------------------------------------------------------------------------- smooth motion
+# How follow_path() moves the arm; the scripts' --speed / --accel / --profile set these (add_motion_args).
+MOTION = {"speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0}
+
+
+def add_motion_args(ap):
+    ap.add_argument("--speed", type=float, default=MOTION["speed"],
+                    help="top speed of the fastest joint along a path [deg/s]")
+    ap.add_argument("--accel", type=float, default=MOTION["accel"], help="speed-up / slow-down [deg/s^2]")
+    ap.add_argument("--profile", choices=["trapezoid", "minjerk"], default=MOTION["profile"],
+                    help="trapezoid: constant acceleration; minjerk: smoother start and stop, a little slower")
+    ap.add_argument("--max-lag", type=float, default=MOTION["max_lag"],
+                    help="the path waits while the arm is this far behind the command [deg]")
+
+
+def apply_motion_args(args):
+    MOTION.update(speed=args.speed, accel=args.accel, profile=args.profile, max_lag=args.max_lag)
+
+
+def motion_profile(length, speed, accel, profile):
+    """(duration T, s(t)) moving `length` degrees: s goes 0 -> length with zero speed at both ends."""
+    if length <= 0:
+        return 0.0, lambda t: 0.0
+    if profile == "minjerk":
+        # s = L (10 r^3 - 15 r^4 + 6 r^5): peak speed 1.875 L / T, peak acceleration 5.77 L / T^2
+        T = max(1.875 * length / speed, math.sqrt(5.7735 * length / accel))
+        return T, lambda t: length * (lambda r: 10 * r ** 3 - 15 * r ** 4 + 6 * r ** 5)(min(max(t / T, 0.0), 1.0))
+    ta = speed / accel
+    if length < speed * ta:                       # too short to reach the top speed: a triangle
+        ta = math.sqrt(length / accel)
+        speed = accel * ta
+    T = 2 * ta + (length - speed * ta) / speed
+
+    def s(t):
+        t = min(max(t, 0.0), T)
+        if t < ta:
+            return 0.5 * accel * t * t
+        if t > T - ta:
+            return length - 0.5 * accel * (T - t) ** 2
+        return 0.5 * accel * ta * ta + speed * (t - ta)
+    return T, s
+
+
+def follow_path(robot, path, gripper=None, *, tol_deg=3.0, gripper_tolerance=5.0, feedback_callback=None,
+                **motion) -> bool:
+    """Move along a joint path (radians, corrected angles) in one smooth motion: targets are streamed at
+    MOTION["rate"] Hz along the whole path with a speed profile (gentle start, top speed, gentle stop), and the
+    arm only has to arrive at the end. When the arm falls more than max_lag degrees behind, the path waits for
+    it. gripper (0-100) is reached gradually over the move; None keeps it where it is. Returns True when the
+    arm arrived (within tol_deg)."""
+    settings = {**MOTION, **motion}
+    points = [np.asarray(q, dtype=float) for q in path]
+    if not points:
+        return True
+    points[0] = np.array(read_joints_rad(robot))           # start from where the arm really is
+    lengths = [float(np.degrees(np.max(np.abs(b - a)))) for a, b in zip(points[:-1], points[1:])]
+    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+    total = float(cumulative[-1])
+    g0 = float(robot.get_observation()["gripper.pos"])
+    g1 = g0 if gripper is None else float(gripper)
+    arm = robot_arm(robot)
+
+    def point_at(distance):
+        i = int(np.clip(np.searchsorted(cumulative, distance, side="right") - 1, 0, max(len(lengths) - 1, 0)))
+        if not lengths:
+            return points[-1]
+        f = 0.0 if lengths[i] <= 0 else min(max((distance - cumulative[i]) / lengths[i], 0.0), 1.0)
+        return points[i] + f * (points[i + 1] - points[i])
+
+    duration, s_of_t = motion_profile(total, settings["speed"], settings["accel"], settings["profile"])
+    dt = 1.0 / settings["rate"]
+    t, next_tick = 0.0, time.monotonic()
+    give_up = next_tick + 3 * duration + 10.0
+    while t < duration and time.monotonic() < give_up:
+        distance = s_of_t(t)
+        q = point_at(distance)
+        action = {f"{name}.pos": motor_position_deg(name, math.degrees(value), arm)
+                  for name, value in zip(ARM_JOINTS, q)}
+        action["gripper.pos"] = g0 + (g1 - g0) * (distance / total if total > 0 else 1.0)
+        robot.send_action(action)
+        obs = robot.get_observation()
+        if feedback_callback is not None:
+            feedback_callback(obs)
+        measured = np.array([math.radians(correct_joint_position_deg(n, obs[f"{n}.pos"], arm)) for n in ARM_JOINTS])
+        if float(np.degrees(np.max(np.abs(measured - q)))) <= settings["max_lag"]:
+            t += dt                                          # on track: the path moves on
+        next_tick += dt
+        time.sleep(max(0.0, next_tick - time.monotonic()))
+    # the end: keep commanding the goal until the joints (and the gripper, if asked) are there
+    return send_joints(robot, points[-1], gripper, steps=2, tol_deg=tol_deg, gripper_tolerance=gripper_tolerance,
+                       timeout=3.0, feedback_callback=feedback_callback)
+
+
 LOCKED_WRIST_ROLL = math.radians(-90.0)
 WRIST_ROLL_SNAP = math.radians(5.0)  # measured roll within this of -90 deg counts as -90 deg
 
@@ -256,7 +349,7 @@ def planning_start(robot, ctrl) -> list[float]:
               "(use --free-wrist-roll to plan with any roll)")
         target = list(q)
         target[roll] = LOCKED_WRIST_ROLL
-        send_joints(robot, target)
+        follow_path(robot, [q, target])
         q = read_joints_rad(robot)
         if abs(q[roll] - LOCKED_WRIST_ROLL) > WRIST_ROLL_SNAP:
             raise RuntimeError(f"wrist roll stayed at {math.degrees(q[roll]):.1f} deg; could not reach -90 deg")
@@ -320,15 +413,7 @@ def move_to(ctrl, robot, aim, gripper=None, orient=None, tol=5e-3):
         final = ctrl.ee_position()
         return float(np.linalg.norm(final - aim)) <= tol, final
 
-    motion_settled = True
-    if len(route.path) == 1:
-        motion_settled = send_joints(robot, q, gripper)
-    else:
-        for index, waypoint in enumerate(route.path[1:], start=1):
-            waypoint_gripper = gripper if index == len(route.path) - 1 else None
-            motion_settled = send_joints(robot, waypoint, waypoint_gripper) and motion_settled
-            if not motion_settled:
-                break
+    motion_settled = follow_path(robot, route.path if len(route.path) > 1 else [q, q], gripper)
     ctrl.set_sim_state(read_joints_rad(robot))
     final = ctrl.ee_position()
     # Sag/backlash leave a static offset; shift the IK aim point by the measured error.
@@ -349,10 +434,7 @@ def move_to(ctrl, robot, aim, gripper=None, orient=None, tol=5e-3):
         if correction_route is None:
             print("RRT-Connect não encontrou caminho para corrigir o erro de posição")
             break
-        for waypoint in correction_route.path[1:]:
-            motion_settled = send_joints(robot, waypoint) and motion_settled
-            if not motion_settled:
-                break
+        motion_settled = follow_path(robot, correction_route.path)
         if not motion_settled:
             break
         ctrl.set_sim_state(read_joints_rad(robot))
@@ -374,7 +456,9 @@ def main():
     ap.add_argument("--orient-down", action="store_true", help="constrain gripper to point down")
     ap.add_argument("--offset", type=float, nargs=3, default=[0.0, 0.0, -0.04], metavar=("X", "Y", "Z"),
                     help="meters added to every target, base frame")
+    add_motion_args(ap)
     args = ap.parse_args()
+    apply_motion_args(args)
 
     ctrl = EEController(gui=args.gui, lock_wrist_roll=not args.free_wrist_roll, arm=args.arm)
     robot = None if args.sim_only else connect_robot(args.arm)

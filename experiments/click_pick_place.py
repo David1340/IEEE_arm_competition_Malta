@@ -148,7 +148,11 @@ def main():
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--serial", type=int, help="the ZED's serial number (default: the first camera)")
     ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
+    from control.IK_control import add_motion_args, apply_motion_args
+
+    add_motion_args(ap)
     args = ap.parse_args()
+    apply_motion_args(args)
 
     T_table = camera_to_table()
     if T_table is None:
