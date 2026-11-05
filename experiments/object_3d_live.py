@@ -9,8 +9,13 @@ With the silhouette fit on (default) the STL is fitted to each YOLO mask by rend
 of the fitted STL; the green outline is that top face. Objects the fit cannot match (IoU below
 --silhouette-min-iou) keep the point-cloud center. --no-silhouette restores the old behaviour.
 
+Both followers are shown in the PyBullet twin at their bases in the shared TABLE frame (calibration/calibrate.py:
+follower_pink at y = +0.25, follower_blue at y = -0.25), each read live (torque off) from the port in
+ports/<arm>.txt. An arm that cannot be connected is left at its zero pose with a warning.
+
 Usage:
     python experiments/object_3d_live.py
+    python experiments/object_3d_live.py --arm follower_blue       # only one of the arms
     python experiments/object_3d_live.py --weights runs/segment/train/weights/best.pt
     python experiments/object_3d_live.py --serial 27500226
 """
@@ -33,7 +38,8 @@ from vision.live import COLORS, Vision, add_vision_args  # noqa: E402
 
 
 class PyBulletTwin:
-    def __init__(self, joint_names, *, gui=True):
+    def __init__(self, joint_names, bases, *, gui=True):
+        """bases: {arm name: (x, y, yaw_deg)} in the TABLE frame; one robot model per arm."""
         import pybullet as p
         import pybullet_data
         from control.IK_control import EE_LINK, URDF
@@ -61,13 +67,18 @@ class PyBulletTwin:
                 baseMass=0,
                 baseCollisionShapeIndex=table_collision,
                 baseVisualShapeIndex=table_visual,
-                basePosition=[0, 0.25, -table_half_extents[2]],
+                basePosition=[0.25, 0.0, -table_half_extents[2]],
                 physicsClientId=self.client,
             )
             flags = p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
-            self.robot_id = p.loadURDF(
-                str(URDF), useFixedBase=True, flags=flags, physicsClientId=self.client
-            )
+            self.robot_ids = {}
+            for name, (x, y, yaw_deg) in bases.items():
+                self.robot_ids[name] = p.loadURDF(
+                    str(URDF), basePosition=[x, y, 0.0],
+                    baseOrientation=p.getQuaternionFromEuler([0, 0, np.radians(yaw_deg)]),
+                    useFixedBase=True, flags=flags, physicsClientId=self.client,
+                )
+            self.robot_id = next(iter(self.robot_ids.values()))
             self.joint_names = list(joint_names)
             self.joint_indices = {}
             self.link_indices = {}
@@ -83,7 +94,7 @@ class PyBulletTwin:
             self.gui = gui
             if gui:
                 p.resetDebugVisualizerCamera(
-                    1.65, 45, -45, [0.15, 0.25, 0.20], physicsClientId=self.client
+                    1.65, 45, -45, [0.25, 0.0, 0.15], physicsClientId=self.client
                 )
         except Exception:
             p.disconnect(physicsClientId=self.client)
@@ -172,16 +183,17 @@ class PyBulletTwin:
             self.p.removeBody(self.object_markers.pop(key), physicsClientId=self.client)
             self.p.removeUserDebugItem(self.object_labels.pop(key), physicsClientId=self.client)
 
-    def update_robot(self, joint_positions, gripper_position):
+    def update_robot(self, joint_positions, gripper_position, arm=None):
+        robot_id = self.robot_ids[arm] if arm is not None else self.robot_id
         for name, position in zip(self.joint_names, joint_positions):
             self.p.resetJointState(
-                self.robot_id, self.joint_indices[name], float(position), physicsClientId=self.client
+                robot_id, self.joint_indices[name], float(position), physicsClientId=self.client
             )
         gripper_index = self.joint_indices["gripper"]
         info = self.p.getJointInfo(self.robot_id, gripper_index, physicsClientId=self.client)
         normalized = np.clip(float(gripper_position) / 100.0, 0.0, 1.0)
         gripper_angle = info[8] + normalized * (info[9] - info[8])
-        self.p.resetJointState(self.robot_id, gripper_index, float(gripper_angle), physicsClientId=self.client)
+        self.p.resetJointState(robot_id, gripper_index, float(gripper_angle), physicsClientId=self.client)
 
     def close(self):
         if self.p.isConnected(self.client):
@@ -194,39 +206,59 @@ def main():
     ap.add_argument("--max-width", type=int, default=1400)
     ap.add_argument("--no-pybullet-gui", action="store_true", help="run the twin headless")
     ap.add_argument("--no-robot", action="store_true", help="use the URDF zero pose instead of live joint readings")
+    ap.add_argument("--arm", default="both", help="follower_pink, follower_blue or both (default)")
     args = ap.parse_args()
+
+    from calibration.calibrate import arm_from_table, arms, default_arm
+
+    all_arms = arms()
+    names = list(all_arms) if args.arm == "both" else [args.arm]
+    if any(name not in all_arms for name in names):
+        raise SystemExit(f"unknown arm {args.arm!r}; known: {', '.join(all_arms)} or both")
+    bases = {name: (all_arms[name]["x"], all_arms[name]["y"], all_arms[name]["yaw_deg"]) for name in names}
+    # Vision gives positions in the default arm's frame (camera_transform.npy); the twin shows the TABLE frame.
+    table_from_default = np.linalg.inv(arm_from_table(default_arm()))
 
     vision = Vision(args)
     win = "YOLO + ZED 3D centers"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     last_report = 0.0
     fps, frames, fps_time = 0.0, 0, time.time()
-    robot = None
+    robots = {}
     twin = None
 
     try:
         from control.IK_control import ARM_JOINTS, connect_robot, read_joints_rad
 
-        if not args.no_robot:
-            robot = connect_robot()
-            robot.bus.disable_torque()
-            print("SO-101 torque disabled for hand-guiding; joint feedback remains live and no motor commands are sent.")
-        twin = PyBulletTwin(ARM_JOINTS, gui=not args.no_pybullet_gui)
-        print("Coordinates: TABLE frame from ArUco calibration; meters. "
-              "X increases left-to-right, Y bottom-to-top, Z=0 at marker plane. "
-              "SO-101 feedback is read-only; press q/ESC to quit.")
+        for name in [] if args.no_robot else names:
+            try:
+                robots[name] = connect_robot(name)
+            except (ConnectionError, OSError, RuntimeError) as error:
+                print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); shown at its zero pose. "
+                      f"Check ports/{name}.txt and the arm's power.")
+                continue
+            robots[name].bus.disable_torque()
+            print(f"{name}: torque disabled for hand-guiding; joint feedback is live and no motor commands are sent.")
+        twin = PyBulletTwin(ARM_JOINTS, bases, gui=not args.no_pybullet_gui)
+        print("Coordinates: the shared TABLE frame of the ArUco calibration, metres: origin halfway between the "
+              "arms, X forward, Y towards follower_pink, Z=0 at the table. Arm feedback is read-only; q/ESC quits.")
         while True:
             frame, cloud = vision.grab()
             canvas, objects = vision.detect(frame, cloud)
+            objects = [(name, conf, None if centre is None else
+                        (table_from_default @ np.append(np.asarray(centre, float), 1.0))[:3], count)
+                       for name, conf, centre, count in objects]
 
-            if robot is None:
-                joint_positions = [0.0] * len(ARM_JOINTS)
-                gripper_position = 50.0
-            else:
-                observation = robot.get_observation()
-                joint_positions = read_joints_rad(robot)
-                gripper_position = float(observation["gripper.pos"])
-            twin.update_robot(joint_positions, gripper_position)
+            for name in names:
+                robot = robots.get(name)
+                if robot is None:
+                    joint_positions = [0.0] * len(ARM_JOINTS)
+                    gripper_position = 50.0
+                else:
+                    observation = robot.get_observation()
+                    joint_positions = read_joints_rad(robot)
+                    gripper_position = float(observation["gripper.pos"])
+                twin.update_robot(joint_positions, gripper_position, arm=name)
             twin.update_objects(objects)
             twin.p.stepSimulation(physicsClientId=twin.client)
 
@@ -256,7 +288,7 @@ def main():
     finally:
         if twin is not None:
             twin.close()
-        if robot is not None:
+        for robot in robots.values():
             robot.disconnect()
         vision.close()
         cv2.destroyAllWindows()
