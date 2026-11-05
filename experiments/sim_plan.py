@@ -39,7 +39,7 @@ OBJECTS = [
     ("cube_small", 0.25, 0.20, 30.0),
 ]
 TARGET = (0.37, -0.04)         # x, y of the point between the jaws (default: first object)
-HEIGHT = 0.04                  # z of the point between the jaws [m]
+HEIGHT = 0.02                  # z of the point between the jaws [m]
 # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll  [rad]
 START_Q = [0.0553, -0.7104, 0.1461, -1.1745, -math.pi / 2]
 TABLE_CLEARANCE = 0.015        # gripper links stay this far above the table [m]
