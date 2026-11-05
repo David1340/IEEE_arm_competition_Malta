@@ -125,8 +125,9 @@ class World:
         self.checker._set_joint_state(q)
         p.resetBasePositionAndOrientation(self.tcp_ball, self.tcp().tolist(), [0, 0, 0, 1], physicsClientId=self.client)
 
-    def find_pose(self, target, seed=0):
-        """M-FRPSO: one collision-free joint pose with the point between the jaws at target (x, y, z)."""
+    def find_pose(self, target, seed=0, tolerance=0.012):
+        """M-FRPSO: one collision-free joint pose with the point between the jaws at target (x, y, z), within
+        `tolerance` metres."""
         target = np.asarray(target, dtype=float)
         p.resetBasePositionAndOrientation(self.target_ball, target.tolist(), [0, 0, 0, 1], physicsClientId=self.client)
         # Horizontal attitude of the gripper, panned toward the target, used as the orientation goal.
@@ -142,7 +143,7 @@ class World:
         return self.checker.solve(
             target, target_orientation=orientation, start_q=self.start_q,
             num_particles=160, elite_count=5, max_iterations=160, orientation_weight=0.05,
-            position_tolerance_m=0.012, orientation_tolerance_rad=math.radians(30.0), seed=seed,
+            position_tolerance_m=tolerance, orientation_tolerance_rad=math.radians(30.0), seed=seed,
         )
 
     def find_path(self, goal_q, seed=0):

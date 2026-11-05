@@ -104,15 +104,35 @@ def choose_arm(obj, target_bin, bases, max_reach):
 
 
 # ---------------------------------------------------------------------------------------------- motion
+PRECISE = 0.012        # m: how close the grasp must be
+ROUGH = 0.03           # m: the in-between points (above, lift, over the box) only need to be about right
+SEED_TRIES = 3         # a failed point is tried again from other random starts
+
+
 def plan_sequence(world, start_q, waypoints, seed):
-    """Plan start -> each waypoint in turn. waypoints: [(label, xyz in the arm frame)]. Returns
+    """Plan start -> each waypoint in turn. waypoints: [(label, xyz in the arm frame)] or
+    [(label, xyz, tolerance m)]; without a tolerance the grasp is PRECISE and every other point ROUGH. Returns
     [(label, path)] or raises RuntimeError naming the step that failed."""
     q = np.array(start_q, float)
     q[4] = world.start_q[4]          # wrist roll is fixed at its value when the world was built
     plans = []
-    for label, xyz in waypoints:
+    for waypoint in waypoints:
+        label, xyz = waypoint[:2]
+        if len(waypoint) > 2:
+            tolerances = [waypoint[2]]
+        else:   # aim precisely; only the in-between points fall back to ROUGH when that fails
+            tolerances = [PRECISE] if label == "grasp" else [PRECISE, ROUGH]
         world.start_q = q.tolist()
-        result = world.find_pose(xyz, seed)
+        result = None
+        for tolerance in tolerances:
+            for attempt in range(SEED_TRIES):
+                result = world.find_pose(xyz, seed + attempt, tolerance=tolerance)
+                if result is not None and result.success:
+                    break
+            if result is not None and result.success:
+                if tolerance != tolerances[0]:
+                    print(f"  '{label}': {1000 * result.position_error_m:.0f} mm off (allowed for this point)")
+                break
         if result is None or not result.success:
             err = "" if result is None else f" (best {1000 * result.position_error_m:.0f} mm off)"
             raise RuntimeError(f"no pose for '{label}' at {np.round(xyz, 3)}{err}")
