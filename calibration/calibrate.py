@@ -278,8 +278,8 @@ def stamp():
 
 # ---------------------------------------------------------------------------------------------- the camera
 # The hand-measured marker centres (from the old qr_calibrate.py) (robot base frame, m), by position on the table
-QR_POSITIONS = {"TOP_RIGHT": [0.51, -0.42, 0.0], "BOTTOM_RIGHT": [0.20, -0.42, 0.0],
-                "BOTTOM_LEFT": [0.20, 0.97, 0.0], "TOP_LEFT": [0.51, 0.97, 0.0]}
+QR_POSITIONS = {"TOP_RIGHT": [35.5, 12, 0.0], "BOTTOM_RIGHT": [35.5, 52, 0.0],
+                "BOTTOM_LEFT": [-35.5, 52, 0.0], "TOP_LEFT": [-35.5, 52, 0.0]}
 DICTIONARY = "DICT_4X4_50"
 
 
