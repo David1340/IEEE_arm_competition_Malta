@@ -161,6 +161,10 @@ class ModifiedFRPSOIK:
             parent_index = p.getJointInfo(robot_id, joint_index, physicsClientId=physics_client_id)[16]
             parents.add(frozenset((joint_index, parent_index)))
         self._parent_link_pairs = parents
+        self._movable_joint_indices = [
+            joint_index for joint_index in range(p.getNumJoints(robot_id, physicsClientId=physics_client_id))
+            if p.getJointInfo(robot_id, joint_index, physicsClientId=physics_client_id)[2] != p.JOINT_FIXED
+        ]
 
     @staticmethod
     def _orientation_error(target_quaternion, actual_quaternion) -> float:
@@ -287,6 +291,69 @@ class ModifiedFRPSOIK:
             orientation_error = self._orientation_error(target_orientation, link_state[5])
         return position_error, orientation_error
 
+    def _dls_attempt(self, target_position, target_orientation, start, *, position_weight, orientation_weight,
+                     iterations=80, damping=0.02, max_step=0.15):
+        """One damped-least-squares IK run from `start` with the PyBullet Jacobian (fixed joints excluded, joint
+        limits by clipping). Returns the final joint vector; the body is left in that state."""
+        q = self._apply_fixed_joint_values(np.clip(np.asarray(start, dtype=float), self.lower, self.upper))
+        free = [offset for offset in range(len(q)) if offset not in self.fixed_joint_offsets]
+        movable = self._movable_joint_indices
+        column = [movable.index(index) for index in self.joint_indices]
+        for _ in range(iterations):
+            self._set_joint_state(q)
+            state = p.getLinkState(self.robot_id, self.ee_link_index, computeLinkVelocity=0,
+                                   computeForwardKinematics=True, physicsClientId=self.physics_client_id)
+            error = [position_weight * (target_position - np.asarray(state[4]))]
+            positions = [p.getJointState(self.robot_id, index, physicsClientId=self.physics_client_id)[0]
+                         for index in movable]
+            linear, angular = p.calculateJacobian(
+                self.robot_id, self.ee_link_index, state[2], positions, [0.0] * len(movable), [0.0] * len(movable),
+                physicsClientId=self.physics_client_id)
+            rows = [position_weight * np.asarray(linear)[:, column][:, free]]
+            if target_orientation is not None and orientation_weight > 0:
+                inverse = p.invertTransform([0, 0, 0], state[5])[1]
+                difference = p.multiplyTransforms([0, 0, 0], target_orientation, [0, 0, 0], inverse)[1]
+                axis, angle = p.getAxisAngleFromQuaternion(difference)
+                angle = (angle + math.pi) % (2 * math.pi) - math.pi
+                error.append(orientation_weight * angle * np.asarray(axis))
+                rows.append(orientation_weight * np.asarray(angular)[:, column][:, free])
+            error, jacobian = np.concatenate(error), np.vstack(rows)
+            if np.linalg.norm(error) < 1e-5:
+                break
+            step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + damping ** 2 * np.eye(len(error)), error)
+            largest = np.max(np.abs(step))
+            if largest > max_step:
+                step *= max_step / largest
+            q[free] = np.clip(q[free] + step, self.lower[free], self.upper[free])
+        self._set_joint_state(q)
+        return q
+
+    def fast_solve(self, target_position, *, target_orientation=None, start_q=None, allowed_collision_body_ids=(),
+                   position_weight=1.0, orientation_weight=0.1, position_tolerance_m=0.005,
+                   orientation_tolerance_rad=math.radians(5.0), restarts=8, seed=0) -> IKResult | None:
+        """A quick try before the swarm: damped least squares from start_q, then from random poses. Returns the
+        first collision-free result within tolerance, or None (then the caller runs the full M-FRPSO)."""
+        target_position = np.asarray(target_position, dtype=float)
+        rng = np.random.default_rng(seed)
+        starts = [np.asarray(start_q, dtype=float)] if start_q is not None else []
+        starts += [rng.uniform(self.lower, self.upper) for _ in range(restarts)]
+        for start in starts:
+            q = self._dls_attempt(target_position, target_orientation, start, position_weight=1.0,
+                                  orientation_weight=orientation_weight)
+            position_error, orientation_error = self._pose_errors(target_position, target_orientation)
+            if position_error > position_tolerance_m or (
+                    orientation_error is not None and orientation_error > orientation_tolerance_rad):
+                continue
+            if not self.state_is_collision_free(q, allowed_collision_body_ids):
+                continue
+            self._set_joint_state(q)
+            cost = position_weight * position_error + (orientation_weight * orientation_error
+                                                       if orientation_error is not None else 0.0)
+            return IKResult(joint_positions=q.copy(), position_error_m=position_error,
+                            orientation_error_rad=orientation_error, cost=cost, iterations=0,
+                            collision_free=True, success=True)
+        return None
+
     def solve(
         self,
         target_position: Sequence[float],
@@ -304,6 +371,7 @@ class ModifiedFRPSOIK:
         position_tolerance_m: float = 0.005,
         orientation_tolerance_rad: float = math.radians(5.0),
         seed: int = 0,
+        fast_first: bool = True,
     ) -> IKResult | None:
         """Find a collision-free joint configuration for a target end-effector pose.
 
@@ -335,6 +403,17 @@ class ModifiedFRPSOIK:
             self.obstacle_body_ids = original_obstacles
             raise ValueError(f"start_q must have shape ({dimension},)")
 
+        if fast_first:
+            quick = self.fast_solve(
+                target_position, target_orientation=target_orientation, start_q=start,
+                allowed_collision_body_ids=allowed_collision_body_ids, position_weight=position_weight,
+                orientation_weight=orientation_weight, position_tolerance_m=position_tolerance_m,
+                orientation_tolerance_rad=orientation_tolerance_rad, seed=seed,
+            )
+            if quick is not None:
+                self.obstacle_body_ids = original_obstacles
+                return quick
+
         population = self._apply_fixed_joint_values(
             rng.uniform(self.lower, self.upper, size=(num_particles, dimension))
         )
@@ -345,15 +424,24 @@ class ModifiedFRPSOIK:
         uniform_count = num_particles // (elite_count + 1)
 
         for iteration in range(1, max_iterations + 1):
-            evaluated = []
+            # The pose error first (cheap forward kinematics), then the collision check (expensive) only for
+            # the best candidates: only collision-free ones can become elites, and only a few elites are kept.
+            scored = []
             for q in population:
-                if not self.state_is_collision_free(q, allowed_collision_body_ids):
-                    continue
+                self._set_joint_state(q)
                 position_error, orientation_error = self._pose_errors(target_position, target_orientation)
                 cost = position_weight * position_error
                 if orientation_error is not None:
                     cost += orientation_weight * orientation_error
-                evaluated.append((cost, q.copy(), position_error, orientation_error))
+                scored.append((cost, q.copy(), position_error, orientation_error))
+            scored.sort(key=lambda result: result[0])
+            worst_elite = elite_archive[-1][0] if len(elite_archive) >= elite_count else math.inf
+            evaluated = []
+            for candidate in scored:
+                if len(evaluated) >= 2 * elite_count or candidate[0] >= worst_elite and len(evaluated) >= elite_count:
+                    break
+                if self.state_is_collision_free(candidate[1], allowed_collision_body_ids):
+                    evaluated.append(candidate)
 
             if evaluated:
                 evaluated.sort(key=lambda result: result[0])
