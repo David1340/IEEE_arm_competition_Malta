@@ -28,9 +28,24 @@ def _read_offsets(path: str, modified_ns: int, file_size: int) -> dict[str, floa
 	return offsets
 
 
-def load_fine_joint_offsets(path: str | Path = FINE_OFFSETS_FILE) -> dict[str, float]:
-	"""Load software corrections in degrees, refreshing the cache when JSON changes."""
-	file_path = Path(path)
+def offsets_file(arm: str | None = None) -> Path:
+	"""The fine offsets file of one arm (by its LeRobot id, e.g. follower_blue): fine_joint_offsets_<arm>.json
+	when it exists (or arm is None: the shared fine_joint_offsets.json). An arm without its own file uses the
+	shared one until `python calibration/calibrate.py offsets --arm <arm>` saves its own."""
+	if arm is None:
+		return FINE_OFFSETS_FILE
+	own = FINE_OFFSETS_FILE.with_name(f"fine_joint_offsets_{arm}.json")
+	return own if own.exists() else FINE_OFFSETS_FILE
+
+
+def own_offsets_file(arm: str | None) -> Path:
+	"""Where `arm`'s own offsets are saved (the shared file when arm is None)."""
+	return FINE_OFFSETS_FILE if arm is None else FINE_OFFSETS_FILE.with_name(f"fine_joint_offsets_{arm}.json")
+
+
+def load_fine_joint_offsets(path: str | Path | None = FINE_OFFSETS_FILE, *, arm: str | None = None) -> dict[str, float]:
+	"""Load software corrections in degrees, refreshing the cache when JSON changes. With arm, that arm's file."""
+	file_path = offsets_file(arm) if arm is not None or path is None else Path(path)
 	if not file_path.exists():
 		return {name: 0.0 for name in ARM_JOINTS}
 	stat = file_path.stat()
@@ -57,14 +72,14 @@ def save_fine_joint_offsets(offsets: Mapping[str, float], path: str | Path = FIN
 	_read_offsets.cache_clear()
 
 
-def correct_joint_position_deg(joint_name: str, raw_position_deg: float) -> float:
+def correct_joint_position_deg(joint_name: str, raw_position_deg: float, arm: str | None = None) -> float:
 	"""Map a LeRobot joint reading to the corrected logical angle."""
-	return float(raw_position_deg) + load_fine_joint_offsets().get(joint_name, 0.0)
+	return float(raw_position_deg) + load_fine_joint_offsets(arm=arm).get(joint_name, 0.0)
 
 
-def motor_position_deg(joint_name: str, corrected_position_deg: float) -> float:
+def motor_position_deg(joint_name: str, corrected_position_deg: float, arm: str | None = None) -> float:
 	"""Map a corrected logical target back to the LeRobot motor coordinate."""
-	return float(corrected_position_deg) - load_fine_joint_offsets().get(joint_name, 0.0)
+	return float(corrected_position_deg) - load_fine_joint_offsets(arm=arm).get(joint_name, 0.0)
 
 
 def corrected_observation(observation: Mapping[str, object]) -> dict[str, object]:

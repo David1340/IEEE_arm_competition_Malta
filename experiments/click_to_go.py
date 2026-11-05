@@ -1,10 +1,12 @@
-"""Click a point in the ZED image; the arm's tip goes there.
+"""Click a point in the ZED image; an arm's tip goes there.
 
-The click is turned into a 3D point with the ZED point cloud, then into the robot base frame with the ArUco
-calibration (calibration.json's camera_to_base, from `python calibration/calibrate.py`). The arm moves with the
-same M-FRPSO + RRT-Connect planning as control/IK_control.py.
+The click is turned into a 3D point with the ZED point cloud, then into the shared TABLE frame with the ArUco
+calibration (calibration.json's camera_to_table, from `python calibration/calibrate.py`), then into the chosen
+arm's base frame (follower_pink at y = +0.25, follower_blue at y = -0.25; see calibration/calibrate.py). The arm
+moves with the same M-FRPSO + RRT-Connect planning as control/IK_control.py.
 
-    python experiments/click_to_go.py                  # click, check the point, press g to move
+    python experiments/click_to_go.py                  # both arms: the one nearest the click moves (g)
+    python experiments/click_to_go.py --arm follower_blue   # only that arm
     python experiments/click_to_go.py --hover 0.08     # stop 8 cm above the clicked surface (default 5 cm)
     python experiments/click_to_go.py --no-robot --gui # no arm: plan and show the move in PyBullet only
 
@@ -29,7 +31,7 @@ if str(ROOT) not in sys.path:
 
 import cv2  # noqa: E402
 
-from calibration.calibrate import FILE as CALIBRATION_FILE, camera_to_base, open_zed  # noqa: E402
+from calibration.calibrate import FILE as CALIBRATION_FILE, arm_from_table, arms, camera_to_table, open_zed  # noqa: E402
 
 WINDOW = "click to go"
 HOME_Q = np.radians([0.0, 0.0, 0.0, 0.0, -90.0])
@@ -52,6 +54,9 @@ def main():
     ap.add_argument("--offset", type=float, nargs=3, default=[0.0, 0.0, -0.04], metavar=("X", "Y", "Z"),
                     help="added to every target before IK, as in control/IK_control.py (same default), so a "
                          "clicked target means the same as typing it at IK_control's prompt")
+    ap.add_argument("--arm", default="nearest",
+                    help="follower_pink, follower_blue, or nearest (default: both connected; the arm whose base is "
+                         "nearest the clicked point moves)")
     ap.add_argument("--min-z", type=float, default=0.01, help="never aim the tip lower than this (base z, m)")
     ap.add_argument("--no-robot", action="store_true", help="do not connect to the arm; preview only")
     ap.add_argument("--gui", action="store_true", help="open the PyBullet visualizer")
@@ -61,23 +66,40 @@ def main():
     ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
     args = ap.parse_args()
 
-    T = camera_to_base()
-    if T is None:
-        raise SystemExit(f"No camera calibration in {CALIBRATION_FILE}: run `python calibration/calibrate.py` first")
+    T_table = camera_to_table()
+    if T_table is None:
+        raise SystemExit(f"No camera_to_table in {CALIBRATION_FILE}: run `python calibration/calibrate.py "
+                         "--marker-xy ...` first (see its docstring)")
+    names = list(arms()) if args.arm == "nearest" else [args.arm]
+    bases = {name: np.array([b["x"], b["y"]]) for name, b in arms().items() if name in names}
+    if len(bases) != len(names):
+        raise SystemExit(f"unknown arm {args.arm!r}; known: {', '.join(arms())}")
 
     import pybullet as p
     import pyzed.sl as sl
     from control.IK_control import EEController, connect_robot, move_to, read_joints_rad, send_joints
 
-    ctrl = EEController(gui=args.gui, lock_wrist_roll=not args.free_wrist_roll)
-    robot = None if args.no_robot else connect_robot()
-    if robot:
-        ctrl.set_sim_state(read_joints_rad(robot))
-    orient = p.getQuaternionFromEuler([math.pi, 0, 0]) if args.orient_down else None
+    ctrls, robots = {}, {}
+    try:
+        for i, name in enumerate(names):
+            # PyBullet allows one GUI window: the first arm gets it
+            ctrls[name] = EEController(gui=args.gui and i == 0, lock_wrist_roll=not args.free_wrist_roll, arm=name)
+            robots[name] = None if args.no_robot else connect_robot(name)
+            if robots[name]:
+                ctrls[name].set_sim_state(read_joints_rad(robots[name]))
+            print(f"{name}: base at x {bases[name][0]:.3f} y {bases[name][1]:.3f} m (table frame)"
+                  + ("" if robots[name] else ", simulation only"))
+        orient = p.getQuaternionFromEuler([math.pi, 0, 0]) if args.orient_down else None
+        offset = np.array(args.offset)
+        zed = open_zed(args.serial)
+    except BaseException:
+        for robot in robots.values():
+            if robot:
+                robot.disconnect()
+        raise
 
-    zed = open_zed(args.serial)
     image, cloud_mat, runtime = sl.Mat(), sl.Mat(), sl.RuntimeParameters()
-    state = {"click": None, "target": None, "surface": None, "status": "click a point", "gripper": None}
+    state = {"click": None, "target": None, "arm": None, "status": "click a point", "gripper": None}
     frame = cloud = None
 
     def on_mouse(event, x, y, flags, param):
@@ -89,13 +111,15 @@ def main():
         if xyz_cam is None:
             state.update(click=(u, v), target=None, status="no depth at that pixel: click again")
             return
-        surface = T[:3, :3] @ xyz_cam + T[:3, 3]
-        target = surface + [0.0, 0.0, args.hover]
+        surface = T_table[:3, :3] @ xyz_cam + T_table[:3, 3]
+        arm = min(bases, key=lambda name: np.linalg.norm(surface[:2] - bases[name]))
+        target_table = surface + [0.0, 0.0, args.hover]
+        target = (arm_from_table(arm) @ np.append(target_table, 1.0))[:3]
         target[2] = max(target[2], args.min_z)
-        state.update(click=(u, v), surface=surface, target=target,
-                     status=f"target x {target[0]:.3f} y {target[1]:.3f} z {target[2]:.3f} m  (g = go)")
-        print(f"clicked surface at x {surface[0]:.3f} y {surface[1]:.3f} z {surface[2]:.3f} m (base frame); "
-              f"target {np.round(target, 3)}")
+        state.update(click=(u, v), target=target, arm=arm,
+                     status=f"{arm}: x {target[0]:.3f} y {target[1]:.3f} z {target[2]:.3f} m  (g = go)")
+        print(f"clicked surface at x {surface[0]:.3f} y {surface[1]:.3f} z {surface[2]:.3f} m (table frame) "
+              f"-> {arm} target {np.round(target, 3)} m (its base frame)")
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.setMouseCallback(WINDOW, on_mouse)
@@ -134,37 +158,39 @@ def main():
             elif key == ord("c"):
                 state["gripper"] = None if state["gripper"] == 0.0 else 0.0
             elif key == ord("h"):
-                if robot:
-                    print("Going home ...")
-                    send_joints(robot, list(HOME_Q))
-                    ctrl.set_sim_state(read_joints_rad(robot))
-                else:
-                    ctrl.set_sim_state(list(HOME_Q))
+                for name in names:
+                    if robots[name]:
+                        print(f"{name}: going home ...")
+                        send_joints(robots[name], list(HOME_Q))
+                        ctrls[name].set_sim_state(read_joints_rad(robots[name]))
+                    else:
+                        ctrls[name].set_sim_state(list(HOME_Q))
                 state["status"] = "home; click a point"
             elif key == ord("g"):
                 if state["target"] is None:
                     state["status"] = "click a point first"
                     continue
-                state["status"] = "moving ..."
+                arm = state["arm"]
+                state["status"] = f"{arm}: moving ..."
                 cv2.imshow(WINDOW, view)
                 cv2.waitKey(1)
-                offset = np.array(args.offset)
-                reached, final = move_to(ctrl, robot, state["target"] + offset, gripper=state["gripper"],
-                                         orient=orient)
+                reached, final = move_to(ctrls[arm], robots[arm], state["target"] + offset,
+                                         gripper=state["gripper"], orient=orient)
                 if final is None:
-                    state["status"] = "no path to that point: click another one"
+                    state["status"] = f"{arm}: no path to that point; click another one"
                 else:
                     final = final - offset
                     err = 1000 * np.linalg.norm(final - state["target"])
-                    print(f"tip at {np.round(final, 3)} m, {err:.1f} mm from the target")
-                    state["status"] = f"{'reached' if reached else 'NOT reached'} ({err:.0f} mm off); click a point"
+                    print(f"{arm}: tip at {np.round(final, 3)} m, {err:.1f} mm from the target")
+                    state["status"] = (f"{arm}: {'reached' if reached else 'NOT reached'} ({err:.0f} mm off); "
+                                       "click a point")
     finally:
         zed.close()
         cv2.destroyAllWindows()
-        if robot:
-            robot.disconnect()
-        p.disconnect()
-
+        for name in names:
+            if robots[name]:
+                robots[name].disconnect()
+            p.disconnect(physicsClientId=ctrls[name].client)
 
 if __name__ == "__main__":
     main()

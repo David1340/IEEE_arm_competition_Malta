@@ -4,6 +4,7 @@
 !calibration/robots/
 !calibration/robots/so_follower/
 !calibration/robots/so_follower/fine_joint_offsets.json
+!calibration/robots/so_follower/fine_joint_offsets_*.json
 !yolo_dataset/
 yolo_dataset/*
 !yolo_dataset/*.py

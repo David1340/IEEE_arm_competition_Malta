@@ -102,6 +102,7 @@ class ModifiedFRPSOIK:
         fixed_joint_values: Mapping[int, float] | None = None,
         allowed_robot_obstacle_link_pairs: Sequence[tuple[int, int, int]] = (),
         minimum_link_heights: Mapping[int, float] | None = None,
+        arm: str | None = None,
     ):
         self.robot_id = robot_id
         self.ee_link_index = ee_link_index
@@ -120,7 +121,7 @@ class ModifiedFRPSOIK:
         self.urdf_lower = np.asarray([item[8] for item in limits], dtype=float)
         self.urdf_upper = np.asarray([item[9] for item in limits], dtype=float)
         fine_offsets_rad = {
-            name: math.radians(value) for name, value in load_fine_joint_offsets().items()
+            name: math.radians(value) for name, value in load_fine_joint_offsets(arm=arm).items()
         }
         continuous = self.urdf_upper <= self.urdf_lower
         self.urdf_lower[continuous] = -math.pi

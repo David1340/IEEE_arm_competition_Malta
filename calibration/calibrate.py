@@ -1,5 +1,8 @@
 """Every calibration of the robot, in one script; every calibration value, in one file: calibration.json.
 
+    python calibration/calibrate.py --marker-xy 0:0.45,0.30 1:0.15,0.30 2:0.15,-0.30 3:0.45,-0.30
+                                                       # the first time: each marker ID's centre x,y in the TABLE
+                                                       # frame (below), measured by hand (remembered afterwards)
     python calibration/calibrate.py                          # after the camera moved: the ArUco markers, a few s, no arm
     python calibration/calibrate.py --marker-ids 3,2,1,0     # the first time: which ID is TOP_RIGHT, BOTTOM_RIGHT,
                                                        # BOTTOM_LEFT, TOP_LEFT (remembered afterwards)
@@ -9,23 +12,33 @@
     python calibration/calibrate.py check                    # torque off: where the model puts the tip and the jaws while
                                                        # the arm is moved by hand
     python calibration/calibrate.py offsets                  # the fine joint offsets: PyBullet sliders over the live arm
+    python calibration/calibrate.py offsets --arm follower_blue   # the same for one of the two arms (its own file,
+                                                       # calibration/robots/so_follower/fine_joint_offsets_<arm>.json)
     python calibration/calibrate.py show                     # print what calibration.json holds
 
+The TABLE frame, shared by both arms: origin on the table halfway between the two arms' shoulder pan axes;
+x forward (the way both arms face), y to the left (seen from behind the arms), z up; metres. Each arm's own base
+frame has the same axes, with its origin under its shoulder pan axis: follower_pink (left) at y = +0.25,
+follower_blue (right) at y = -0.25 (ARMS below; calibration.json's "arms" overrides them).
+
 calibration.json (at the repo root):
-    camera_to_base     4 x 4: ZED left camera (IMAGE frame: x right, y down, z forward) -> robot base frame
-                       (x forward, y to the arm's left, z up, origin under the shoulder pan axis), metres
+    camera_to_table    4 x 4: ZED left camera (IMAGE frame: x right, y down, z forward) -> TABLE frame, metres
+    arms               (optional) each arm's base in the TABLE frame: {"follower_pink": {"x": 0, "y": 0.25,
+                       "yaw_deg": 0}, ...}; "default" names the arm camera_transform.npy is written for
+    camera_to_base     (older files) camera -> one arm's base frame; camera_to_table replaces it
     camera             when, how (aruco / arm) and how well it was fitted; the ZED serial
     table_z            the table's height in the base frame (m)
-    aruco              the marker dictionary (DICT_4X4_50) and each marker's centre in the base frame
+    aruco              the marker dictionary (DICT_4X4_50) and each marker's centre in the TABLE frame
     arm                the follower's LeRobot calibration file, and the fine joint offsets (degrees; true angle =
                        LeRobot reading + offset; control/fine_joint_offsets.py still reads its own json; `offsets` keeps both in sync)
-camera_transform.npy is written from it for the scripts that read that file (experiments/object_3d_live.py, experiments/Full_pipeline.py).
+camera_transform.npy is written from it for the scripts that read that file (experiments/object_3d_live.py,
+experiments/Full_pipeline.py, vision/live.py): camera -> the default arm's (follower_pink's) base frame.
 
 The camera fit: the table plane from the ZED point cloud fixes the camera's tilt and height (thousands of
 points); two or more known points on the table (markers, or blocks touched with the fixed finger's tip) fix its
-turn about z and its position. The markers start at the hand-measured positions (TOP_RIGHT 0.51 -0.42,
-BOTTOM_RIGHT 0.20 -0.42, BOTTOM_LEFT 0.20 0.97, TOP_LEFT 0.51 0.97 m); `arm` measures where they really are, so
-every later marker-only calibration lands where the arm does. Pictures of each run go to outputs/calibrate/.
+turn about z and its position. The markers' positions are measured by hand in the TABLE frame (--marker-xy; the
+older --marker-ids uses QR_POSITIONS below, which must then hold TABLE-frame values). Which way the camera looks
+does not matter: the fit finds its rotation. Pictures of each run go to outputs/calibrate/.
 
 Other modules import this one for calibration.json (load, camera_to_base, joint_offsets, ...): it runs nothing
 on import.
@@ -65,7 +78,9 @@ def save(data):
     tmp = FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     tmp.replace(FILE)
-    if data.get("camera_to_base") is not None:
+    if data.get("camera_to_table") is not None:
+        np.save(LEGACY_CAMERA, arm_from_table(default_arm(data), data) @ np.array(data["camera_to_table"], float))
+    elif data.get("camera_to_base") is not None:
         np.save(LEGACY_CAMERA, np.array(data["camera_to_base"], float))
 
 
@@ -81,10 +96,56 @@ def update(**sections):
     return data
 
 
-def camera_to_base():
-    """The 4 x 4 camera -> base matrix, or None."""
-    m = load().get("camera_to_base")
+ARMS = {"follower_pink": {"x": 0.0, "y": 0.25, "yaw_deg": 0.0},    # left, seen from behind the arms
+        "follower_blue": {"x": 0.0, "y": -0.25, "yaw_deg": 0.0}}   # right
+DEFAULT_ARM = "follower_pink"
+
+
+def arms(data=None):
+    """{arm id: {x, y, yaw_deg}}: each arm's base in the TABLE frame (ARMS, overridden by calibration.json)."""
+    stored = (load() if data is None else data).get("arms", {})
+    out = {name: dict(base) for name, base in ARMS.items()}
+    for name, base in stored.items():
+        if isinstance(base, dict):
+            out.setdefault(name, {"x": 0.0, "y": 0.0, "yaw_deg": 0.0}).update(
+                {k: float(v) for k, v in base.items() if k in ("x", "y", "yaw_deg")})
+    return out
+
+
+def default_arm(data=None):
+    return (load() if data is None else data).get("arms", {}).get("default", DEFAULT_ARM)
+
+
+def arm_from_table(arm, data=None):
+    """4 x 4: TABLE frame -> the arm's base frame."""
+    all_arms = arms(data)
+    if arm not in all_arms:
+        raise KeyError(f"unknown arm {arm!r}; known: {', '.join(all_arms)}")
+    b = all_arms[arm]
+    yaw = math.radians(b["yaw_deg"])
+    R = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+    T = np.eye(4)
+    T[:3, :3] = R.T
+    T[:3, 3] = -R.T @ np.array([b["x"], b["y"], 0.0])
+    return T
+
+
+def camera_to_table():
+    """The 4 x 4 camera -> TABLE matrix, or None."""
+    m = load().get("camera_to_table")
     return None if m is None else np.array(m, float)
+
+
+def camera_to_base(arm=None):
+    """The 4 x 4 camera -> arm base matrix (the default arm if none is given), or None. An older file with only
+    camera_to_base (one arm, no TABLE frame) gives that matrix, for the default arm only."""
+    data = load()
+    arm = arm or default_arm(data)
+    if data.get("camera_to_table") is not None:
+        return arm_from_table(arm, data) @ np.array(data["camera_to_table"], float)
+    if data.get("camera_to_base") is not None and arm == default_arm(data):
+        return np.array(data["camera_to_base"], float)
+    return None
 
 
 def lerobot_calibration():
@@ -302,14 +363,27 @@ def draw(frame, corners, cam, T, markers, path):
 def aruco(args):
     data = load()
     markers = data.get("aruco", {}).get("markers", {})
-    if args.marker_ids:
+    if args.marker_xy:
+        markers = {}
+        for item in args.marker_xy:
+            try:
+                mid, xy = item.split(":")
+                x, y = (float(v) for v in xy.split(","))
+            except ValueError:
+                raise SystemExit(f"--marker-xy: {item!r} is not ID:x,y (e.g. 3:0.45,-0.30)")
+            markers[mid.strip()] = [x, y, 0.0]
+        if len(markers) < 2:
+            raise SystemExit("--marker-xy: give 2 or more markers (4 is better)")
+        print("Marker positions (TABLE frame, hand-measured): "
+              + ", ".join(f"ID {m} = x {p[0]:.3f} y {p[1]:.3f}" for m, p in markers.items()))
+    elif args.marker_ids:
         ids = [s.strip() for s in args.marker_ids.split(",")]
         if len(ids) != 4 or len(set(ids)) != 4:
             raise SystemExit("--marker-ids: four different IDs, in the order TOP_RIGHT,BOTTOM_RIGHT,BOTTOM_LEFT,TOP_LEFT")
         markers = {i: QR_POSITIONS[name] for i, name in zip(ids, QR_POSITIONS)}
         print("Marker positions (hand-measured): " + ", ".join(f"ID {i} = {n}" for i, n in zip(ids, QR_POSITIONS)))
     if not markers:
-        raise SystemExit("No marker positions yet: run once with --marker-ids (see --show-ids for the IDs)")
+        raise SystemExit("No marker positions yet: run once with --marker-xy ID:x,y ... (see the mode ids for the IDs)")
     zed = open_zed(args.serial)
     try:
         frame, cloud, cam, corners, dictionary = grab(zed, args.frames)
@@ -325,17 +399,23 @@ def aruco(args):
     for m, r in zip(use, res):
         print(f"  marker {m}: {r:.1f} mm from its stored position after the fit")
     draw(frame, corners, cam, T, markers, ROOT / "outputs" / "calibrate" / "aruco.jpg")
-    old = camera_to_base()
+    old = camera_to_table()
     if old is not None:
         moved = 1000 * np.linalg.norm(old[:3, 3] - T[:3, 3])
         turned = np.degrees(np.arccos(np.clip((np.trace(old[:3, :3].T @ T[:3, :3]) - 1) / 2, -1, 1)))
         print(f"compared with the last calibration: camera moved {moved:.0f} mm, turned {turned:.1f} deg")
     if args.yes or input("Save to calibration.json? [Y/n] ").strip().lower() in ("", "y", "yes"):
-        update(camera_to_base=T.tolist(),
+        data = load()
+        data.pop("camera_to_base", None)          # the older one-arm matrix; camera_to_table replaces it
+        save(data)
+        update(camera_to_table=T.tolist(),
                    camera={"updated": stamp(), "method": f"aruco ({len(use)} markers + table plane)",
                            "residual_mm": float(np.max(res)), "serial": args.serial},
                    aruco={"dictionary": dictionary, "markers": {k: list(map(float, v)) for k, v in markers.items()}})
-        print(f"Saved {FILE} (and {LEGACY_CAMERA.name}).")
+        print(f"Saved {FILE} (and {LEGACY_CAMERA.name}, for {default_arm()}).")
+        for name in arms():
+            Tb = camera_to_base(name)
+            print(f"  {name}: camera at x {Tb[0, 3]:.3f} y {Tb[1, 3]:.3f} z {Tb[2, 3]:.3f} m in its base frame")
 
 
 def need_so101ik():
@@ -499,15 +579,22 @@ def offsets(args):
     calibration.json), q or Esc leaves (unsaved changes dropped). --no-robot: sliders on the zero pose only;
     --reset: all offsets to 0."""
     sys.path.insert(0, str(ROOT))
-    from control.fine_joint_offsets import ARM_JOINTS, load_fine_joint_offsets, save_fine_joint_offsets
+    from control.fine_joint_offsets import ARM_JOINTS, load_fine_joint_offsets, own_offsets_file, save_fine_joint_offsets
 
-    offsets_now = load_fine_joint_offsets()
+    arm_id = args.arm
+    target_file = own_offsets_file(arm_id)
+    offsets_now = load_fine_joint_offsets(arm=arm_id)
+    print(f"Fine offsets of {arm_id or 'the arm'}: saved to {target_file.relative_to(ROOT)}")
+
+    def store(values):
+        save_fine_joint_offsets(values, target_file)
+        if arm_id is None:
+            update(arm={"joint_offsets_deg": {n: float(values[n]) for n in ARM_JOINTS}})
     if args.reset:
         if input("Type RESET to set every fine offset to 0 degrees: ").strip().upper() != "RESET":
             print("Cancelled; saved fine offsets were not changed.")
             return
-        save_fine_joint_offsets({name: 0.0 for name in ARM_JOINTS})
-        update(arm={"joint_offsets_deg": {name: 0.0 for name in ARM_JOINTS}})
+        store({name: 0.0 for name in ARM_JOINTS})
         print("All saved fine offsets reset to 0 degrees.")
         return
     import pybullet as p
@@ -519,7 +606,7 @@ def offsets(args):
         raise RuntimeError("Could not open the PyBullet calibration GUI")
     try:
         if not args.no_robot:
-            robot = connect_robot()
+            robot = connect_robot(arm_id)
             robot.bus.disable_torque()
             print("SO-101 torque disabled. Move the arm by hand; no motor commands will be sent.")
         else:
@@ -560,14 +647,13 @@ def offsets(args):
             unsaved = not np.allclose([now[n] for n in ARM_JOINTS], [saved[n] for n in ARM_JOINTS], atol=0.01)
             status_id = p.addUserDebugText(
                 "Fine offsets (deg): " + ", ".join(f"{n}={now[n]:+.2f}" for n in ARM_JOINTS)
-                + f" | tip={np.round(tip, 3)} m | " + ("UNSAVED" if unsaved else "SAVED") + " | calibration.json",
+                + f" | tip={np.round(tip, 3)} m | " + ("UNSAVED" if unsaved else "SAVED") + f" | {target_file.name}",
                 [0.0, 0.0, 0.75], textColorRGB=[0.05, 0.05, 0.05], textSize=1.1, lifeTime=0,
                 replaceItemUniqueId=status_id, physicsClientId=client)
             p.stepSimulation(physicsClientId=client)
             keys = p.getKeyboardEvents(physicsClientId=client)
             if ord("s") in keys and keys[ord("s")] & p.KEY_WAS_TRIGGERED:
-                save_fine_joint_offsets(now)
-                update(arm={"joint_offsets_deg": {n: float(now[n]) for n in ARM_JOINTS}})
+                store(now)
                 saved = now.copy()
                 print("Saved fine offsets (deg):", {n: round(now[n], 2) for n in ARM_JOINTS})
             if any(k in keys and keys[k] & p.KEY_WAS_TRIGGERED for k in (ord("q"), 27)):
@@ -586,6 +672,8 @@ def offsets(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("what", nargs="?", default="aruco", choices=["aruco", "ids", "arm", "check", "offsets", "show"])
+    ap.add_argument("--marker-xy", nargs="+", metavar="ID:X,Y",
+                    help="aruco: each marker's centre in the TABLE frame (m), e.g. 3:0.45,-0.30 (the first time)")
     ap.add_argument("--marker-ids", help="aruco: TOP_RIGHT,BOTTOM_RIGHT,BOTTOM_LEFT,TOP_LEFT IDs (the first time)")
     ap.add_argument("--show-ids", action="store_true", help="the same as the mode ids")
     ap.add_argument("--points", type=int, default=4, help="arm: how many block positions")
@@ -595,6 +683,7 @@ def main():
     ap.add_argument("--port", help="check: the arm's port (default: found by so101ik); 'sim' for no arm")
     ap.add_argument("--no-offsets", action="store_true", help="check: without the fine joint offsets")
     ap.add_argument("--no-robot", action="store_true", help="offsets: sliders on the zero pose, no arm")
+    ap.add_argument("--arm", default=None, help="offsets: which arm (follower_pink, follower_blue); its own file")
     ap.add_argument("--reset", action="store_true", help="offsets: set every fine offset to 0")
     ap.add_argument("--offset-range-deg", type=float, default=10.0, help="offsets: the sliders' +- range")
     args = ap.parse_args()

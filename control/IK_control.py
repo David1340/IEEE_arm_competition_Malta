@@ -6,6 +6,8 @@ so LeRobot degrees (use_degrees=True) map directly to URDF joint angles.
 Usage:
     python -m control.IK_control --sim-only            # PyBullet GUI only, no hardware
     python -m control.IK_control                         # drives the real arm
+    python -m control.IK_control --arm follower_blue     # one of the two arms: port from ports/<arm>.txt, LeRobot
+                                                         # calibration <arm>.json, fine offsets of that arm
 Commands in the prompt (meters, base frame):
     x y z [gripper 0-100]    absolute target
     d dx dy dz               relative move
@@ -34,11 +36,25 @@ CALIB = ROOT / "calibration" / "robots" / "so_follower" / "my_follower_arm.json"
 PORT_FILE = ROOT / "ports" / "follower_port.txt"
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 EE_LINK = "gripper_frame_link"
+REPO = Path(__file__).resolve().parents[1]
 
 
-def calib_limits_deg(calib: dict) -> dict[str, tuple[float, float]]:
+def arm_files(arm: str | None) -> tuple[Path, Path]:
+    """(port file, LeRobot calibration file) of an arm by its LeRobot id (follower_pink, follower_blue); None is
+    the single arm of the older setup (PORT_FILE, CALIB = my_follower_arm.json)."""
+    if arm is None:
+        return PORT_FILE, CALIB
+    return REPO / "ports" / f"{arm}.txt", CALIB.parent / f"{arm}.json"
+
+
+def robot_arm(robot) -> str | None:
+    """The arm id connect_robot gave this robot (None for the older single-arm setup)."""
+    return getattr(robot, "arm_name", None)
+
+
+def calib_limits_deg(calib: dict, arm: str | None = None) -> dict[str, tuple[float, float]]:
     """Joint limits in degrees relative to the calibrated midpoint (0 deg)."""
-    offsets = load_fine_joint_offsets()
+    offsets = load_fine_joint_offsets(arm=arm)
     out = {}
     for name in ARM_JOINTS:
         c = calib[name]
@@ -51,8 +67,9 @@ def calib_limits_deg(calib: dict) -> dict[str, tuple[float, float]]:
 
 
 class EEController:
-    def __init__(self, gui: bool = False, lock_wrist_roll: bool = True):
+    def __init__(self, gui: bool = False, lock_wrist_roll: bool = True, arm: str | None = None):
         self.lock_wrist_roll = lock_wrist_roll
+        self.arm = arm
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(str(URDF.parent), physicsClientId=self.client)
         collision_flags = p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
@@ -80,7 +97,8 @@ class EEController:
             self.arm_joint_indices,
             physics_client_id=self.client,
             check_self_collision=True,
-            calibration_path=CALIB,
+            calibration_path=arm_files(arm)[1],
+            arm=arm,
             fixed_joint_values={
                 self.idx["wrist_roll"]: math.radians(-90.0),
             } if self.lock_wrist_roll else None,
@@ -133,24 +151,30 @@ class EEController:
         return q, result.position_error_m
 
 
-def connect_robot():
+def connect_robot(arm: str | None = None):
     from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 
+    port_file, calib = arm_files(arm)
+    for f in (port_file, calib):
+        if not f.is_file():
+            raise SystemExit(f"{f} not found" + ("" if arm is None else f" (needed for --arm {arm})"))
     cfg = SOFollowerRobotConfig(
-        port=PORT_FILE.read_text().strip(),
-        id=CALIB.stem,
-        calibration_dir=CALIB.parent,
+        port=port_file.read_text().strip(),
+        id=calib.stem,
+        calibration_dir=calib.parent,
         use_degrees=True,
         max_relative_target=15.0,  # deg per command, safety
     )
     robot = SOFollower(cfg)
     robot.connect(calibrate=False)
+    robot.arm_name = arm
     return robot
 
 
 def read_joints_rad(robot) -> list[float]:
     obs = robot.get_observation()
-    return [math.radians(correct_joint_position_deg(name, obs[f"{name}.pos"])) for name in ARM_JOINTS]
+    arm = robot_arm(robot)
+    return [math.radians(correct_joint_position_deg(name, obs[f"{name}.pos"], arm)) for name in ARM_JOINTS]
 
 
 def send_joints(
@@ -176,7 +200,7 @@ def send_joints(
     for s in np.linspace(0, 1, steps)[1:]:
         cur = start + (goal - start) * s
         action = {
-            f"{name}.pos": motor_position_deg(name, math.degrees(value))
+            f"{name}.pos": motor_position_deg(name, math.degrees(value), robot_arm(robot))
             for name, value in zip(ARM_JOINTS, cur)
         }
         action["gripper.pos"] = g0 + (g1 - g0) * s
@@ -187,7 +211,7 @@ def send_joints(
 
     # Keep commanding the final goal until the joints get there (gripper may stall on an object).
     final = {
-        f"{name}.pos": motor_position_deg(name, math.degrees(value))
+        f"{name}.pos": motor_position_deg(name, math.degrees(value), robot_arm(robot))
         for name, value in zip(ARM_JOINTS, goal)
     }
     final["gripper.pos"] = g1
@@ -340,6 +364,8 @@ def move_to(ctrl, robot, aim, gripper=None, orient=None, tol=5e-3):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim-only", action="store_true")
+    ap.add_argument("--arm", default=None, help="which arm, by LeRobot id (follower_pink, follower_blue); "
+                    "default: the older single-arm files (my_follower_arm.json)")
     gui_options = ap.add_mutually_exclusive_group()
     gui_options.add_argument("--gui", dest="gui", action="store_true", help="open the PyBullet visualizer")
     gui_options.add_argument("--no-gui", dest="gui", action="store_false", help="run PyBullet headless (default)")
@@ -350,8 +376,8 @@ def main():
                     help="meters added to every target, base frame")
     args = ap.parse_args()
 
-    ctrl = EEController(gui=args.gui, lock_wrist_roll=not args.free_wrist_roll)
-    robot = None if args.sim_only else connect_robot()
+    ctrl = EEController(gui=args.gui, lock_wrist_roll=not args.free_wrist_roll, arm=args.arm)
+    robot = None if args.sim_only else connect_robot(args.arm)
     if robot:
         ctrl.set_sim_state(read_joints_rad(robot))
 
