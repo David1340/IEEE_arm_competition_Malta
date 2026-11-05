@@ -213,6 +213,33 @@ def send_joints(
     return False
 
 
+LOCKED_WRIST_ROLL = math.radians(-90.0)
+WRIST_ROLL_SNAP = math.radians(5.0)  # measured roll within this of -90 deg counts as -90 deg
+
+
+def planning_start(robot, ctrl) -> list[float]:
+    """The measured joints as a start for the planners.
+
+    With wrist roll locked, the planners only accept exactly -90 deg, which a real arm never reads. A roll
+    within 5 deg is treated as -90 deg (the first waypoint then corrects it); further away, the wrist is
+    turned to -90 deg in place first, with the other joints held still."""
+    q = read_joints_rad(robot)
+    if not ctrl.lock_wrist_roll:
+        return q
+    roll = ARM_JOINTS.index("wrist_roll")
+    if abs(q[roll] - LOCKED_WRIST_ROLL) > WRIST_ROLL_SNAP:
+        print(f"Wrist roll is at {math.degrees(q[roll]):.1f} deg; turning it to -90 deg first "
+              "(use --free-wrist-roll to plan with any roll)")
+        target = list(q)
+        target[roll] = LOCKED_WRIST_ROLL
+        send_joints(robot, target)
+        q = read_joints_rad(robot)
+        if abs(q[roll] - LOCKED_WRIST_ROLL) > WRIST_ROLL_SNAP:
+            raise RuntimeError(f"wrist roll stayed at {math.degrees(q[roll]):.1f} deg; could not reach -90 deg")
+    q[roll] = LOCKED_WRIST_ROLL
+    return q
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim-only", action="store_true")
@@ -264,7 +291,11 @@ def main():
                 print("Formato inválido")
                 continue
 
-            start_q = read_joints_rad(robot) if robot else ctrl.q.copy()
+            try:
+                start_q = planning_start(robot, ctrl) if robot else ctrl.q.copy()
+            except RuntimeError as exc:
+                print(exc)
+                continue
             ctrl.set_sim_state(start_q)
             q, err = ctrl.solve(new + offset, orient)
             if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
@@ -308,7 +339,7 @@ def main():
                     q, _ = ctrl.solve(aim, orient)
                     if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
                         break
-                    current_q = read_joints_rad(robot)
+                    current_q = planning_start(robot, ctrl)
                     try:
                         correction_route = ctrl.rrt.plan(current_q, q)
                     except ValueError as exc:
