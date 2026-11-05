@@ -121,6 +121,7 @@ class Vision:
         canvas = frame.copy()
         overlay = canvas.copy()
         objects = []
+        self.last_polygons = []   # full-frame pixel outline of each entry of objects, in the same order
 
         if result.masks is not None:
             classes = result.boxes.cls.int().tolist()
@@ -158,10 +159,12 @@ class Vision:
                     text = (f"{class_name} {confidence:.2f} TOP X{center[0]:+.3f} Y{center[1]:+.3f} "
                             f"Z{center[2]:+.3f}m IoU{track.fit.iou:.2f}")
                     objects.append((class_name, confidence, center, count))
+                    self.last_polygons.append(points)
                 elif center is None:
                     cv2.polylines(canvas, [points], True, (128, 128, 128), 1)
                     text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"
                     objects.append((class_name, confidence, None, count))
+                    self.last_polygons.append(points)
                 else:
                     roi_overlay = overlay[y0 : y0 + roi_h, x0 : x0 + roi_w]
                     roi_overlay[top_mask > 0] = color
@@ -171,6 +174,7 @@ class Vision:
                     cv2.circle(canvas, (cx, cy), 5, (255, 255, 255), -1)
                     text = f"{class_name} {confidence:.2f} TABLE X{center[0]:+.3f} Y{center[1]:+.3f} Z{center[2]:+.3f}m"
                     objects.append((class_name, confidence, center, count))
+                    self.last_polygons.append(points)
                 px, py = points.min(axis=0)
                 cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)

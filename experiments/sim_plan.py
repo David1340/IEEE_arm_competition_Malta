@@ -72,8 +72,9 @@ def add_object(client, stl_path, x, y, yaw_deg, color):
 class World:
     """Table, objects and robot in PyBullet, plus the M-FRPSO solver and the RRT-Connect planner."""
 
-    def __init__(self, objects, start_q, *, gui=True, clearance=TABLE_CLEARANCE):
-        """objects: [(stl_path, x, y, yaw_deg), ...]"""
+    def __init__(self, objects, start_q, *, gui=True, clearance=TABLE_CLEARANCE, arm=None, calibration_path=None):
+        """objects: [(stl_path, x, y, yaw_deg), ...]; arm: which arm's joint limits (calibration_path, its LeRobot
+        calibration file) and fine offsets to use (default: the older single-arm files)."""
         self.start_q = list(start_q)
         self.client = c = p.connect(p.GUI if gui else p.DIRECT)
         p.setGravity(0, 0, 0, physicsClientId=c)
@@ -96,6 +97,8 @@ class World:
             fixed_joint_values={joint["wrist_roll"]: self.start_q[4]},
             allowed_robot_obstacle_link_pairs=[(self.table, -1, -1)],   # the base sits on the table
             minimum_link_heights={link[n]: clearance for n in GRIPPER_LINKS},
+            **({} if calibration_path is None else {"calibration_path": calibration_path}),
+            arm=arm,
         )
         # Artificial joint limits that also contain the current joint reading, so a start pose
         # slightly outside the URDF limits is valid for both M-FRPSO and RRT-Connect.

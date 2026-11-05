@@ -81,10 +81,22 @@ def main():
 
     ctrls, robots = {}, {}
     try:
-        for i, name in enumerate(names):
+        for name in list(names):
+            robot = None
+            if not args.no_robot:
+                try:
+                    robot = connect_robot(name)
+                except (ConnectionError, OSError) as error:
+                    if len(names) == 1:
+                        raise
+                    print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); continuing without it. "
+                          f"Check ports/{name}.txt (`lerobot-find-port`) and that the arm is powered.")
+                    names.remove(name)
+                    bases.pop(name)
+                    continue
             # PyBullet allows one GUI window: the first arm gets it
-            ctrls[name] = EEController(gui=args.gui and i == 0, lock_wrist_roll=not args.free_wrist_roll, arm=name)
-            robots[name] = None if args.no_robot else connect_robot(name)
+            ctrls[name] = EEController(gui=args.gui and not ctrls, lock_wrist_roll=not args.free_wrist_roll, arm=name)
+            robots[name] = robot
             if robots[name]:
                 ctrls[name].set_sim_state(read_joints_rad(robots[name]))
             print(f"{name}: base at x {bases[name][0]:.3f} y {bases[name][1]:.3f} m (table frame)"
