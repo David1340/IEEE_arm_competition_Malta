@@ -85,6 +85,11 @@ class RRTConnectPlanner:
         return float(np.linalg.norm((second - first) / self.ranges))
 
     def _edge_is_free(self, first: np.ndarray, second: np.ndarray, allowed_collision_body_ids) -> bool:
+        if self._root_is_invalid:
+            if np.allclose(first, self._root, atol=1e-9, rtol=0.0):
+                return self._escape_edge_is_free(second, allowed_collision_body_ids)
+            if np.allclose(second, self._root, atol=1e-9, rtol=0.0):
+                return self._escape_edge_is_free(first, allowed_collision_body_ids)
         return self.collision_checker.edge_is_collision_free(
             self._expand(first),
             self._expand(second),
@@ -92,6 +97,23 @@ class RRTConnectPlanner:
             allowed_collision_body_ids=allowed_collision_body_ids,
             free_states=[self._expand(self._root)],
         )
+
+    def _escape_edge_is_free(self, other: np.ndarray, allowed_collision_body_ids) -> bool:
+        """An edge between an invalid root (outside the limits or in collision, e.g. the measured start pose)
+        and `other`. Going from the root, states may stay invalid only until the first valid one; from there
+        to `other` every state must be valid. Without this, every edge from such a root is blocked by its own
+        neighbourhood and the search runs all its iterations before failing."""
+        checker = self.collision_checker
+        start, end = self._expand(self._root), self._expand(other)
+        steps = max(1, int(np.ceil(np.max(np.abs(end - start)) / self.max_joint_step_rad)))
+        escaped = False
+        for fraction in np.linspace(0.0, 1.0, steps + 1)[1:]:
+            valid = checker.state_is_collision_free(start + fraction * (end - start), allowed_collision_body_ids)
+            if valid:
+                escaped = True
+            elif escaped or fraction == 1.0:
+                return False
+        return True
 
     def _extend(self, tree: _Tree, target: np.ndarray, allowed_collision_body_ids):
         distances = [self._distance(node, target) for node in tree.nodes]
@@ -155,6 +177,9 @@ class RRTConnectPlanner:
         goal = self._reduce(goal_configuration)
         allowed = tuple(allowed_collision_body_ids)
         self._root = start
+        self._root_is_invalid = not self.collision_checker.state_is_collision_free(
+            self._expand(start), allowed
+        )
         return self._plan(start, goal, allowed, seed)
 
     def _plan(self, start, goal, allowed, seed) -> RRTConnectResult | None:

@@ -240,6 +240,103 @@ def planning_start(robot, ctrl) -> list[float]:
     return q
 
 
+def report_start(ctrl, q) -> None:
+    """Say when the measured start pose is outside the planner's joint limits or in collision in the model
+    (the planners still start from it, but this is the usual reason a move fails)."""
+    planner = ctrl.planner
+    for name, value, lower, upper in zip(ARM_JOINTS, q, planner.lower, planner.upper):
+        if not lower <= value <= upper:
+            print(f"Note: {name} is at {math.degrees(value):.1f} deg, outside the planner limits "
+                  f"[{math.degrees(lower):.1f}, {math.degrees(upper):.1f}] deg")
+    if not planner.state_is_collision_free(q, check_joint_limits=False):
+        print("Note: the start pose is in collision in the robot model; the path first leaves it")
+    ctrl.set_sim_state(q)
+
+
+def move_to(ctrl, robot, aim, gripper=None, orient=None, tol=5e-3):
+    """Move the IK point (gripper_frame_link) to `aim` (base frame, m): M-FRPSO pose, RRT-Connect path, then on
+    the real arm up to 3 corrections for sag/backlash. Without a robot the path is played in the simulation.
+    Returns (reached, final IK-point position), or (False, None) when no pose or path was found."""
+    aim = np.asarray(aim, dtype=float)
+    try:
+        start_q = planning_start(robot, ctrl) if robot else ctrl.q.copy()
+    except RuntimeError as exc:
+        print(exc)
+        return False, None
+    ctrl.set_sim_state(start_q)
+    report_start(ctrl, start_q)
+    print("M-FRPSO: searching for a pose ...", flush=True)
+    t0 = time.time()
+    q, err = ctrl.solve(aim, orient)
+    print(f"M-FRPSO: done in {time.time() - t0:.1f} s", flush=True)
+    if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
+        if ctrl.last_ik_result is None:
+            print("M-FRPSO não encontrou uma configuração livre de colisão")
+        else:
+            print(f"Alvo não confirmado: erro previsto {err * 1000:.1f} mm")
+        ctrl.set_sim_state(start_q)
+        return False, None
+    print("RRT-Connect: planning the path ...", flush=True)
+    t0 = time.time()
+    try:
+        route = ctrl.rrt.plan(start_q, q)
+    except ValueError as exc:
+        print(f"Configuração inicial inválida para o RRT-Connect: {exc}")
+        ctrl.set_sim_state(start_q)
+        return False, None
+    if route is None:
+        print("RRT-Connect não encontrou um caminho livre de colisão; alvo ignorado")
+        ctrl.set_sim_state(start_q)
+        return False, None
+    print(f"RRT-Connect: {len(route.path)} configurações, {route.iterations} iterações, {time.time() - t0:.1f} s")
+
+    if robot is None:
+        for waypoint in route.path[1:]:
+            ctrl.set_sim_state(waypoint)
+        final = ctrl.ee_position()
+        return float(np.linalg.norm(final - aim)) <= tol, final
+
+    motion_settled = True
+    if len(route.path) == 1:
+        motion_settled = send_joints(robot, q, gripper)
+    else:
+        for index, waypoint in enumerate(route.path[1:], start=1):
+            waypoint_gripper = gripper if index == len(route.path) - 1 else None
+            motion_settled = send_joints(robot, waypoint, waypoint_gripper) and motion_settled
+            if not motion_settled:
+                break
+    ctrl.set_sim_state(read_joints_rad(robot))
+    final = ctrl.ee_position()
+    # Sag/backlash leave a static offset; shift the IK aim point by the measured error.
+    corrected = aim.copy()
+    for _ in range(3):
+        if not motion_settled or np.linalg.norm(final - aim) < 4e-3:
+            break
+        corrected = corrected + (aim - final)
+        q, _ = ctrl.solve(corrected, orient)
+        if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
+            break
+        current_q = planning_start(robot, ctrl)
+        try:
+            correction_route = ctrl.rrt.plan(current_q, q)
+        except ValueError as exc:
+            print(f"Configuração de correção inválida para o RRT-Connect: {exc}")
+            break
+        if correction_route is None:
+            print("RRT-Connect não encontrou caminho para corrigir o erro de posição")
+            break
+        for waypoint in correction_route.path[1:]:
+            motion_settled = send_joints(robot, waypoint) and motion_settled
+            if not motion_settled:
+                break
+        if not motion_settled:
+            break
+        ctrl.set_sim_state(read_joints_rad(robot))
+        final = ctrl.ee_position()
+    print(f"Joint motion settled: {motion_settled}")
+    return motion_settled and float(np.linalg.norm(final - aim)) <= tol, final
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim-only", action="store_true")
@@ -291,82 +388,14 @@ def main():
                 print("Formato inválido")
                 continue
 
-            try:
-                start_q = planning_start(robot, ctrl) if robot else ctrl.q.copy()
-            except RuntimeError as exc:
-                print(exc)
+            reached, final = move_to(ctrl, robot, new + offset, gripper=gripper, orient=orient)
+            if final is None:
                 continue
-            ctrl.set_sim_state(start_q)
-            q, err = ctrl.solve(new + offset, orient)
-            if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
-                if ctrl.last_ik_result is None:
-                    print("M-FRPSO não encontrou uma configuração livre de colisão")
-                else:
-                    print(f"Alvo não confirmado: erro previsto {err * 1000:.1f} mm")
-                ctrl.set_sim_state(read_joints_rad(robot) if robot else ctrl.q)
-                continue
-            try:
-                route = ctrl.rrt.plan(start_q, q)
-            except ValueError as exc:
-                print(f"Configuração inicial inválida para o RRT-Connect: {exc}")
-                ctrl.set_sim_state(start_q)
-                continue
-            if route is None:
-                print("RRT-Connect não encontrou um caminho livre de colisão; alvo ignorado")
-                ctrl.set_sim_state(start_q)
-                continue
-            print(f"RRT-Connect: {len(route.path)} configurações, {route.iterations} iterações")
             target = new
-            new = new + offset
-            if robot:
-                motion_settled = True
-                if len(route.path) == 1:
-                    motion_settled = send_joints(robot, q, gripper)
-                else:
-                    for index, waypoint in enumerate(route.path[1:], start=1):
-                        waypoint_gripper = gripper if index == len(route.path) - 1 else None
-                        motion_settled = send_joints(robot, waypoint, waypoint_gripper) and motion_settled
-                        if not motion_settled:
-                            break
-                ctrl.set_sim_state(read_joints_rad(robot))
-                final = ctrl.ee_position()
-                # Sag/backlash leave a static offset; shift the IK aim point by the measured error.
-                aim = new.copy()
-                for _ in range(3):
-                    if not motion_settled or np.linalg.norm(final - new) < 4e-3:
-                        break
-                    aim = aim + (new - final)
-                    q, _ = ctrl.solve(aim, orient)
-                    if ctrl.last_ik_result is None or not ctrl.last_ik_result.success:
-                        break
-                    current_q = planning_start(robot, ctrl)
-                    try:
-                        correction_route = ctrl.rrt.plan(current_q, q)
-                    except ValueError as exc:
-                        print(f"Configuração de correção inválida para o RRT-Connect: {exc}")
-                        break
-                    if correction_route is None:
-                        print("RRT-Connect não encontrou caminho para corrigir o erro de posição")
-                        break
-                    for waypoint in correction_route.path[1:]:
-                        motion_settled = send_joints(robot, waypoint) and motion_settled
-                        if not motion_settled:
-                            break
-                    if not motion_settled:
-                        break
-                    ctrl.set_sim_state(read_joints_rad(robot))
-                    final = ctrl.ee_position()
-                final_error = float(np.linalg.norm(final - new))
-                position_reached = final_error <= 5e-3
-                print(f"EE final: {np.round(final - offset, 3)} m | target error: {final_error * 1000:.1f} mm")
-                print(f"Position check: {'REACHED' if position_reached else 'NOT REACHED'}; joint motion settled: {motion_settled}")
-            else:
-                for waypoint in route.path[1:]:
-                    ctrl.set_sim_state(waypoint)
-                final = ctrl.ee_position()
-                final_error = float(np.linalg.norm(final - new))
-                print(f"EE final: {np.round(final - offset, 3)} m | target error: {final_error * 1000:.1f} mm")
-                print(f"Position check: {'REACHED' if final_error <= 5e-3 else 'NOT REACHED'} (simulation)")
+            final_error = float(np.linalg.norm(final - (new + offset)))
+            print(f"EE final: {np.round(final - offset, 3)} m | target error: {final_error * 1000:.1f} mm")
+            print(f"Position check: {'REACHED' if reached else 'NOT REACHED'}"
+                  f"{'' if robot else ' (simulation)'}")
     finally:
         if robot:
             robot.disconnect()
