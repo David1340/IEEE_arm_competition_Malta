@@ -2,7 +2,8 @@
 # Open two terminals and teleoperate both arms:
 #   follower_pink  <- leader_blue
 #   follower_blue  <- leader_green
-# Ports are read from ports/<name>.txt (edit those files if the USB ports change).
+# Ports are read from ports/<name>.txt. Run `python ports/setup_usb_ports.py` once to give each arm a fixed name
+# (/dev/so101_<name>) that survives replugging; `python ports/setup_usb_ports.py --check` shows what is plugged in.
 #
 # Usage:
 #   ./teleoperate.sh               # uses the conda env "lerobot"
@@ -17,6 +18,11 @@ port() {
     local f="$ROOT/ports/$1.txt"
     [[ -f "$f" ]] || { echo "Missing $f" >&2; exit 1; }
     tr -d '[:space:]' < "$f"
+}
+
+check_port() {  # name: stop early with a clear message when that arm's board is not there
+    local dev; dev="$(port "$1")"
+    [[ -e "$dev" ]] || { echo "$1: $dev not found (USB unplugged?). See: python ports/setup_usb_ports.py --check" >&2; exit 1; }
 }
 
 teleop_cmd() {  # follower_id leader_id
@@ -43,7 +49,7 @@ open_terminal() {  # title command
     fi
 }
 
-for name in follower_pink leader_blue follower_blue leader_green; do port "$name" >/dev/null; done
+for name in follower_pink leader_blue follower_blue leader_green; do check_port "$name"; done
 
 open_terminal "follower_pink <- leader_blue" "$(teleop_cmd follower_pink leader_blue)"
 sleep 1

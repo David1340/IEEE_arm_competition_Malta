@@ -41,6 +41,12 @@ robot_urdfs/so101/assets/collision/*
 !robot_urdfs/so101/assets/collision/*.obj
 !README.md
 !teleoperate.sh
+!ports/
+ports/*
+!ports/*.txt
+!ports/*.py
+!ports/*.rules
+!ports/usb_ids.json
 !vision/
 vision/*
 !vision/*.py
