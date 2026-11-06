@@ -1,9 +1,14 @@
 """Pick and place with clicked positions instead of YOLO: mark the shapes and the boxes in the camera image, then
-one arm picks every shape and drops it into the box of its colour.
+the arms pick every shape and drop it into the box of its colour.
 
-    python experiments/click_pick_place.py                       # follower_pink
-    python experiments/click_pick_place.py --arm follower_blue
+    python experiments/click_pick_place.py                       # both arms share the field
+    python experiments/click_pick_place.py --arm follower_blue   # one arm only
     python experiments/click_pick_place.py --no-robot --gui      # no arm: plan and show the moves in PyBullet
+
+Dividing the field: each shape goes to the arm whose base is nearest to it (the arms are parallel, so the left half
+of the field is follower_pink's and the right half follower_blue's), provided that arm reaches both the shape and its
+box within --max-reach; otherwise the other arm takes it if it reaches both, else the shape is skipped. Each mark is
+labelled with its arm and distance in the window. The arms move one at a time; the waiting arm is an obstacle.
 
 In the camera window:
     left click        mark a point, then say what it is:
@@ -11,7 +16,7 @@ In the camera window:
       R G B Y / 1-4     the BOX of that colour (1 red, 2 green, 3 blue, 4 yellow; click where to drop)
     u                 undo the last mark          c   clear all marks
     Space / Enter     go: pick every shape (nearest first) and drop it in its box
-    h                 send the arm home           q / Esc   quit
+    h                 send the arms home          q / Esc   quit
 
 The click's 3D point comes from the ZED point cloud and the ArUco calibration (camera_to_table): for a shape it is
 the top of the shape, so the grasp height follows the shape. Each pick uses pick_and_place.py's sequence (above
@@ -45,6 +50,32 @@ BOX_KEYS = {ord("R"): "red", ord("G"): "green", ord("B"): "blue", ord("Y"): "yel
             ord("1"): "red", ord("2"): "green", ord("3"): "blue", ord("4"): "yellow"}
 BGR = {"red": (40, 40, 230), "green": (40, 180, 40), "blue": (230, 90, 30), "yellow": (30, 220, 240)}
 SHAPE_RADIUS = 0.03      # other marked shapes are obstacles: a column of this radius up to their top [m]
+# The waiting arm at its home pose (0 0 0 0 -90 deg: upper arm up, forearm forward ~38 cm out at ~24 cm height),
+# as an obstacle box in its own base frame: centre x, half length x, half width y, height [m].
+ARM_HOME_BOX = (0.17, 0.25, 0.07, 0.32)
+
+
+def short(arm):
+    return arm.replace("follower_", "")
+
+
+def assign(shape, boxes, bases, max_reach):
+    """(arm, box, distance to that arm's base, why not) for a shape: the arm nearest the shape that reaches both the
+    shape and the box of its colour; (None, box, None, reason) when there is none."""
+    matching = [m for m in boxes if m["colour"] == shape["colour"]]
+    if not matching:
+        return None, None, None, f"no {shape['colour']} box marked"
+    box = matching[-1]
+    by_distance = sorted(bases, key=lambda arm: np.linalg.norm(shape["xyz"][:2] - bases[arm]))
+    for arm in by_distance:
+        to_shape = float(np.linalg.norm(shape["xyz"][:2] - bases[arm]))
+        to_box = float(np.linalg.norm(box["xyz"][:2] - bases[arm]))
+        if to_shape <= max_reach and to_box <= max_reach:
+            return arm, box, to_shape, None
+    nearest = by_distance[0]
+    return None, box, None, (f"out of reach: {short(nearest)} is {100 * np.linalg.norm(shape['xyz'][:2] - bases[nearest]):.0f} cm "
+                             f"from it and {100 * np.linalg.norm(box['xyz'][:2] - bases[nearest]):.0f} cm from its box "
+                             f"(max {100 * max_reach:.0f})")
 
 
 def add_obstacle(world, x, y, half_x, half_y, height):
@@ -60,8 +91,9 @@ def add_obstacle(world, x, y, half_x, half_y, height):
     return body
 
 
-def pick_one(arm, robot, shape, box, others, boxes, args, io):
-    """Plan and (with a robot) do one pick: returns 'placed', 'missed' or 'no plan'."""
+def pick_one(arm, robot, shape, box, others, boxes, args, io, other_bases=()):
+    """Plan and (with a robot) do one pick: returns 'placed', 'missed' or 'no plan'. other_bases: the TABLE-frame
+    xy of the arms waiting at home, kept clear as obstacles."""
     send_joints, read_joints_rad, arm_files = io
     to_arm = arm_from_table(arm)
     o = (to_arm @ np.append(shape["xyz"], 1.0))[:3]
@@ -81,6 +113,10 @@ def pick_one(arm, robot, shape, box, others, boxes, args, io):
             xy = (to_arm @ np.append(other["xyz"], 1.0))[:2]
             # the box walls, plus a margin for the shape hanging below the jaws
             add_obstacle(world, *xy, args.box_size / 2, args.box_size / 2, args.box_height + args.box_margin)
+        for xy_table in other_bases:        # the arms are parallel, so the box keeps its axes in this frame
+            cx, hx, hy, height = ARM_HOME_BOX
+            xy = (to_arm @ np.array([xy_table[0] + cx, xy_table[1], 0.0, 1.0]))[:2]
+            add_obstacle(world, *xy, hx, hy, height)
 
         grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
         plans, error = None, None
@@ -130,7 +166,9 @@ def pick_one(arm, robot, shape, box, others, boxes, args, io):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--arm", default="follower_pink", help="follower_pink (default) or follower_blue")
+    ap.add_argument("--arm", default="both", help="both (default), follower_pink or follower_blue")
+    ap.add_argument("--max-reach", type=float, default=0.45,
+                    help="an arm only takes shapes and boxes within this distance of its base [m]")
     ap.add_argument("--no-robot", action="store_true", help="no arm connected: plan only")
     ap.add_argument("--gui", action="store_true", help="show each planned move in PyBullet")
     ap.add_argument("--box-height", type=float, default=0.08, help="height of the boxes [m]")
@@ -157,23 +195,48 @@ def main():
     T_table = camera_to_table()
     if T_table is None:
         raise SystemExit(f"No camera_to_table in {CALIBRATION_FILE}: run `python calibration/calibrate.py` first")
-    if args.arm not in arms():
-        raise SystemExit(f"unknown arm {args.arm!r}; known: {', '.join(arms())}")
+    all_arms = arms()
+    names = list(all_arms) if args.arm == "both" else [args.arm]
+    if any(name not in all_arms for name in names):
+        raise SystemExit(f"unknown arm {args.arm!r}; known: both, {', '.join(all_arms)}")
 
     import pyzed.sl as sl
     from control.IK_control import arm_files, connect_robot, read_joints_rad, send_joints
 
     io = (send_joints, read_joints_rad, arm_files)
-    base = np.array([arms()[args.arm]["x"], arms()[args.arm]["y"]])
-    robot = None if args.no_robot else connect_robot(args.arm)
+    robots = {}
+    for name in names:
+        if args.no_robot:
+            robots[name] = None
+            continue
+        try:
+            robots[name] = connect_robot(name)
+        except (ConnectionError, OSError, RuntimeError) as error:
+            if len(names) == 1:
+                raise
+            print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); the other arm does the whole "
+                  f"field. Check ports/{name}.txt and the arm's power.")
+    if not robots:
+        raise SystemExit("no arm connected")
+    bases = {name: np.array([all_arms[name]["x"], all_arms[name]["y"]]) for name in robots}
+    print("Arms: " + ", ".join(f"{name} at y {bases[name][1]:+.2f}" for name in bases))
+
+    def disconnect_all():
+        for robot in robots.values():
+            if robot:
+                robot.disconnect()
+
+    def home_all():
+        for robot in robots.values():
+            if robot:
+                go_home(robot, send_joints, read_joints_rad)
     marks = []                     # {"kind": "shape"/"box", "colour", "xyz" (table frame), "pixel", "state"}
     state = {"pending": None, "status": "click a shape's centre or a box"}
     frame = cloud = None
     try:
         zed = open_zed(args.serial)
     except BaseException:
-        if robot:
-            robot.disconnect()
+        disconnect_all()
         raise
     image, cloud_mat, runtime = sl.Mat(), sl.Mat(), sl.RuntimeParameters()
 
@@ -191,6 +254,7 @@ def main():
                      status="shape: r g b y | box: R G B Y (or 1 2 3 4)")
 
     def draw(view):
+        boxes = [m for m in marks if m["kind"] == "box"]
         for m in marks:
             colour = BGR[m["colour"]]
             u, v = m["pixel"]
@@ -204,6 +268,9 @@ def main():
                 elif m["state"] == "failed":
                     cv2.drawMarker(view, (u, v), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 26, 3)
                 text = f"{m['colour']} {m['state']}"
+                if m["state"] == "todo":
+                    arm, _, distance, why = assign(m, boxes, bases, args.max_reach)
+                    text += f" -> {short(arm)} ({100 * distance:.0f} cm)" if arm else " -> no arm"
             cv2.putText(view, text, (u + 16, v - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4)
             cv2.putText(view, text, (u + 16, v - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 2)
         if state["pending"] is not None:
@@ -226,18 +293,26 @@ def main():
         if not shapes:
             state["status"] = "no shapes left to pick: mark some first"
             return
-        for shape in sorted(shapes, key=lambda m: np.linalg.norm(m["xyz"][:2] - base)):
-            matching = [m for m in boxes if m["colour"] == shape["colour"]]
-            if not matching:
-                print(f"{shape['colour']} shape: no {shape['colour']} box marked; skipped")
+        plan = []
+        for shape in shapes:
+            arm, box, distance, why = assign(shape, boxes, bases, args.max_reach)
+            if arm is None:
+                print(f"{shape['colour']} shape at x {shape['xyz'][0]:.2f} y {shape['xyz'][1]:.2f}: skipped, {why}")
                 continue
-            box = matching[-1]
-            state["status"] = f"picking the {shape['colour']} shape ..."
+            plan.append((distance, arm, shape, box))
+        counts = {name: sum(a == name for _, a, _, _ in plan) for name in bases}
+        print("Field split: " + ", ".join(f"{short(n)} {c} shape(s)" for n, c in counts.items()))
+        if plan and len(bases) > 1:
+            home_all()                       # the waiting arm must really be at home (it is an obstacle there)
+        for distance, arm, shape, box in sorted(plan, key=lambda item: (item[1], item[0])):   # per arm, nearest first
+            robot = robots[arm]
+            state["status"] = f"{short(arm)}: picking the {shape['colour']} shape ..."
             show()
             cv2.waitKey(1)
             others = [m for m in marks if m["kind"] == "shape" and m["state"] == "todo" and m is not shape]
+            waiting = [bases[name] for name in bases if name != arm]
             for attempt in range(1, args.attempts + 1):
-                result = pick_one(args.arm, robot, shape, box, others, boxes, args, io)
+                result = pick_one(arm, robot, shape, box, others, boxes, args, io, other_bases=waiting)
                 if result != "missed":
                     break
                 if attempt < args.attempts:
@@ -289,14 +364,12 @@ def main():
                 state["pending"] = None
                 go()
             elif key == ord("h"):
-                if robot:
-                    go_home(robot, send_joints, read_joints_rad)
+                home_all()
                 state["status"] = "home"
     finally:
         zed.close()
         cv2.destroyAllWindows()
-        if robot:
-            robot.disconnect()
+        disconnect_all()
 
 
 if __name__ == "__main__":
