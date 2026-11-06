@@ -33,18 +33,48 @@ def command(follower, leader, extra):
             f"--teleop.id={leader}", *extra]
 
 
+# Variables a snap app (e.g. VS Code installed as a snap) sets in its terminal; inherited, they make gnome-terminal
+# load the snap's libraries and crash ("symbol lookup error ... /snap/core20/.../libpthread.so.0").
+SNAP_VARIABLES = ("GTK_PATH", "GTK_EXE_PREFIX", "GTK_IM_MODULE_FILE", "GIO_MODULE_DIR", "GSETTINGS_SCHEMA_DIR",
+                  "GDK_PIXBUF_MODULE_FILE", "GDK_PIXBUF_MODULEDIR", "LOCPATH", "LD_LIBRARY_PATH", "LD_PRELOAD")
+
+
+def clean_environment():
+    """This process's environment without what a snap app put in it."""
+    env = dict(os.environ)
+    for name in list(env):
+        if name in SNAP_VARIABLES or (name.startswith("SNAP") and name != "SNAP_NAME"):
+            env.pop(name)
+        elif name != "PATH" and "/snap/" in env[name]:
+            env.pop(name)
+    if "XDG_DATA_DIRS" in os.environ:   # keep the system entries, drop the snap's
+        dirs = [d for d in os.environ["XDG_DATA_DIRS"].split(":") if d and "/snap/" not in d]
+        env["XDG_DATA_DIRS"] = ":".join(dirs) or "/usr/local/share:/usr/share"
+    return env
+
+
 def open_terminal(title, cmd, conda_env):
-    """Run cmd in a new terminal window that stays open afterwards, so errors can be read."""
+    """Run cmd in a new terminal window that stays open afterwards, so errors can be read. Returns True only when
+    the terminal program really started (it is watched for a moment: a crash on start is caught)."""
     line = shlex.join(cmd)
     inner = (f"conda activate {shlex.quote(conda_env)} 2>/dev/null || true; echo {shlex.quote(title)}; "
              f"echo {shlex.quote(line)}; {line}; echo; read -rp 'Finished. Press Enter to close...'")
+    env = clean_environment()
     for terminal, args in (("gnome-terminal", [f"--title={title}", "--", "bash", "-ic", inner]),
                            ("konsole", ["-p", f"tabtitle={title}", "-e", "bash", "-ic", inner]),
                            ("xterm", ["-T", title, "-e", "bash", "-ic", inner]),
                            ("x-terminal-emulator", ["-e", "bash", "-ic", inner])):
-        if shutil.which(terminal):
-            subprocess.Popen([terminal, *args])
+        if not shutil.which(terminal):
+            continue
+        proc = subprocess.Popen([terminal, *args], env=env, stderr=subprocess.PIPE, text=True)
+        try:
+            proc.wait(timeout=2.0)      # gnome-terminal hands the window to its server and exits 0 quickly
+        except subprocess.TimeoutExpired:
+            return True                 # still running (konsole, xterm): the window is open
+        if proc.returncode == 0:
             return True
+        error = (proc.stderr.read() or "").strip().splitlines()
+        print(f"  {terminal} failed to start: {error[-1] if error else f'exit code {proc.returncode}'}")
     return False
 
 
@@ -102,10 +132,12 @@ def main():
     if args.here:
         run_here(jobs)
         return
-    for title, cmd in jobs:
+    for index, (title, cmd) in enumerate(jobs):
         if not open_terminal(title, cmd, args.conda_env):
-            print("No terminal program found (gnome-terminal, konsole, xterm): running here instead.")
-            run_here(jobs)
+            rest = jobs[index:]
+            print("Could not open a terminal window: running " + ", ".join(t for t, _ in rest) + " here instead "
+                  "(Ctrl+C stops it).")
+            run_here(rest)
             return
         print(f"Started {title} in a new window")
         time.sleep(1)
