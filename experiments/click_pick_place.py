@@ -215,7 +215,7 @@ def main():
             if len(names) == 1:
                 raise
             print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); the other arm does the whole "
-                  f"field. Check ports/{name}.txt and the arm's power.")
+                  f"field. Check `python ports/setup_usb_ports.py --check` and the arm's power.")
     if not robots:
         raise SystemExit("no arm connected")
     bases = {name: np.array([all_arms[name]["x"], all_arms[name]["y"]]) for name in robots}

@@ -1,0 +1,33 @@
+{
+  "_about": "The arms' setup, read by every script (control/arm_config.py). Ports are fixed names made by the udev rule from ports/setup_usb_ports.py (which also fills in 'usb'). base: where the follower stands in the TABLE frame of the ArUco calibration (origin halfway between the arms, x forward, y towards follower_pink), metres and degrees. leader: which leader arm teleoperates it (teleop.py).",
+  "default_arm": "follower_pink",
+  "lerobot": {
+    "follower_type": "so101_follower",
+    "leader_type": "so101_leader",
+    "follower_calibration_dir": "~/.cache/huggingface/lerobot/calibration/robots/so_follower"
+  },
+  "followers": {
+    "follower_pink": {
+      "port": "/dev/so101_follower_pink",
+      "leader": "leader_blue",
+      "base": {"x": 0.0, "y": 0.25, "yaw_deg": 0.0},
+      "usb": {"serial": "5AE6084677", "vendor": "1a86", "product": "55d3", "socket": "1-5.2"}
+    },
+    "follower_blue": {
+      "port": "/dev/so101_follower_blue",
+      "leader": "leader_green",
+      "base": {"x": 0.0, "y": -0.25, "yaw_deg": 0.0},
+      "usb": {"serial": "5AE6083782", "vendor": "1a86", "product": "55d3", "socket": "1-1.3"}
+    }
+  },
+  "leaders": {
+    "leader_blue": {
+      "port": "/dev/so101_leader_blue",
+      "usb": {"serial": "5AE6083785", "vendor": "1a86", "product": "55d3", "socket": "1-1.2"}
+    },
+    "leader_green": {
+      "port": "/dev/so101_leader_green",
+      "usb": {"serial": "5AE6054670", "vendor": "1a86", "product": "55d3", "socket": "1-1.1"}
+    }
+  }
+}

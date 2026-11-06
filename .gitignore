@@ -41,6 +41,8 @@ robot_urdfs/so101/assets/collision/*
 !robot_urdfs/so101/assets/collision/*.obj
 !README.md
 !teleoperate.sh
+!teleop.py
+!arms.json
 !ports/
 ports/*
 !ports/*.txt

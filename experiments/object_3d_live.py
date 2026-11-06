@@ -11,7 +11,7 @@ of the fitted STL; the green outline is that top face. Objects the fit cannot ma
 
 Both followers are shown in the PyBullet twin at their bases in the shared TABLE frame (calibration/calibrate.py:
 follower_pink at y = +0.25, follower_blue at y = -0.25), each read live (torque off) from the port in
-ports/<arm>.txt. An arm that cannot be connected is left at its zero pose with a warning.
+arms.json. An arm that cannot be connected is left at its zero pose with a warning.
 
 Usage:
     python experiments/object_3d_live.py
@@ -235,7 +235,7 @@ def main():
                 robots[name] = connect_robot(name)
             except (ConnectionError, OSError, RuntimeError) as error:
                 print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); shown at its zero pose. "
-                      f"Check ports/{name}.txt and the arm's power.")
+                      f"Check `python ports/setup_usb_ports.py --check` and the arm's power.")
                 continue
             robots[name].bus.disable_torque()
             print(f"{name}: torque disabled for hand-guiding; joint feedback is live and no motor commands are sent.")

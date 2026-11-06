@@ -5,7 +5,7 @@ the live slider offsets. Press s to save; q/Escape discards unsaved changes.
 
 Usage:
     python calibration/fine_joint_calibration_gui.py
-    python calibration/fine_joint_calibration_gui.py --arm follower_blue     # port from ports/follower_blue.txt,
+    python calibration/fine_joint_calibration_gui.py --arm follower_blue     # port from arms.json,
                                                                              # saves that arm's own offsets
     python calibration/fine_joint_calibration_gui.py --port /dev/ttyACM2     # any port (with or without --arm)
     python calibration/fine_joint_calibration_gui.py --no-robot
@@ -38,7 +38,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-robot", action="store_true", help="adjust offsets against a zero-pose preview only")
     parser.add_argument("--arm", default=None, help="which arm (follower_pink, follower_blue): its port file "
-                        "ports/<arm>.txt, its LeRobot calibration and its own offsets file")
+                        "port and LeRobot calibration from arms.json, and its own offsets file")
     parser.add_argument("--port", default=None, help="serial port, e.g. /dev/ttyACM2 (default: the arm's port file)")
     parser.add_argument("--offset-range-deg", type=float, default=10.0,
                         help="default +/- range for each PyBullet fine-offset slider")

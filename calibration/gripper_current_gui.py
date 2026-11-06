@@ -17,6 +17,7 @@ Grip protection (change the values below, or override them on the command line):
     they stopped, so the servo keeps a light grip instead of stalling at full force.
 
 Usage:
+    python calibration/gripper_current_gui.py --arm follower_pink            # port + calibration from arms.json
     python calibration/gripper_current_gui.py --port /dev/ttyACM0
     python calibration/gripper_current_gui.py --port /dev/ttyACM0 --grip-current 150 --grip-squeeze 3
     python calibration/gripper_current_gui.py --port /dev/ttyACM0 --calib path/to/my_follower_arm.json
@@ -25,6 +26,7 @@ Usage:
 import argparse
 import collections
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -46,9 +48,15 @@ GRIP_CONFIRM = 3        # readings in a row above the threshold (~40 ms apart) s
 GRIP_SQUEEZE = 2.0      # gripper units held past where it stopped: 0 = just hold, larger = firmer grip
 
 
-def connect(port, calib):
+def connect(port, calib, arm=None):
     from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 
+    if arm is not None:                       # port and calibration from arms.json
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from control import arm_config
+
+        port = port or arm_config.port(arm)
+        calib = arm_config.follower_calibration(arm) if calib == str(CALIB) else calib
     calib = Path(calib)
     if not calib.exists():
         raise SystemExit(f"calibration file not found: {calib}\npass it with --calib path/to/<arm>.json")
@@ -83,7 +91,8 @@ def read_gripper(robot) -> dict:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default=None, help=f"serial port, e.g. /dev/ttyACM0 (default: read from {PORT_FILE})")
+    ap.add_argument("--arm", default=None, help="follower_pink or follower_blue: port and calibration from arms.json")
+    ap.add_argument("--port", default=None, help=f"serial port, e.g. /dev/ttyACM0 (default: --arm's, else {PORT_FILE})")
     ap.add_argument("--calib", default=str(CALIB), help="LeRobot calibration json of the arm")
     ap.add_argument("--open-target", type=float, default=60.0, help="gripper position for Open (0-100)")
     ap.add_argument("--closed-target", type=float, default=0.0, help="gripper position for Close (0-100)")
@@ -94,7 +103,7 @@ def main():
     ap.add_argument("--no-grip-protection", action="store_true", help="keep squeezing (old behaviour)")
     args = ap.parse_args()
 
-    robot = connect(args.port, args.calib)
+    robot = connect(args.port, args.calib, args.arm)
     obs = robot.get_observation()
     hold = {k: v for k, v in obs.items() if k.endswith(".pos") and k != "gripper.pos"}
     state = {"target": None, "mode": "idle", "above": 0, "t0": time.time()}

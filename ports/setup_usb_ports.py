@@ -7,13 +7,14 @@ which arm (you unplug each arm's USB when asked), then installs a udev rule so L
 
     /dev/so101_follower_pink   /dev/so101_follower_blue   /dev/so101_leader_blue   /dev/so101_leader_green
 
-pointing at the right board, whatever ttyACM number it gets, and writes those names into ports/<arm>.txt, which
-teleoperate.sh, click_pick_place.py, click_to_go.py, IK_control.py, calibrate.py ... all read.
+pointing at the right board, whatever ttyACM number it gets, and saves the serial numbers and those names in
+arms.json (the one config file), which teleop.py, click_pick_place.py, click_to_go.py, IK_control.py,
+calibrate.py ... all read. The arm names are the ones in arms.json.
 
     python ports/setup_usb_ports.py                 # find each arm (unplug / replug when asked), install the rule
     python ports/setup_usb_ports.py --check         # which arm is plugged in, and where its fixed name points
-    python ports/setup_usb_ports.py --install-saved # (re)install the rule from ports/usb_ids.json, e.g. on a new PC
-    python ports/setup_usb_ports.py --no-udev       # no sudo: write /dev/serial/by-id/... paths instead (also fixed)
+    python ports/setup_usb_ports.py --install-saved # (re)install the rule from the serials in arms.json, e.g. on a new PC
+    python ports/setup_usb_ports.py --no-udev       # no sudo: put /dev/serial/by-id/... paths in arms.json (also fixed)
     python ports/setup_usb_ports.py --names follower_pink follower_blue     # only some arms
 
 Installing the rule needs sudo once (it copies ports/99-so101-arms.rules to /etc/udev/rules.d/). The rule also
@@ -30,8 +31,9 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-NAMES = ["follower_pink", "follower_blue", "leader_blue", "leader_green"]
-IDS_FILE = HERE / "usb_ids.json"
+sys.path.insert(0, str(HERE.parent))
+from control import arm_config  # noqa: E402
+
 RULES_FILE = HERE / "99-so101-arms.rules"
 RULES_TARGET = Path("/etc/udev/rules.d/99-so101-arms.rules")
 LINK_PREFIX = "so101_"
@@ -153,25 +155,44 @@ def install_rule(ids):
         print(f"  {link} -> {os.path.realpath(link) if os.path.exists(link) else 'not there yet (replug it)'}")
 
 
-def write_port_files(ids, use_udev):
+def saved_ids():
+    """{arm: device} from the 'usb' entries in arms.json."""
+    out = {}
+    for name in arm_config.names():
+        usb = arm_config.entry(name).get("usb")
+        if usb and usb.get("vendor"):
+            out[name] = {"serial": usb.get("serial"), "vendor": usb["vendor"], "product": usb.get("product"),
+                         "usb_path": usb.get("socket"), "by_id": usb.get("by_id")}
+    return out
+
+
+def save_to_config(ids, use_udev):
+    """Write each arm's USB serial and its fixed port name into arms.json."""
+    data = arm_config.load()
     for name, d in ids.items():
-        path = f"/dev/{LINK_PREFIX}{name}" if use_udev else d["by_id"]
-        if not path:
+        group = "followers" if name in data.get("followers", {}) else "leaders"
+        arm = data.setdefault(group, {}).setdefault(name, {})
+        arm["usb"] = {"serial": d["serial"], "vendor": d["vendor"], "product": d["product"], "socket": d["usb_path"]}
+        if d.get("by_id"):
+            arm["usb"]["by_id"] = d["by_id"]
+        path = f"/dev/{LINK_PREFIX}{name}" if use_udev else d.get("by_id")
+        if path:
+            arm["port"] = path
+            print(f"  {name}: port {path}")
+        else:
             print(f"  {name}: no /dev/serial/by-id name (no serial number); use the udev rule instead")
-            continue
-        (HERE / f"{name}.txt").write_text(path + "\n")
-        print(f"  ports/{name}.txt = {path}")
+    arm_config.save(data)
+    print(f"Saved {arm_config.FILE}")
 
 
 # ---------------------------------------------------------------------------------------------- check
 def check(names):
-    ids = json.loads(IDS_FILE.read_text()) if IDS_FILE.is_file() else {}
+    ids = saved_ids()
     devices = serial_devices()
     by_key = {key(d): tty for tty, d in devices.items()}
-    print(f"{'arm':15s} {'ports file':34s} {'points at':14s} saved serial")
+    print(f"{'arm':15s} {'port (arms.json)':34s} {'points at':14s} saved serial")
     for name in names:
-        port_file = HERE / f"{name}.txt"
-        port = port_file.read_text().strip() if port_file.is_file() else "(no ports file)"
+        port = arm_config.entry(name).get("port", "(no port)")
         target = os.path.realpath(port) if os.path.exists(port) else "NOT PLUGGED IN"
         saved = ids.get(name)
         saved_text = "(not set up)" if not saved else key(saved)
@@ -185,11 +206,11 @@ def check(names):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--names", nargs="+", default=NAMES, help="which arms (default: all four)")
+    ap.add_argument("--names", nargs="+", default=arm_config.names(), help="which arms (default: all in arms.json)")
     ap.add_argument("--check", action="store_true", help="show where each arm's name points now")
-    ap.add_argument("--install-saved", action="store_true", help="install the rule from ports/usb_ids.json")
+    ap.add_argument("--install-saved", action="store_true", help="install the rule from the serials in arms.json")
     ap.add_argument("--no-udev", action="store_true",
-                    help="no sudo / udev: write the /dev/serial/by-id/... names into ports/<arm>.txt instead")
+                    help="no sudo / udev: put the /dev/serial/by-id/... names in arms.json instead")
     args = ap.parse_args()
     if not sys.platform.startswith("linux"):
         raise SystemExit("This is for Linux (udev).")
@@ -198,23 +219,20 @@ def main():
         check(args.names)
         return
     if args.install_saved:
-        if not IDS_FILE.is_file():
-            raise SystemExit(f"No {IDS_FILE.name} yet: run without --install-saved first")
-        ids = {n: d for n, d in json.loads(IDS_FILE.read_text()).items() if n in args.names}
-    else:
-        ids = identify(args.names)
+        ids = {n: d for n, d in saved_ids().items() if n in args.names}
         if not ids:
+            raise SystemExit("No USB serials in arms.json yet: run without --install-saved first")
+        new = ids
+    else:
+        new = identify(args.names)
+        if not new:
             raise SystemExit("No arm identified.")
-        saved = json.loads(IDS_FILE.read_text()) if IDS_FILE.is_file() else {}
-        saved.update(ids)
-        IDS_FILE.write_text(json.dumps(saved, indent=2) + "\n")
-        print(f"\nSaved {IDS_FILE}")
-        ids = {n: d for n, d in saved.items()}          # the rule covers every arm set up so far
+        ids = {**saved_ids(), **new}                     # the rule covers every arm set up so far
 
     if not args.no_udev:
         install_rule(ids)
-    print("\nPort files:")
-    write_port_files({n: d for n, d in ids.items() if n in args.names or args.install_saved}, not args.no_udev)
+    print("\narms.json:")
+    save_to_config(new, not args.no_udev)
     print("\nDone. Check any time with:  python ports/setup_usb_ports.py --check")
 
 

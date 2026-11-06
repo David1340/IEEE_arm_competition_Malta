@@ -94,7 +94,7 @@ def main():
                     if len(names) == 1:
                         raise
                     print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); continuing without it. "
-                          f"Check ports/{name}.txt (`lerobot-find-port`) and that the arm is powered.")
+                          f"Check its port in arms.json (`python ports/setup_usb_ports.py --check`) and the arm's power.")
                     names.remove(name)
                     bases.pop(name)
                     continue

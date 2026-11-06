@@ -6,8 +6,8 @@ so LeRobot degrees (use_degrees=True) map directly to URDF joint angles.
 Usage:
     python -m control.IK_control --sim-only            # PyBullet GUI only, no hardware
     python -m control.IK_control                         # drives the real arm
-    python -m control.IK_control --arm follower_blue     # one of the two arms: port from ports/<arm>.txt, LeRobot
-                                                         # calibration <arm>.json, fine offsets of that arm
+    python -m control.IK_control --arm follower_blue     # one of the two arms: port and LeRobot calibration from
+                                                         # arms.json, fine offsets of that arm
 Commands in the prompt (meters, base frame):
     x y z [gripper 0-100]    absolute target
     d dx dy dz               relative move
@@ -39,12 +39,14 @@ EE_LINK = "gripper_frame_link"
 REPO = Path(__file__).resolve().parents[1]
 
 
-def arm_files(arm: str | None) -> tuple[Path, Path]:
-    """(port file, LeRobot calibration file) of an arm by its LeRobot id (follower_pink, follower_blue); None is
-    the single arm of the older setup (PORT_FILE, CALIB = my_follower_arm.json)."""
+def arm_files(arm: str | None) -> tuple[str | None, Path]:
+    """(port, LeRobot calibration file) of an arm by its LeRobot id (follower_pink, follower_blue), from
+    arms.json; None is the single arm of the older setup (PORT_FILE's port, CALIB = my_follower_arm.json)."""
     if arm is None:
-        return PORT_FILE, CALIB
-    return REPO / "ports" / f"{arm}.txt", CALIB.parent / f"{arm}.json"
+        return (PORT_FILE.read_text().strip() if PORT_FILE.is_file() else None), CALIB
+    from control import arm_config
+
+    return arm_config.port(arm), arm_config.follower_calibration(arm)
 
 
 def robot_arm(robot) -> str | None:
@@ -152,15 +154,17 @@ class EEController:
 
 
 def connect_robot(arm: str | None = None, port: str | None = None):
-    """Connect a follower: its port from ports/<arm>.txt (or `port`), its LeRobot calibration <arm>.json."""
+    """Connect a follower: its port and LeRobot calibration from arms.json (or `port`)."""
     from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 
-    port_file, calib = arm_files(arm)
-    for f in ([] if port else [port_file]) + [calib]:
-        if not f.is_file():
-            raise SystemExit(f"{f} not found" + ("" if arm is None else f" (needed for --arm {arm})"))
+    configured_port, calib = arm_files(arm)
+    port = port or configured_port
+    if port is None:
+        raise SystemExit(f"No port for the arm: {PORT_FILE} not found (give --arm, see arms.json)")
+    if not calib.is_file():
+        raise SystemExit(f"{calib} not found" + ("" if arm is None else f" (the LeRobot calibration of {arm})"))
     cfg = SOFollowerRobotConfig(
-        port=port or port_file.read_text().strip(),
+        port=port,
         id=calib.stem,
         calibration_dir=calib.parent,
         use_degrees=True,

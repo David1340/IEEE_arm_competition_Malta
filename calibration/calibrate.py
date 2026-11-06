@@ -19,12 +19,10 @@
 The TABLE frame, shared by both arms: origin on the table halfway between the two arms' shoulder pan axes;
 x forward (the way both arms face), y to the left (seen from behind the arms), z up; metres. Each arm's own base
 frame has the same axes, with its origin under its shoulder pan axis: follower_pink (left) at y = +0.25,
-follower_blue (right) at y = -0.25 (ARMS below; calibration.json's "arms" overrides them).
+follower_blue (right) at y = -0.25. These bases are set in arms.json ("base" of each follower).
 
 calibration.json (at the repo root):
     camera_to_table    4 x 4: ZED left camera (IMAGE frame: x right, y down, z forward) -> TABLE frame, metres
-    arms               (optional) each arm's base in the TABLE frame: {"follower_pink": {"x": 0, "y": 0.25,
-                       "yaw_deg": 0}, ...}; "default" names the arm camera_transform.npy is written for
     camera_to_base     (older files) camera -> one arm's base frame; camera_to_table replaces it
     camera             when, how (aruco / arm) and how well it was fitted; the ZED serial
     table_z            the table's height in the base frame (m)
@@ -96,24 +94,20 @@ def update(**sections):
     return data
 
 
-ARMS = {"follower_pink": {"x": 0.0, "y": 0.25, "yaw_deg": 0.0},    # left, seen from behind the arms
-        "follower_blue": {"x": 0.0, "y": -0.25, "yaw_deg": 0.0}}   # right
-DEFAULT_ARM = "follower_pink"
-
-
 def arms(data=None):
-    """{arm id: {x, y, yaw_deg}}: each arm's base in the TABLE frame (ARMS, overridden by calibration.json)."""
-    stored = (load() if data is None else data).get("arms", {})
-    out = {name: dict(base) for name, base in ARMS.items()}
-    for name, base in stored.items():
-        if isinstance(base, dict):
-            out.setdefault(name, {"x": 0.0, "y": 0.0, "yaw_deg": 0.0}).update(
-                {k: float(v) for k, v in base.items() if k in ("x", "y", "yaw_deg")})
-    return out
+    """{arm id: {x, y, yaw_deg}}: each follower's base in the TABLE frame, from arms.json."""
+    sys.path.insert(0, str(ROOT))
+    from control import arm_config
+
+    return {name: arm_config.base(name) for name in arm_config.followers()}
 
 
 def default_arm(data=None):
-    return (load() if data is None else data).get("arms", {}).get("default", DEFAULT_ARM)
+    """The arm camera_transform.npy is written for (arms.json "default_arm")."""
+    sys.path.insert(0, str(ROOT))
+    from control import arm_config
+
+    return arm_config.default_arm()
 
 
 def arm_from_table(arm, data=None):
