@@ -1,1 +1,1 @@
-/dev/ttyACM4
+/dev/so101_follower_pink

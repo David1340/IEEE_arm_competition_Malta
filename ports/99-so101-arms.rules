@@ -1,0 +1,6 @@
+# Fixed names for the SO-101 arms' USB boards; made by ports/setup_usb_ports.py
+# /dev/so101_<arm> always points at that arm's board, whatever ttyACM number it gets.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AE6084677", SYMLINK+="so101_follower_pink", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AE6083782", SYMLINK+="so101_follower_blue", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AE6083785", SYMLINK+="so101_leader_blue", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AE6054670", SYMLINK+="so101_leader_green", MODE="0666"

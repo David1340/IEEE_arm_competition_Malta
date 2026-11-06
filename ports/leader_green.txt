@@ -1,1 +1,1 @@
-/dev/ttyACM2
+/dev/so101_leader_green

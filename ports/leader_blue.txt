@@ -1,1 +1,1 @@
-/dev/ttyACM3
+/dev/so101_leader_blue

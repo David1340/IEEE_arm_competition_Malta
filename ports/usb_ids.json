@@ -1,0 +1,30 @@
+{
+  "follower_pink": {
+    "serial": "5AE6084677",
+    "vendor": "1a86",
+    "product": "55d3",
+    "usb_path": "1-5.2",
+    "by_id": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6084677-if00"
+  },
+  "follower_blue": {
+    "serial": "5AE6083782",
+    "vendor": "1a86",
+    "product": "55d3",
+    "usb_path": "1-1.3",
+    "by_id": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6083782-if00"
+  },
+  "leader_blue": {
+    "serial": "5AE6083785",
+    "vendor": "1a86",
+    "product": "55d3",
+    "usb_path": "1-1.2",
+    "by_id": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6083785-if00"
+  },
+  "leader_green": {
+    "serial": "5AE6054670",
+    "vendor": "1a86",
+    "product": "55d3",
+    "usb_path": "1-1.1",
+    "by_id": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6054670-if00"
+  }
+}
