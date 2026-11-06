@@ -94,6 +94,17 @@ def follower_calibration(name: str) -> Path:
     return Path(folder).expanduser() / f"{name}.json"
 
 
+def handoff_points() -> list[list[float]]:
+    """TABLE-frame xy of the points in the middle where one arm leaves a shape for the other (arms.json
+    "handoff": "points"); the first free one is used."""
+    return [list(map(float, p)) for p in load().get("handoff", {}).get("points", [[0.30, 0.0]])]
+
+
+def middle_half_width() -> float:
+    """Half the width of the shared middle strip between the arms' sides [m] (arms.json "handoff")."""
+    return float(load().get("handoff", {}).get("middle_half_width", 0.10))
+
+
 def teleop_pairs(only: list[str] | None = None) -> list[tuple[str, str]]:
     """(follower, leader) for every follower with a leader (only those named, if given)."""
     pairs = [(f, e["leader"]) for f, e in followers().items() if e.get("leader")]

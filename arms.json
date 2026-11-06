@@ -10,24 +10,70 @@
     "follower_pink": {
       "port": "/dev/so101_follower_pink",
       "leader": "leader_blue",
-      "base": {"x": 0.0, "y": 0.25, "yaw_deg": 0.0},
-      "usb": {"serial": "5AE6084677", "vendor": "1a86", "product": "55d3", "socket": "1-5.2"}
+      "base": {
+        "x": 0.0,
+        "y": 0.25,
+        "yaw_deg": 0.0
+      },
+      "usb": {
+        "serial": "5AE6084677",
+        "vendor": "1a86",
+        "product": "55d3",
+        "socket": "1-5.2"
+      }
     },
     "follower_blue": {
       "port": "/dev/so101_follower_blue",
       "leader": "leader_green",
-      "base": {"x": 0.0, "y": -0.25, "yaw_deg": 0.0},
-      "usb": {"serial": "5AE6083782", "vendor": "1a86", "product": "55d3", "socket": "1-1.3"}
+      "base": {
+        "x": 0.0,
+        "y": -0.25,
+        "yaw_deg": 0.0
+      },
+      "usb": {
+        "serial": "5AE6083782",
+        "vendor": "1a86",
+        "product": "55d3",
+        "socket": "1-1.3"
+      }
     }
   },
   "leaders": {
     "leader_blue": {
       "port": "/dev/so101_leader_blue",
-      "usb": {"serial": "5AE6083785", "vendor": "1a86", "product": "55d3", "socket": "1-1.2"}
+      "usb": {
+        "serial": "5AE6083785",
+        "vendor": "1a86",
+        "product": "55d3",
+        "socket": "1-1.2"
+      }
     },
     "leader_green": {
       "port": "/dev/so101_leader_green",
-      "usb": {"serial": "5AE6054670", "vendor": "1a86", "product": "55d3", "socket": "1-1.1"}
+      "usb": {
+        "serial": "5AE6054670",
+        "vendor": "1a86",
+        "product": "55d3",
+        "socket": "1-1.1"
+      }
     }
+  },
+  "handoff": {
+    "_about": "TABLE-frame x, y of the points where one arm leaves a shape for the other when only the other reaches its box (keep them clear of the boxes), and the half width of the shared middle strip: an arm working there (or on the other arm's side) has it to itself.",
+    "points": [
+      [
+        0.3,
+        0.0
+      ],
+      [
+        0.24,
+        0.0
+      ],
+      [
+        0.36,
+        0.0
+      ]
+    ],
+    "middle_half_width": 0.1
   }
 }
