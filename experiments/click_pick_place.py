@@ -297,6 +297,11 @@ def main():
         raise SystemExit("no arm connected")
     bases = {name: np.array([all_arms[name]["x"], all_arms[name]["y"]]) for name in robots}
     regions = Regions(bases, arm_config.middle_half_width())
+    missing = [name for name in names if name not in robots]
+    warning = (f"{', '.join(missing)} NOT CONNECTED: no handoffs, {next(iter(robots))} does what it reaches alone"
+               if missing else "")
+    if warning:
+        print("\n*** " + warning + " ***\n")
     print("Arms: " + ", ".join(f"{name} at y {bases[name][1]:+.2f}" for name in bases)
           + f" | handoff points: {handoff_points} | {'parallel' if args.parallel else 'one task at a time'}")
     last_q = {name: list(HOME_Q) for name in robots}
@@ -394,7 +399,7 @@ def main():
         if state["pending"] is not None:
             cv2.drawMarker(view, state["pending"]["pixel"], (255, 255, 255), cv2.MARKER_CROSS, 30, 3)
         coordinator = CURRENT["coordinator"]
-        lines = [state["status"], "u undo | c clear | Space go | h home | q quit"]
+        lines = [state["status"], "u undo | c clear | Space go | h home | q quit"] + ([warning] if warning else [])
         if coordinator is not None:
             lines += [f"{short(a)}: {s}" for a, s in sorted(coordinator.arm_state.items())]
         for i, text in enumerate(lines):
@@ -420,6 +425,8 @@ def main():
             print(f"{shape['colour']} shape at x {shape['xyz'][0]:.2f} y {shape['xyz'][1]:.2f}: skipped, {why}")
         if not tasks:
             state["status"] = "nothing the arms can do: see the terminal"
+            if warning:
+                print(f"\n*** {warning} ***")
             return
         print("\nPlan:")
         for task in tasks:

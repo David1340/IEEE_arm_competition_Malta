@@ -79,6 +79,24 @@ def reach(xy, base) -> float:
     return float(np.linalg.norm(np.asarray(xy[:2], float) - np.asarray(base, float)))
 
 
+def why_skipped(shape, box, bases, handoff_points, max_reach):
+    """The plain reason no arm (directly or by a handoff) can take this shape to its box."""
+    cm = lambda d: f"{100 * d:.0f} cm"
+    to_shape = {a: reach(shape["xyz"], b) for a, b in bases.items()}
+    to_box = {a: reach(box["xyz"], b) for a, b in bases.items()}
+    near_shape, near_box = min(to_shape, key=to_shape.get), min(to_box, key=to_box.get)
+    limit = f"(max {cm(max_reach)}, --max-reach)" + (f"; only {near_shape} is connected" if len(bases) == 1 else "")
+    if to_shape[near_shape] > max_reach:
+        return f"no arm reaches the shape: {near_shape} is {cm(to_shape[near_shape])} from it {limit}"
+    if to_box[near_box] > max_reach:
+        return f"no arm reaches its {box['colour']} box: {near_box} is {cm(to_box[near_box])} from it {limit}"
+    if len(bases) == 1:
+        return (f"only {near_shape} is connected: it reaches the shape but not its {box['colour']} box "
+                f"({cm(to_box[near_shape])}); a handoff needs the other arm")
+    return (f"{near_shape} reaches the shape and {near_box} its {box['colour']} box, but no handoff point is "
+            f"within {cm(max_reach)} of both (arms.json \"handoff\" points)")
+
+
 def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions):
     """Tasks for the shapes (todo marks), and [(shape, reason)] for the ones no arm or handoff can do."""
     ids = itertools.count(1)
@@ -108,10 +126,7 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions):
             if plan:
                 break
         if plan is None:
-            nearest = by_distance[0]
-            skipped.append((shape, f"out of reach: {nearest} is {100 * reach(shape['xyz'], bases[nearest]):.0f} cm "
-                                   f"from it and {100 * reach(box['xyz'], bases[nearest]):.0f} cm from its box, and no "
-                                   f"handoff point suits both arms (max {100 * max_reach:.0f} cm)"))
+            skipped.append((shape, why_skipped(shape, box, bases, handoff_points, max_reach)))
             continue
         first, second, usable = plan
         task = Task(next(ids), TO_HANDOFF, first, shape, box, then_arm=second,
