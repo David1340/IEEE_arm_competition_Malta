@@ -12,10 +12,9 @@ from pathlib import Path
 import cv2
 from ultralytics import YOLO
 
-from roi import ROI_FILE, crop, load_roi
+from roi import DATA, ROI_FILE, RUNS, crop, load_roi
 
 HERE = Path(__file__).resolve().parent
-RUNS = HERE.parent / "runs" / "segment"
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 
 
@@ -29,8 +28,8 @@ def latest_weights() -> Path:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", default=None, help="default: most recent run in runs/segment")
-    ap.add_argument("--source", default=str(HERE / "images"), help="folder of full-resolution images")
-    ap.add_argument("--out", default=str(HERE / "predictions"))
+    ap.add_argument("--source", default=str(DATA / "images"), help="folder of full-resolution images")
+    ap.add_argument("--out", default=str(DATA / "predictions"))
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--imgsz", type=int, default=None, help="default: longest side of the ROI")
     ap.add_argument("--no-roi", action="store_true", help="images are already cropped")

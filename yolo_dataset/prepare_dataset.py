@@ -9,9 +9,13 @@ Then train:
 import argparse
 import random
 import shutil
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from roi import DATA  # noqa: E402  (the dataset folder: yolo_dataset/ or YOLO_DATASET)
+
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 
 
@@ -19,12 +23,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--val", type=float, default=0.2, help="validation fraction")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", default=str(HERE / "dataset"))
-    ap.add_argument("--images", default=str(HERE / "images"), help="use images_roi after 'roi.py apply'")
-    ap.add_argument("--labels", default=str(HERE / "labels"), help="use labels_roi after 'roi.py apply'")
+    ap.add_argument("--out", default=str(DATA / "dataset"))
+    ap.add_argument("--images", default=str(DATA / "images"), help="use images_roi after 'roi.py apply'")
+    ap.add_argument("--labels", default=str(DATA / "labels"), help="use labels_roi after 'roi.py apply'")
     args = ap.parse_args()
 
-    classes = [c.strip() for c in (HERE / "classes.txt").read_text().splitlines() if c.strip()]
+    classes = [c.strip() for c in (DATA / "classes.txt").read_text().splitlines() if c.strip()]
     lbl_dir = Path(args.labels)
     imgs = sorted(f for f in Path(args.images).iterdir() if f.suffix.lower() in IMG_EXT)
     imgs = [f for f in imgs if (lbl_dir / f"{f.stem}.txt").exists()]
@@ -45,8 +49,8 @@ def main():
         print(f"{split}: {len(files)} images")
 
     names = "\n".join(f"  {i}: {c}" for i, c in enumerate(classes))
-    (HERE / "data.yaml").write_text(f"path: {out}\ntrain: images/train\nval: images/val\nnames:\n{names}\n")
-    print(f"wrote {HERE / 'data.yaml'}")
+    (DATA / "data.yaml").write_text(f"path: {out}\ntrain: images/train\nval: images/val\nnames:\n{names}\n")
+    print(f"wrote {DATA / 'data.yaml'}")
 
 
 if __name__ == "__main__":

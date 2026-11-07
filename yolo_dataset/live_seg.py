@@ -25,9 +25,8 @@ from ultralytics import YOLO
 
 HERE = Path(__file__).resolve().parent
 from dataset_generation import open_camera  # noqa: E402
-from roi import ROI_FILE, crop, load_roi  # noqa: E402
+from roi import DATA, ROI_FILE, RUNS, crop, load_roi  # noqa: E402
 
-RUNS = HERE.parent / "runs" / "segment"
 COLORS = [(0, 255, 0), (0, 128, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),
           (128, 0, 255), (0, 200, 120), (200, 120, 0), (120, 120, 255)]
 
@@ -49,7 +48,7 @@ def main():
     ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD720")
     ap.add_argument("--fps", type=int, default=15)
     ap.add_argument("--max-width", type=int, default=1400)
-    ap.add_argument("--save-dir", default=str(HERE / "live_captures"))
+    ap.add_argument("--save-dir", default=str(DATA / "live_captures"))
     args = ap.parse_args()
 
     if not ROI_FILE.exists():

@@ -21,7 +21,12 @@ import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROI_FILE = HERE / "roi.json"
+# Which dataset these tools work on: yolo_dataset/ (the blocks) unless YOLO_DATASET names another folder (e.g.
+# yolo_pouring/, set by yolo_pouring/pouring_dataset.py); its images/, labels/, classes.txt, roi.json, data.yaml.
+# The trained models go to YOLO_RUNS (default runs/segment, which the blocks pipeline loads its newest model from).
+DATA = Path(os.environ.get("YOLO_DATASET", HERE)).resolve()
+RUNS = Path(os.environ.get("YOLO_RUNS", HERE.parent / "runs" / "segment")).resolve()
+ROI_FILE = DATA / "roi.json"
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 
 
@@ -129,7 +134,7 @@ def apply(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--images", default=str(HERE / "images"))
+    ap.add_argument("--images", default=str(DATA / "images"))
     ap.add_argument("--max-width", type=int, default=1280)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -142,9 +147,9 @@ def main():
     p.set_defaults(fn=preview)
 
     a = sub.add_parser("apply")
-    a.add_argument("--labels", default=str(HERE / "labels"))
-    a.add_argument("--out-images", default=str(HERE / "images_roi"))
-    a.add_argument("--out-labels", default=str(HERE / "labels_roi"))
+    a.add_argument("--labels", default=str(DATA / "labels"))
+    a.add_argument("--out-images", default=str(DATA / "images_roi"))
+    a.add_argument("--out-labels", default=str(DATA / "labels_roi"))
     a.add_argument("--min-area", type=float, default=100, help="drop objects with fewer pixels left in the crop")
     a.set_defaults(fn=apply)
 

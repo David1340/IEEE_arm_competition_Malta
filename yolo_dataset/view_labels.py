@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import sys
 import os
 from pathlib import Path
 
@@ -18,6 +19,8 @@ import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from roi import DATA  # noqa: E402  (the dataset folder: yolo_dataset/ or YOLO_DATASET)
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 COLORS = [(0, 255, 0), (0, 128, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0)]
 
@@ -47,9 +50,9 @@ def draw(img, label_path, classes, visible):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--images", default=str(HERE / "images"))
-    ap.add_argument("--labels", default=str(HERE / "labels"))
-    ap.add_argument("--classes-file", default=str(HERE / "classes.txt"))
+    ap.add_argument("--images", default=str(DATA / "images"))
+    ap.add_argument("--labels", default=str(DATA / "labels"))
+    ap.add_argument("--classes-file", default=str(DATA / "classes.txt"))
     ap.add_argument("--max-width", type=int, default=1280)
     args = ap.parse_args()
 

@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from roi import ROI_FILE, load_roi
+from roi import DATA, ROI_FILE, RUNS, load_roi
 
 HERE = Path(__file__).resolve().parent
 
@@ -31,7 +31,7 @@ def main():
     ap.add_argument("--max-imgsz", type=int, default=None)
     ap.add_argument("--val", type=float, default=0.2)
     ap.add_argument("--skip-prepare", action="store_true")
-    ap.add_argument("--project", default=str(HERE.parent / "runs" / "segment"))
+    ap.add_argument("--project", default=str(RUNS))
     args = ap.parse_args()
 
     if not ROI_FILE.exists():
@@ -46,12 +46,12 @@ def main():
         py = sys.executable
         run([py, str(HERE / "roi.py"), "apply"])
         run([py, str(HERE / "prepare_dataset.py"), "--val", str(args.val),
-             "--images", str(HERE / "images_roi"), "--labels", str(HERE / "labels_roi")])
+             "--images", str(DATA / "images_roi"), "--labels", str(DATA / "labels_roi")])
 
     from ultralytics import YOLO
 
     YOLO(args.model).train(
-        data=str(HERE / "data.yaml"),
+        data=str(DATA / "data.yaml"),
         epochs=args.epochs,
         imgsz=imgsz,
         batch=args.batch,

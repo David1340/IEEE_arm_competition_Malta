@@ -19,10 +19,9 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-from roi import ROI_FILE, crop, load_roi
+from roi import DATA, ROI_FILE, RUNS, crop, load_roi
 
 HERE = Path(__file__).resolve().parent
-RUNS = HERE.parent / "runs" / "segment"
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 COLORS = [(0, 255, 0), (0, 128, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),
           (128, 0, 255), (0, 200, 120), (200, 120, 0), (120, 120, 255)]
@@ -48,7 +47,7 @@ def main():
 
     # The dataset/ split already holds cropped images, so the ROI is applied only to --source.
     if args.source is None:
-        args.source = str(HERE / "dataset" / "images" / args.split)
+        args.source = str(DATA / "dataset" / "images" / args.split)
         args.no_roi = True
     if not ROI_FILE.exists():
         raise SystemExit(f"{ROI_FILE} not found: run 'python roi.py select'")

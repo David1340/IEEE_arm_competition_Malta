@@ -20,7 +20,7 @@ import cv2
 import pyzed.sl as sl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from roi import ROI_FILE, crop, load_roi
+from roi import DATA, ROI_FILE, crop, load_roi
 
 
 def list_cameras():
@@ -49,7 +49,7 @@ def main():
     ap.add_argument("--list", action="store_true", help="list connected ZED cameras and exit")
     ap.add_argument("--serial", type=int, default=None)
     ap.add_argument("--id", type=int, default=0, help="camera id, used if --serial is not given")
-    ap.add_argument("--out", default="yolo_dataset/images")
+    ap.add_argument("--out", default=str(DATA / "images"))
     ap.add_argument("--prefix", default="img")
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between auto-captures")
     ap.add_argument("--resolution", choices=["HD2K", "HD1080", "HD720", "VGA"], default="HD720")

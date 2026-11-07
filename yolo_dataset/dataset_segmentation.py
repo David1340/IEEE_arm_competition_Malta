@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import sys
 import os
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from ultralytics import SAM
 COLORS = [(0, 255, 0), (0, 128, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0)]
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from roi import DATA  # noqa: E402  (the dataset folder: yolo_dataset/ or YOLO_DATASET)
 
 
 def segment(model, img, points, labels):
@@ -43,10 +46,10 @@ def segment(model, img, points, labels):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--images", default=str(HERE / "images"))
+    ap.add_argument("--images", default=str(DATA / "images"))
     ap.add_argument("--labels", default=None, help="default: sibling 'labels' folder")
     ap.add_argument("--classes", nargs="+", default=None, help="overrides classes.txt")
-    ap.add_argument("--classes-file", default=str(HERE / "classes.txt"), help="one class name per line, line order = class id")
+    ap.add_argument("--classes-file", default=str(DATA / "classes.txt"), help="one class name per line, line order = class id")
     ap.add_argument("--model", default="sam_b.pt")
     ap.add_argument("--redo", action="store_true", help="relabel images that already have a label file")
     ap.add_argument("--add-missing", action="store_true", help="open labeled images and preserve their existing objects")
