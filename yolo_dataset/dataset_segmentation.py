@@ -11,10 +11,13 @@ Keys (click the window first):
     b       go back: reopen the last confirmed object for editing
     ENTER   save labels for this image and go to the next
     k       skip image without saving
+    p       go back to the previous image (it opens with its saved objects; ENTER saves it again)
     q/ESC   quit
 Usage:
     python dataset_segmentation.py --images images            # classes from classes.txt
     python dataset_segmentation.py --classes cube ball        # also rewrites classes.txt
+    python dataset_segmentation.py --image pour_20261107_1530  # open that image (name or part of it); then
+                                                               # ENTER / k / p move on from there
 """
 
 import argparse
@@ -54,6 +57,7 @@ def main():
     ap.add_argument("--redo", action="store_true", help="relabel images that already have a label file")
     ap.add_argument("--add-missing", action="store_true", help="open labeled images and preserve their existing objects")
     ap.add_argument("--max-width", type=int, default=1280)
+    ap.add_argument("--image", default=None, help="start at this image (its name, or part of it)")
     args = ap.parse_args()
 
     img_dir = Path(args.images)
@@ -68,11 +72,26 @@ def main():
     print(f"{len(args.classes)} classes: {args.classes}")
 
     files = sorted(f for f in img_dir.iterdir() if f.suffix.lower() in IMG_EXT)
-    if args.add_missing:
-        files = [f for f in files if (lbl_dir / f"{f.stem}.txt").exists()]
-    elif not args.redo:
-        files = [f for f in files if not (lbl_dir / f"{f.stem}.txt").exists()]
-    print(f"{len(files)} images to label/edit")
+
+    def to_do(f):
+        """Images ENTER / k move on to: unlabelled ones (default), labelled ones (--add-missing), or all (--redo).
+        p (back) goes to the previous image whatever it is."""
+        labelled = (lbl_dir / f"{f.stem}.txt").exists()
+        return labelled if args.add_missing else (True if args.redo else not labelled)
+
+    def next_to_do(i):
+        while i < len(files) and not to_do(files[i]):
+            i += 1
+        return i
+
+    if args.image:
+        matches = [i for i, f in enumerate(files) if args.image in f.name]
+        if not matches:
+            ap.error(f"no image matching {args.image!r} in {img_dir}")
+        index = matches[0]
+    else:
+        index = next_to_do(0)
+    print(f"{sum(map(to_do, files))} images to label/edit (of {len(files)}); p goes back to the previous one")
 
     model = SAM(args.model)
     state = {"points": [], "labels": [], "poly": None, "scale": 1.0, "dirty": True}
@@ -90,16 +109,17 @@ def main():
     cv2.setMouseCallback(win, on_mouse)
 
     quit_all = False
-    for file_i, f in enumerate(files, start=1):
-        if quit_all:
-            break
+    while 0 <= index < len(files) and not quit_all:
+        f = files[index]
+        file_i = index + 1
+        step = 1                     # where to go after this image: +1 next to do, -1 back
         img = cv2.imread(str(f))
         h, w = img.shape[:2]
         state["scale"] = min(1.0, args.max_width / w)
         objects = []  # (class_id, polygon, points, labels)
         cls = 0
         existing_label = lbl_dir / f"{f.stem}.txt"
-        if args.add_missing and existing_label.exists():
+        if existing_label.exists():      # a labelled image (gone back to, or --add-missing / --image): edit it
             for label_line in existing_label.read_text().splitlines():
                 parts = label_line.split()
                 if len(parts) >= 7:
@@ -129,7 +149,8 @@ def main():
                 cv2.circle(vis, (int(x), int(y)), 8, (0, 255, 0) if l else (0, 0, 255), -1)
             if state["scale"] < 1.0:
                 vis = cv2.resize(vis, None, fx=state["scale"], fy=state["scale"])
-            text = f"[{file_i}/{len(files)}] {f.name} | class {cls}:{args.classes[cls]} | objects={len(objects)}"
+            text = (f"[{file_i}/{len(files)}] {f.name} | class {cls}:{args.classes[cls]} | objects={len(objects)}"
+                    + (" | labelled" if existing_label.exists() else ""))
             if args.add_missing:
                 selected_text = f"selected {selected + 1}/{len(objects)}" if selected is not None else "no object selected"
                 text = f"[{file_i}/{len(files)}] {f.name} | class {cls}:{args.classes[cls]} | {selected_text} | objects={len(objects)}"
@@ -176,6 +197,9 @@ def main():
                 selected = (selected + 1) % len(objects) if selected is not None else 0
             elif key == ord("k"):
                 break
+            elif key == ord("p"):
+                step = -1                 # unsaved changes on this image are dropped
+                break
             elif key in (13, 10):
                 if state["poly"] is not None:
                     objects.append((cls, state["poly"], [], []))
@@ -183,6 +207,12 @@ def main():
                 (lbl_dir / f"{f.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
                 print(f"saved {f.stem}.txt ({len(objects)} objects)")
                 break
+        if step < 0:
+            if index == 0:
+                print("this is the first image")
+            index = max(index - 1, 0)
+        else:
+            index = next_to_do(index + 1)
 
     cv2.destroyAllWindows()
 
