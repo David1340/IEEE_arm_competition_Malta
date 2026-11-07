@@ -79,17 +79,35 @@ def reach(xy, base) -> float:
     return float(np.linalg.norm(np.asarray(xy[:2], float) - np.asarray(base, float)))
 
 
+BOX_SLACK = {"value": 0.0}   # how much nearer than its centre a box's drop point may be (set by the caller) [m]
+
+
+def drop_point(box_xy, base, slack=None):
+    """Where to release over a box for the arm at `base`: the box's centre moved towards the arm by `slack` (a
+    shape may land anywhere inside the box, and its near side is nearer than its centre)."""
+    slack = BOX_SLACK["value"] if slack is None else slack
+    box_xy, base = np.asarray(box_xy[:2], float), np.asarray(base, float)
+    d = np.linalg.norm(box_xy - base)
+    return box_xy if d <= 1e-9 else box_xy + (base - box_xy) / d * min(slack, d)
+
+
+def box_reach(box, base) -> float:
+    """Distance from the arm's base to its drop point in the box."""
+    return reach(drop_point(box["xyz"], base), base)
+
+
 def why_skipped(shape, box, bases, handoff_points, max_reach):
     """The plain reason no arm (directly or by a handoff) can take this shape to its box."""
     cm = lambda d: f"{100 * d:.0f} cm"
     to_shape = {a: reach(shape["xyz"], b) for a, b in bases.items()}
-    to_box = {a: reach(box["xyz"], b) for a, b in bases.items()}
+    to_box = {a: box_reach(box, b) for a, b in bases.items()}
     near_shape, near_box = min(to_shape, key=to_shape.get), min(to_box, key=to_box.get)
     limit = f"(max {cm(max_reach)}, --max-reach)" + (f"; only {near_shape} is connected" if len(bases) == 1 else "")
     if to_shape[near_shape] > max_reach:
         return f"no arm reaches the shape: {near_shape} is {cm(to_shape[near_shape])} from it {limit}"
     if to_box[near_box] > max_reach:
-        return f"no arm reaches its {box['colour']} box: {near_box} is {cm(to_box[near_box])} from it {limit}"
+        return (f"no arm reaches its {box['colour']} box: the nearest drop point is {cm(to_box[near_box])} from "
+                f"{near_box} {limit}")
     if len(bases) == 1:
         return (f"only {near_shape} is connected: it reaches the shape but not its {box['colour']} box "
                 f"({cm(to_box[near_shape])}); a handoff needs the other arm")
@@ -111,7 +129,7 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_gr
         box = matching[-1]
         by_distance = sorted(bases, key=lambda arm: reach(shape["xyz"], bases[arm]))
         direct = [arm for arm in by_distance
-                  if reach(shape["xyz"], bases[arm]) <= max_reach and reach(box["xyz"], bases[arm]) <= max_reach]
+                  if reach(shape["xyz"], bases[arm]) <= max_reach and box_reach(box, bases[arm]) <= max_reach]
         if direct:
             arm = direct[0]
             tasks.append(Task(next(ids), DIRECT, arm, shape, box,
@@ -119,7 +137,7 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_gr
             continue
         plan = None
         for first in [a for a in by_distance if reach(shape["xyz"], bases[a]) <= max_reach]:
-            for second in [a for a in bases if a != first and reach(box["xyz"], bases[a]) <= max_reach]:
+            for second in [a for a in bases if a != first and box_reach(box, bases[a]) <= max_reach]:
                 top = float(shape["xyz"][2])
                 usable = [i for i, p in enumerate(handoff_points)
                           if reach(p, bases[first]) <= max_reach and reach(p, bases[second]) <= max_reach

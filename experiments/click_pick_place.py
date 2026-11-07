@@ -44,7 +44,7 @@ import cv2  # noqa: E402
 
 from calibration.calibrate import FILE as CALIBRATION_FILE, arm_from_table, arms, camera_to_table, open_zed  # noqa: E402
 from control import arm_config  # noqa: E402
-from control.coordinator import DIRECT, TO_HANDOFF, Coordinator, Regions, build_tasks  # noqa: E402
+from control.coordinator import BOX_SLACK, DIRECT, TO_HANDOFF, Coordinator, Regions, build_tasks, drop_point  # noqa: E402
 from experiments.click_to_go import click_to_camera_xyz  # noqa: E402
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
                                        GRIPPER_OPEN, HOME_Q, close_gripper_with_current_feedback)
@@ -145,7 +145,9 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     arm = task.arm
     to_arm = arm_from_table(arm)
     o = (to_arm @ np.append(task.shape["xyz"], 1.0))[:3]
-    b = (to_arm @ np.append(task.box["xyz"], 1.0))[:3]
+    base = arm_config.base(arm)
+    drop = drop_point(task.box["xyz"], [base["x"], base["y"]])      # inside the box, on the side nearest the arm
+    b = (to_arm @ np.array([*drop, 0.0, 1.0]))[:3]
     top = max(o[2], 0.0)
     world = World([], start_q, gui=args.gui, clearance=args.clearance, arm=arm,
                   calibration_path=arm_config.follower_calibration(arm))
@@ -304,6 +306,9 @@ def main():
     ap.add_argument("--box-margin", type=float, default=0.03,
                     help="the arm keeps this much above the boxes' rim (room for the shape it holds) [m]")
     ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over the box's rim at release [m]")
+    ap.add_argument("--drop-inset", type=float, default=0.04,
+                    help="the shape is released this far inside the box's rim nearest the arm (so a box whose centre "
+                         "is a little out of reach still works) [m]")
     ap.add_argument("--approach", type=float, default=0.06, help="height above the shape's top to come down from [m]")
     ap.add_argument("--grasp-depth", type=float, default=0.015, help="jaws this far below the shape's top [m]")
     ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
@@ -321,6 +326,7 @@ def main():
     add_motion_args(ap)
     args = ap.parse_args()
     apply_motion_args(args)
+    BOX_SLACK["value"] = max(0.0, args.box_size / 2 - args.drop_inset)
     if args.parallel and args.gui:
         raise SystemExit("--gui shows one task at a time: use it without --parallel")
 
