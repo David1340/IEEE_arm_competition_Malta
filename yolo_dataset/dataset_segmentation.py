@@ -12,6 +12,8 @@ Keys (click the window first):
     ENTER   save labels for this image and go to the next
     k       skip image without saving
     p       go back to the previous image (it opens with its saved objects; ENTER saves it again)
+Every object shows its class name next to its outline (also the saved ones --add-missing opens), so wrong
+labels are easy to spot: select it with [ / ], then d deletes it or b reopens it to label again.
     q/ESC   quit
 Usage:
     python dataset_segmentation.py --images images            # classes from classes.txt
@@ -45,6 +47,14 @@ def segment(model, img, points, labels):
         return None
     polys = [p for p in r.masks.xyn if len(p) >= 3]
     return max(polys, key=len) if polys else None
+
+
+def draw_label(img, text, pts, color):
+    """The class name just above an object's outline (black edge so it reads on any background)."""
+    x, y = int(pts[:, 0].min()), int(pts[:, 1].min()) - 10
+    y = max(y, 30)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 6)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
 
 
 def main():
@@ -138,12 +148,16 @@ def main():
             vis = img.copy()
             for object_i, (c, poly, _, _) in enumerate(objects):
                 color = (255, 255, 255) if object_i == selected else COLORS[c % len(COLORS)]
-                cv2.polylines(vis, [(poly * [w, h]).astype(np.int32)], True, color, 5 if object_i == selected else 3)
+                pts = (poly * [w, h]).astype(np.int32)
+                cv2.polylines(vis, [pts], True, color, 5 if object_i == selected else 3)
+                name = args.classes[c] if c < len(args.classes) else "?"
+                draw_label(vis, f"{c}: {name}" + ("  (selected)" if object_i == selected else ""), pts, color)
             if state["poly"] is not None:
                 pts = (state["poly"] * [w, h]).astype(np.int32)
                 overlay = vis.copy()
                 cv2.fillPoly(overlay, [pts], COLORS[cls % len(COLORS)])
                 vis = cv2.addWeighted(overlay, 0.4, vis, 0.6, 0)
+                draw_label(vis, f"{cls}: {args.classes[cls]}  (n confirms)", pts, COLORS[cls % len(COLORS)])
             # Points are stored in full-resolution coordinates.
             for (x, y), l in zip(state["points"], state["labels"]):
                 cv2.circle(vis, (int(x), int(y)), 8, (0, 255, 0) if l else (0, 0, 255), -1)
