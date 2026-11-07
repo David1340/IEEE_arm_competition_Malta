@@ -113,11 +113,14 @@ def handoff_checker(handoff_points, args):
                 h = (arm_from_table(arm) @ np.array([*handoff_points[i][:2], 0.0, 1.0]))[:3]
                 grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
                 ok = False
-                for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):
-                    world.start_q = list(HOME_Q)
-                    result = world.find_pose([h[0], h[1], z], args.seed)
-                    if result is not None and result.success:
-                        ok = True
+                for posture in postures_for(h, args):
+                    for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):
+                        world.start_q = list(HOME_Q)
+                        result = world.find_pose([h[0], h[1], z], args.seed, posture=posture)
+                        if result is not None and result.success:
+                            ok = True
+                            break
+                    if ok:
                         break
             cache[key] = ok
             if not ok:
@@ -128,6 +131,13 @@ def handoff_checker(handoff_points, args):
         for world in worlds.values():
             world.close()
     return can_grasp, close
+
+
+def postures_for(xy_arm, args):
+    """The gripper postures to try for a pick at this point (arm frame): top-down first within --close-radius of
+    the base (a level gripper cannot get that close), level first further out."""
+    close = np.hypot(xy_arm[0], xy_arm[1]) < args.close_radius
+    return ["down", "horizontal"] if close else ["horizontal", "down"]
 
 
 def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
@@ -157,28 +167,35 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             h = (to_arm @ np.array([*handoff_xyz[:2], 0.0, 1.0]))[:3]
             rest = lambda z: [("over handoff", [h[0], h[1], top + args.lift]), ("place", [h[0], h[1], z]),
                               ("leave handoff", [h[0], h[1], top + args.approach])]
+            place_postures = postures_for(h, args)
         else:
             drop_z = max(args.box_height + args.drop_above, top + args.lift)
             rest = lambda z: [("over box", [b[0], b[1], drop_z])]
+            place_postures = ["horizontal", "down"]
         grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
         error = None
-        for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):   # as in pick_and_place.py
-            try:
-                plans = plan_sequence(world, start_q, [
-                    ("above shape", [o[0], o[1], top + args.approach]),
-                    ("grasp", [o[0], o[1], z]),
-                    ("lift", [o[0], o[1], top + args.lift]),
-                    *rest(z),
-                ], args.seed)
-                if args.gui:
-                    for _, path in plans:
-                        world.start_q = list(path[0])
-                        world.play(path)
-                return plans, z
-            except RuntimeError as exc:
-                error = exc
-                if "grasp" not in str(exc) and "place" not in str(exc):
-                    break
+        # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails
+        for posture in postures_for(o, args):
+            for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):   # as in pick_and_place.py
+                try:
+                    plans = plan_sequence(world, start_q, [
+                        ("above shape", [o[0], o[1], top + args.approach]),
+                        ("grasp", [o[0], o[1], z]),
+                        ("lift", [o[0], o[1], top + args.lift]),
+                        *rest(z),
+                    ], args.seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
+                                            "over handoff": place_postures, "place": place_postures,
+                                            "leave handoff": place_postures, "over box": ["horizontal", "down"]})
+                    print(f"  {arm}: {posture} grasp ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
+                    if args.gui:
+                        for _, path in plans:
+                            world.start_q = list(path[0])
+                            world.play(path)
+                    return plans, z
+                except RuntimeError as exc:
+                    error = exc
+                    if "grasp" not in str(exc) and "place" not in str(exc):
+                        break
         raise RuntimeError(str(error))
     finally:
         world.close()
@@ -291,6 +308,8 @@ def main():
     ap.add_argument("--grasp-depth", type=float, default=0.015, help="jaws this far below the shape's top [m]")
     ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the shape's top [m]")
+    ap.add_argument("--close-radius", type=float, default=0.22,
+                    help="closer than this to an arm's base, the gripper picks top-down instead of level [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per task")
     ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
     ap.add_argument("--seed", type=int, default=0)

@@ -109,10 +109,11 @@ ROUGH = 0.03           # m: the in-between points (above, lift, over the box) on
 SEED_TRIES = 3         # a failed point is tried again from other random starts
 
 
-def plan_sequence(world, start_q, waypoints, seed):
+def plan_sequence(world, start_q, waypoints, seed, postures=None):
     """Plan start -> each waypoint in turn. waypoints: [(label, xyz in the arm frame)] or
-    [(label, xyz, tolerance m)]; without a tolerance the grasp is PRECISE and every other point ROUGH. Returns
-    [(label, path)] or raises RuntimeError naming the step that failed."""
+    [(label, xyz, tolerance m)]; without a tolerance the grasp is PRECISE and every other point ROUGH.
+    postures: {label: [gripper postures to try, in order]} ("horizontal", "down", "free"; sim_plan.World.find_pose),
+    default horizontal. Returns [(label, path)] or raises RuntimeError naming the step that failed."""
     q = np.array(start_q, float)
     q[4] = world.start_q[4]          # wrist roll is fixed at its value when the world was built
     plans = []
@@ -125,14 +126,19 @@ def plan_sequence(world, start_q, waypoints, seed):
         world.start_q = q.tolist()
         result = None
         print(f"    planning '{label}' ...", flush=True)
-        for tolerance in tolerances:
-            for attempt in range(SEED_TRIES):
-                result = world.find_pose(xyz, seed + attempt, tolerance=tolerance)
+        for posture in (postures or {}).get(label, ["horizontal"]):
+            for tolerance in tolerances:
+                for attempt in range(SEED_TRIES):
+                    result = world.find_pose(xyz, seed + attempt, tolerance=tolerance, posture=posture)
+                    if result is not None and result.success:
+                        break
                 if result is not None and result.success:
+                    if tolerance != tolerances[0]:
+                        print(f"  '{label}': {1000 * result.position_error_m:.0f} mm off (allowed for this point)")
                     break
             if result is not None and result.success:
-                if tolerance != tolerances[0]:
-                    print(f"  '{label}': {1000 * result.position_error_m:.0f} mm off (allowed for this point)")
+                if posture != "horizontal":
+                    print(f"    '{label}': gripper {posture}")
                 break
         if result is None or not result.success:
             err = "" if result is None else f" (best {1000 * result.position_error_m:.0f} mm off)"
