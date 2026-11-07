@@ -173,7 +173,44 @@ def connect_robot(arm: str | None = None, port: str | None = None):
     robot = SOFollower(cfg)
     robot.connect(calibrate=False)
     robot.arm_name = arm
+    robot.start_q = read_joints_rad(robot)      # where it was at the start: park_and_disconnect() returns there
     return robot
+
+
+def park_pose(robot) -> list[float]:
+    """Where an arm parks when a script ends: arms.json "park_deg" of that follower if set (5 joint angles, deg),
+    else the pose it was in when the script connected to it."""
+    arm = robot_arm(robot)
+    if arm is not None:
+        from control import arm_config
+
+        degrees = arm_config.entry(arm).get("park_deg")
+        if degrees:
+            return [math.radians(float(v)) for v in degrees]
+    return list(getattr(robot, "start_q", None) or read_joints_rad(robot))
+
+
+def park_and_disconnect(robot, park=None, release=None):
+    """End of a script: move the arm smoothly back to its park pose (see park_pose), then disconnect. The motors
+    keep their torque, so the arm holds that pose instead of dropping onto the table (MOTION["release"] or
+    release=True turns the torque off after parking, the old behaviour)."""
+    park = MOTION["park"] if park is None else park
+    release = MOTION["release"] if release is None else release
+    name = robot_arm(robot) or "the arm"
+    try:
+        if park:
+            print(f"{name}: parking ...", flush=True)
+            follow_path(robot, [read_joints_rad(robot), park_pose(robot)])
+    except Exception as error:                       # never leave the bus open because a move failed
+        print(f"{name}: could not park ({error})")
+    keep = not release and hasattr(getattr(robot, "config", None), "disable_torque_on_disconnect")
+    if keep:
+        robot.config.disable_torque_on_disconnect = False
+    elif not release:
+        print(f"{name}: this LeRobot version turns the torque off on disconnect; the arm will go limp")
+    robot.disconnect()
+    if park:
+        print(f"{name}: parked" + (", holding (torque on)" if keep else ", torque off"))
 
 
 def read_joints_rad(robot) -> list[float]:
@@ -244,7 +281,8 @@ def send_joints(
 
 # ---------------------------------------------------------------------------------------------- smooth motion
 # How follow_path() moves the arm; the scripts' --speed / --accel / --profile set these (add_motion_args).
-MOTION = {"speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0, "settle_tol": 3.0}
+MOTION = {"speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0, "settle_tol": 3.0,
+          "park": True, "release": False}
 
 
 def add_motion_args(ap):
@@ -258,11 +296,15 @@ def add_motion_args(ap):
     ap.add_argument("--settle-tol", type=float, default=MOTION["settle_tol"],
                     help="a move counts as arrived when every joint is this close to its goal [deg]; raise it "
                          "(e.g. 6) when the arm sags under a load and each move waits 3 s for the last degrees")
+    ap.add_argument("--no-park", action="store_true",
+                    help="on quitting, leave the arms where they are (default: back to where they started)")
+    ap.add_argument("--release-on-quit", action="store_true",
+                    help="turn the motors' torque off after parking (default: keep it on so the arms hold their pose)")
 
 
 def apply_motion_args(args):
     MOTION.update(speed=args.speed, accel=args.accel, profile=args.profile, max_lag=args.max_lag,
-                  settle_tol=args.settle_tol)
+                  settle_tol=args.settle_tol, park=not args.no_park, release=args.release_on_quit)
 
 
 def motion_profile(length, speed, accel, profile):
@@ -518,7 +560,7 @@ def main():
                   f"{'' if robot else ' (simulation)'}")
     finally:
         if robot:
-            robot.disconnect()
+            park_and_disconnect(robot)
         p.disconnect()
 
 

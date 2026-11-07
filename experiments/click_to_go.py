@@ -81,7 +81,7 @@ def main():
 
     import pybullet as p
     import pyzed.sl as sl
-    from control.IK_control import EEController, connect_robot, follow_path, move_to, read_joints_rad
+    from control.IK_control import EEController, connect_robot, follow_path, move_to, park_and_disconnect, read_joints_rad
 
     ctrls, robots = {}, {}
     try:
@@ -111,7 +111,7 @@ def main():
     except BaseException:
         for robot in robots.values():
             if robot:
-                robot.disconnect()
+                park_and_disconnect(robot)
         raise
 
     image, cloud_mat, runtime = sl.Mat(), sl.Mat(), sl.RuntimeParameters()
@@ -205,7 +205,7 @@ def main():
         cv2.destroyAllWindows()
         for name in names:
             if robots[name]:
-                robots[name].disconnect()
+                park_and_disconnect(robots[name])
             p.disconnect(physicsClientId=ctrls[name].client)
 
 if __name__ == "__main__":

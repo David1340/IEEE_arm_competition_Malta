@@ -12,7 +12,8 @@ In the camera window:
       R G B Y / 1-4     the BOX of that colour (1 red, 2 green, 3 blue, 4 yellow; click where to drop)
     u                 undo the last mark          c   clear all marks
     Space / Enter     go: sort every shape into its box
-    h                 send the arms home          q / Esc   quit (after the tasks running now)
+    h                 send the arms home          q / Esc   quit: after the tasks running now, each arm goes back
+                                                            to the pose it started in and holds it (torque on)
 
 Who does what (control/coordinator.py): a shape goes to the arm nearest to it if that arm also reaches its box
 (DIRECT). If only the other arm reaches the box, the near arm puts the shape down on a handoff point in the middle
@@ -340,7 +341,7 @@ def main():
     handoff_points = arm_config.handoff_points()
 
     import pyzed.sl as sl
-    from control.IK_control import connect_robot, read_joints_rad, send_joints
+    from control.IK_control import connect_robot, park_and_disconnect, read_joints_rad, send_joints
 
     robots = {}
     for name in names:
@@ -370,9 +371,14 @@ def main():
     can_grasp, close_checker = handoff_checker(handoff_points, args)
 
     def disconnect_all():
+        """Let running tasks finish, then park every arm (back to its start pose, torque kept) and disconnect."""
+        if CURRENT["coordinator"] is not None:
+            CURRENT["coordinator"].stop.set()
+        for worker in workers:
+            worker.join()
         for robot in robots.values():
             if robot:
-                robot.disconnect()
+                park_and_disconnect(robot)
 
     def home_all():
         for name, robot in robots.items():

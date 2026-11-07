@@ -200,7 +200,7 @@ def main():
     table_from_default = np.linalg.inv(arm_from_table(default_arm()))   # camera_transform.npy is in its frame
     colors = load_colors()
 
-    from control.IK_control import arm_files, connect_robot, read_joints_rad, send_joints
+    from control.IK_control import arm_files, connect_robot, park_and_disconnect, read_joints_rad, send_joints
 
     robots = {}
     try:
@@ -337,7 +337,7 @@ def main():
     finally:
         for robot in robots.values():
             if robot is not None:
-                robot.disconnect()
+                park_and_disconnect(robot)
 
 
 if __name__ == "__main__":
