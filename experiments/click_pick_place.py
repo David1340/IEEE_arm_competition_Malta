@@ -30,6 +30,7 @@ import argparse
 import math
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -94,6 +95,39 @@ def add_other_arm(world, to_arm, other, q):
         p.resetJointState(body, index[name], float(value), physicsClientId=c)
     world.checker.obstacle_body_ids.append(body)
     return body
+
+
+def handoff_checker(handoff_points, args):
+    """can_grasp(arm, point index, top z): can that arm grasp a shape of that height on that handoff point (an IK
+    check in an empty world, from home)? Cached, so each combination is solved once. Returns (can_grasp, close)."""
+    cache, worlds = {}, {}
+
+    def can_grasp(arm, i, top):
+        key = (arm, i, round(float(top), 2))
+        if key not in cache:
+            with PLAN_LOCK:
+                if arm not in worlds:
+                    worlds[arm] = World([], list(HOME_Q), gui=False, clearance=args.clearance, arm=arm,
+                                        calibration_path=arm_config.follower_calibration(arm))
+                world = worlds[arm]
+                h = (arm_from_table(arm) @ np.array([*handoff_points[i][:2], 0.0, 1.0]))[:3]
+                grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
+                ok = False
+                for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):
+                    world.start_q = list(HOME_Q)
+                    result = world.find_pose([h[0], h[1], z], args.seed)
+                    if result is not None and result.success:
+                        ok = True
+                        break
+            cache[key] = ok
+            if not ok:
+                print(f"  handoff point H{i} {handoff_points[i]}: {arm} cannot grasp a {100 * top:.1f} cm shape there")
+        return cache[key]
+
+    def close():
+        for world in worlds.values():
+            world.close()
+    return can_grasp, close
 
 
 def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
@@ -179,9 +213,9 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points)
     """The arm's state machine: waiting -> planning -> picking/carrying/placing -> homing, task after task."""
     send_joints, read_joints_rad = io
     say = lambda text: coordinator.set_state(arm, text)
+    task = None
     try:
         while True:
-            say("waiting")
             task = coordinator.next_task(arm)
             if task is None:
                 break
@@ -191,7 +225,8 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points)
             if task.kind == TO_HANDOFF:
                 hx, hy = handoff_points[task.slot]
                 handoff_xyz = np.array([hx, hy, task.shape["xyz"][2]])     # same top height: it stands on the table
-            obstacles = {"shapes": [m for m in marks if m["kind"] == "shape" and m["state"] in ("todo", "handoff")],
+            # every shape still on the table is an obstacle (a failed pick leaves it where it was)
+            obstacles = {"shapes": [m for m in marks if m["kind"] == "shape" and m["state"] in ("todo", "handoff", "failed")],
                          "boxes": [m for m in marks if m["kind"] == "box"], "arms": dict(last_q)}
             start_q = last_q[arm] if robot is None else read_joints_rad(robot)
             origin = task.shape.get("origin", task.shape)
@@ -230,7 +265,8 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points)
             coordinator.finish(task, "done", handoff_xyz)
     except Exception:
         traceback.print_exc()
-        print(f"{arm}: stopped after an error; the other arm carries on with its own tasks")
+        print(f"{arm}: stopped after an error; the other arm carries on with the tasks that do not need it")
+        coordinator.abort(arm, locals().get("task"))
         say("ERROR (see the terminal)")
         return
     say("done")
@@ -306,6 +342,7 @@ def main():
           + f" | handoff points: {handoff_points} | {'parallel' if args.parallel else 'one task at a time'}")
     last_q = {name: list(HOME_Q) for name in robots}
     workers = []
+    can_grasp, close_checker = handoff_checker(handoff_points, args)
 
     def disconnect_all():
         for robot in robots.values():
@@ -350,7 +387,7 @@ def main():
         """{id(mark): text} of what will happen to each todo shape."""
         shapes = [m for m in marks if m["kind"] == "shape" and m["state"] == "todo"]
         tasks, skipped = build_tasks(shapes, [m for m in marks if m["kind"] == "box"], bases, handoff_points,
-                                     args.max_reach, regions)
+                                     args.max_reach, regions, can_grasp)
         labels = {id(t.shape): (f"-> {short(t.arm)}" if t.kind == DIRECT else
                                 f"-> {short(t.arm)} -> handoff -> {short(t.then_arm)}") for t in tasks}
         labels.update({id(s): "-> no arm" for s, _ in skipped})
@@ -420,7 +457,7 @@ def main():
         if not shapes:
             state["status"] = "no shapes left to pick: mark some first"
             return
-        tasks, skipped = build_tasks(shapes, boxes, bases, handoff_points, args.max_reach, regions)
+        tasks, skipped = build_tasks(shapes, boxes, bases, handoff_points, args.max_reach, regions, can_grasp)
         for shape, why in skipped:
             print(f"{shape['colour']} shape at x {shape['xyz'][0]:.2f} y {shape['xyz'][1]:.2f}: skipped, {why}")
         if not tasks:
@@ -433,7 +470,7 @@ def main():
             then = f", then {task.then_arm} to the {task.box['colour']} box" if task.kind == TO_HANDOFF else ""
             print(f"  {task.label()}{then}")
         home_all()                           # every arm starts at home (its pose is an obstacle for the other)
-        coordinator = Coordinator(tasks, regions, handoff_points, args.parallel)
+        coordinator = Coordinator(tasks, regions, handoff_points, args.parallel, arm_config.handoff_min_spacing())
         CURRENT["coordinator"] = coordinator
         workers.clear()
         for name, robot in robots.items():
@@ -446,7 +483,7 @@ def main():
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.setMouseCallback(WINDOW, on_mouse)
-    sized, was_running = False, False
+    sized, was_running, last_report = False, False, time.monotonic()
     print(__doc__.split("In the camera window:")[1].split("Who does what")[0])
     try:
         while True:
@@ -459,6 +496,10 @@ def main():
                 cv2.waitKey(1)
                 continue
             busy = running()
+            if busy and CURRENT["coordinator"] is not None and time.monotonic() - last_report > 15:
+                last_report = time.monotonic()
+                print("  status: " + " | ".join(f"{short(a)}: {s}"
+                                                 for a, s in sorted(CURRENT["coordinator"].arm_state.items())))
             if was_running and not busy:
                 done = sum(m["state"] == "placed" for m in marks if m["kind"] == "shape")
                 state["status"] = f"done: {done} placed; mark more or q to quit"
@@ -504,6 +545,7 @@ def main():
     finally:
         zed.close()
         cv2.destroyAllWindows()
+        close_checker()
         disconnect_all()
 
 

@@ -244,7 +244,7 @@ def send_joints(
 
 # ---------------------------------------------------------------------------------------------- smooth motion
 # How follow_path() moves the arm; the scripts' --speed / --accel / --profile set these (add_motion_args).
-MOTION = {"speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0}
+MOTION = {"speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0, "settle_tol": 3.0}
 
 
 def add_motion_args(ap):
@@ -255,10 +255,14 @@ def add_motion_args(ap):
                     help="trapezoid: constant acceleration; minjerk: smoother start and stop, a little slower")
     ap.add_argument("--max-lag", type=float, default=MOTION["max_lag"],
                     help="the path waits while the arm is this far behind the command [deg]")
+    ap.add_argument("--settle-tol", type=float, default=MOTION["settle_tol"],
+                    help="a move counts as arrived when every joint is this close to its goal [deg]; raise it "
+                         "(e.g. 6) when the arm sags under a load and each move waits 3 s for the last degrees")
 
 
 def apply_motion_args(args):
-    MOTION.update(speed=args.speed, accel=args.accel, profile=args.profile, max_lag=args.max_lag)
+    MOTION.update(speed=args.speed, accel=args.accel, profile=args.profile, max_lag=args.max_lag,
+                  settle_tol=args.settle_tol)
 
 
 def motion_profile(length, speed, accel, profile):
@@ -285,7 +289,7 @@ def motion_profile(length, speed, accel, profile):
     return T, s
 
 
-def follow_path(robot, path, gripper=None, *, tol_deg=3.0, gripper_tolerance=5.0, feedback_callback=None,
+def follow_path(robot, path, gripper=None, *, tol_deg=None, gripper_tolerance=5.0, feedback_callback=None,
                 **motion) -> bool:
     """Move along a joint path (radians, corrected angles) in one smooth motion: targets are streamed at
     MOTION["rate"] Hz along the whole path with a speed profile (gentle start, top speed, gentle stop), and the
@@ -293,6 +297,7 @@ def follow_path(robot, path, gripper=None, *, tol_deg=3.0, gripper_tolerance=5.0
     it. gripper (0-100) is reached gradually over the move; None keeps it where it is. Returns True when the
     arm arrived (within tol_deg)."""
     settings = {**MOTION, **motion}
+    tol_deg = settings["settle_tol"] if tol_deg is None else tol_deg
     points = [np.asarray(q, dtype=float) for q in path]
     if not points:
         return True

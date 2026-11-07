@@ -59,21 +59,18 @@
     }
   },
   "handoff": {
-    "_about": "TABLE-frame x, y of the points where one arm leaves a shape for the other when only the other reaches its box (keep them clear of the boxes), and the half width of the shared middle strip: an arm working there (or on the other arm's side) has it to itself.",
+    "_about": "TABLE-frame x, y of the points where one arm leaves a shape for the other when only the other reaches its box (keep them clear of the boxes, and at least min_spacing apart: a shape on one point blocks the gripper at a point next to it), and the half width of the shared middle strip: an arm working there (or on the other arm's side) has it to itself.",
     "points": [
       [
         0.3,
         0.0
       ],
       [
-        0.24,
-        0.0
-      ],
-      [
-        0.36,
+        0.17,
         0.0
       ]
     ],
-    "middle_half_width": 0.1
+    "middle_half_width": 0.1,
+    "min_spacing": 0.1
   }
 }

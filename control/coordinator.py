@@ -94,11 +94,13 @@ def why_skipped(shape, box, bases, handoff_points, max_reach):
         return (f"only {near_shape} is connected: it reaches the shape but not its {box['colour']} box "
                 f"({cm(to_box[near_shape])}); a handoff needs the other arm")
     return (f"{near_shape} reaches the shape and {near_box} its {box['colour']} box, but no handoff point is "
-            f"within {cm(max_reach)} of both (arms.json \"handoff\" points)")
+            f"one both arms can grasp at (within {cm(max_reach)} and an IK check; arms.json \"handoff\" points)")
 
 
-def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions):
-    """Tasks for the shapes (todo marks), and [(shape, reason)] for the ones no arm or handoff can do."""
+def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_grasp=None):
+    """Tasks for the shapes (todo marks), and [(shape, reason)] for the ones no arm or handoff can do.
+    can_grasp(arm, point index, top z): whether that arm really reaches a shape of that height on that handoff
+    point (an IK check); without it only the distance is checked."""
     ids = itertools.count(1)
     tasks, skipped = [], []
     for shape in shapes:
@@ -118,8 +120,10 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions):
         plan = None
         for first in [a for a in by_distance if reach(shape["xyz"], bases[a]) <= max_reach]:
             for second in [a for a in bases if a != first and reach(box["xyz"], bases[a]) <= max_reach]:
+                top = float(shape["xyz"][2])
                 usable = [i for i, p in enumerate(handoff_points)
-                          if reach(p, bases[first]) <= max_reach and reach(p, bases[second]) <= max_reach]
+                          if reach(p, bases[first]) <= max_reach and reach(p, bases[second]) <= max_reach
+                          and (can_grasp is None or (can_grasp(first, i, top) and can_grasp(second, i, top)))]
                 if usable:
                     plan = (first, second, usable)
                     break
@@ -139,10 +143,11 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions):
 class Coordinator:
     """Gives tasks to the arms' workers and keeps the regions and handoff points exclusive."""
 
-    def __init__(self, tasks, regions: Regions, handoff_points, parallel: bool):
+    def __init__(self, tasks, regions: Regions, handoff_points, parallel: bool, min_spacing: float = 0.10):
         self.tasks = list(tasks)
         self.regions = regions
         self.handoff_points = [np.asarray(p, float) for p in handoff_points]
+        self.min_spacing = float(min_spacing)        # a shape on a point blocks the gripper at points this close
         self.parallel = parallel
         self.held: dict[str, str] = {}               # region -> arm
         self.slots: dict[int, int] = {}              # handoff point -> task id holding it (shape on it or coming)
@@ -151,6 +156,7 @@ class Coordinator:
         self.cond = threading.Condition()
         self.ids = itertools.count(max([t.id for t in self.tasks], default=0) + 1)
         self.arm_state: dict[str, str] = {}
+        self.dead: set[str] = set()                  # arms whose worker stopped after an error
 
     # ---- state shown in the window
     def set_state(self, arm, text):
@@ -165,24 +171,51 @@ class Coordinator:
     def _free_slot(self, task) -> int | None:
         candidates = [int(i) for i in task.note.split(",") if i != ""] if task.note else range(len(self.handoff_points))
         for i in candidates:
-            if i not in self.slots:
-                return i
+            if i in self.slots:
+                continue
+            if any(np.linalg.norm(self.handoff_points[i] - self.handoff_points[j]) < self.min_spacing
+                   for j in self.slots):
+                continue                                  # a shape lies (or will lie) right next to it
+            return i
         return None
 
-    def _can_start(self, task) -> bool:
-        if task.state != "waiting":
-            return False
+    def _blocker(self, task) -> str | None:
+        """Why the task cannot start now (None: it can)."""
         if task.depends_on is not None:
             parent = next(t for t in self.tasks if t.id == task.depends_on)
             if parent.state != "done":
-                return False
-        if not self.parallel and self.running:
-            return False
-        if any(self.held.get(r, task.arm) != task.arm for r in task.regions):
-            return False
+                return f"for #{parent.id} ({parent.arm}) to put the shape on the handoff point"
+        others = sorted(self.running - self.dead - {task.arm})
+        if not self.parallel and others:
+            return f"its turn ({others[0]} is working; one task at a time)"
+        for region in sorted(task.regions):
+            holder = self.held.get(region, task.arm)
+            if holder != task.arm:
+                return f"the {region.replace('follower_', '')} region ({holder} is working there)"
         if task.kind == TO_HANDOFF and self._free_slot(task) is None:
-            return False
-        return True
+            return "a free handoff point"
+        return None
+
+    def _fail(self, task, why):
+        task.state = "failed"
+        task.note = why
+        origin = task.shape.get("origin", task.shape)
+        origin["state"] = "failed"
+        if task.slot is not None and self.slots.get(task.slot) == task.id:
+            self.slots.pop(task.slot)
+        print(f"  {task.label()}: given up, {why}")
+
+    def abort(self, arm, task=None):
+        """The arm's worker stopped after an error: its tasks fail; it keeps the regions it holds (the arm may
+        still be out in the field), so the other arm's tasks that need those regions fail too instead of waiting."""
+        with self.cond:
+            self.dead.add(arm)
+            if task is not None and task.state == "running":
+                self._fail(task, f"{arm} stopped after an error")
+            for t in self.tasks:
+                if t.state == "waiting" and (t.arm == arm or (t.kind == TO_HANDOFF and t.then_arm == arm)):
+                    self._fail(t, f"{arm} stopped after an error")
+            self.cond.notify_all()
 
     def next_task(self, arm) -> Task | None:
         """Block until a task for this arm can start (then reserve its regions), or None when nothing is left."""
@@ -193,8 +226,16 @@ class Coordinator:
                              for t in self.tasks)            # a handoff whose second half will be this arm's
                 if not mine and not coming:
                     return None
+                reasons = []
                 for task in mine:
-                    if self._can_start(task):
+                    blocker = self._blocker(task)
+                    dead_region = [r for r in task.regions if self.held.get(r) in self.dead and self.held.get(r) != arm]
+                    if dead_region:
+                        self._fail(task, f"it needs the region {self.held[dead_region[0]]} stopped in")
+                        continue
+                    if blocker is not None:
+                        reasons.append(f"#{task.id} waits for {blocker}")
+                    else:
                         if task.kind == TO_HANDOFF:
                             task.slot = self._free_slot(task)
                             self.slots[task.slot] = task.id
@@ -209,6 +250,9 @@ class Coordinator:
                         task.state = "running"
                         self.running.add(arm)
                         return task
+                if not mine and coming:
+                    reasons.append("waiting for the other arm's handoff")
+                self.arm_state[arm] = reasons[0] if reasons else "waiting"
                 self.cond.wait(timeout=0.5)
             return None
 
@@ -221,7 +265,10 @@ class Coordinator:
                     self.held.pop(region)
             self.running.discard(task.arm)
             if task.kind == FROM_HANDOFF and task.slot is not None:
-                self.slots.pop(task.slot, None)           # the point is free again (picked, or given up)
+                if result == "done":
+                    self.slots.pop(task.slot, None)       # picked up: the point is free again
+                else:
+                    self.slots[task.slot] = -1            # the shape is still lying there: keep the point blocked
             if task.kind == TO_HANDOFF:
                 if result == "done":
                     moved = dict(task.shape, xyz=np.asarray(handoff_xyz, float), state="todo", handoff=task.slot,

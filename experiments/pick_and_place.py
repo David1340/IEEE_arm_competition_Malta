@@ -124,6 +124,7 @@ def plan_sequence(world, start_q, waypoints, seed):
             tolerances = [PRECISE] if label == "grasp" else [PRECISE, ROUGH]
         world.start_q = q.tolist()
         result = None
+        print(f"    planning '{label}' ...", flush=True)
         for tolerance in tolerances:
             for attempt in range(SEED_TRIES):
                 result = world.find_pose(xyz, seed + attempt, tolerance=tolerance)

@@ -100,6 +100,11 @@ def handoff_points() -> list[list[float]]:
     return [list(map(float, p)) for p in load().get("handoff", {}).get("points", [[0.30, 0.0]])]
 
 
+def handoff_min_spacing() -> float:
+    """A handoff point closer than this to an occupied one is not used [m] (arms.json "handoff")."""
+    return float(load().get("handoff", {}).get("min_spacing", 0.10))
+
+
 def middle_half_width() -> float:
     """Half the width of the shared middle strip between the arms' sides [m] (arms.json "handoff")."""
     return float(load().get("handoff", {}).get("middle_half_width", 0.10))
