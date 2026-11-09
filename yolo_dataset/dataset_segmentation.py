@@ -23,6 +23,10 @@ Usage:
     python dataset_segmentation.py --classes cube ball        # also rewrites classes.txt
     python dataset_segmentation.py --image pour_20261107_1530  # open that image (name or part of it); then
                                                                # ENTER / k / p move on from there
+    python dataset_segmentation.py --start 1 --end 100        # only images 1-100 (you)
+    python dataset_segmentation.py --start 101 --end 200      # only images 101-200 (a colleague, at the same time)
+The numbers are the [n/total] shown at the top of the window: the images sorted by name. Both people need the
+same images folder, so copy new images to both PCs before splitting (new images change the numbering).
 """
 
 import argparse
@@ -72,6 +76,8 @@ def main():
     ap.add_argument("--add-missing", action="store_true", help="open labeled images and preserve their existing objects")
     ap.add_argument("--max-width", type=int, default=1280)
     ap.add_argument("--image", default=None, help="start at this image (its name, or part of it)")
+    ap.add_argument("--start", type=int, default=1, help="first image number to label (1 = the first image)")
+    ap.add_argument("--end", type=int, default=None, help="last image number to label (default: the last image)")
     args = ap.parse_args()
 
     img_dir = Path(args.images)
@@ -86,6 +92,10 @@ def main():
     print(f"{len(args.classes)} classes: {args.classes}")
 
     files = sorted(f for f in img_dir.iterdir() if f.suffix.lower() in IMG_EXT)
+    first = max(args.start, 1) - 1                                   # 0-based, inclusive
+    last = len(files) if args.end is None else min(args.end, len(files))   # 0-based, exclusive
+    if first >= last:
+        ap.error(f"--start {args.start} --end {args.end}: no images in that range (there are {len(files)})")
 
     def to_do(f):
         """Images ENTER / k move on to: unlabelled ones (default), labelled ones (--add-missing), or all (--redo).
@@ -94,18 +104,19 @@ def main():
         return labelled if args.add_missing else (True if args.redo else not labelled)
 
     def next_to_do(i):
-        while i < len(files) and not to_do(files[i]):
+        while i < last and not to_do(files[i]):
             i += 1
         return i
 
     if args.image:
-        matches = [i for i, f in enumerate(files) if args.image in f.name]
+        matches = [i for i, f in enumerate(files) if args.image in f.name and first <= i < last]
         if not matches:
-            ap.error(f"no image matching {args.image!r} in {img_dir}")
+            ap.error(f"no image matching {args.image!r} in {img_dir} (images {first + 1}-{last})")
         index = matches[0]
     else:
-        index = next_to_do(0)
-    print(f"{sum(map(to_do, files))} images to label/edit (of {len(files)}); p goes back to the previous one")
+        index = next_to_do(first)
+    print(f"images {first + 1}-{last} of {len(files)}: {sum(map(to_do, files[first:last]))} to label/edit; "
+          f"p goes back to the previous one")
 
     model = SAM(args.model)
     state = {"points": [], "labels": [], "poly": None, "scale": 1.0, "dirty": True}
@@ -124,7 +135,7 @@ def main():
 
     quit_all = False
     legend_mode = 0                  # index in LEGEND_MODES; kept from image to image
-    while 0 <= index < len(files) and not quit_all:
+    while first <= index < last and not quit_all:
         f = files[index]
         file_i = index + 1
         step = 1                     # where to go after this image: +1 next to do, -1 back
@@ -237,9 +248,9 @@ def main():
                 print(f"saved {f.stem}.txt ({len(objects)} objects)")
                 break
         if step < 0:
-            if index == 0:
-                print("this is the first image")
-            index = max(index - 1, 0)
+            if index == first:
+                print(f"this is the first image of the range ({first + 1})")
+            index = max(index - 1, first)
         else:
             index = next_to_do(index + 1)
 
