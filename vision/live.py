@@ -20,7 +20,9 @@ a rectangle around them seen from above: only the top face's points when there a
 size from the STL (a window of that size where the most points are). The label says which: RECT[top] / RECT[all],
 +size when the size limit moved it. z is not measured: the object
 stands on the table, so its top is its STL height (returned, as the grasp needs it) and its middle half of that.
---centre fit is the silhouette / point-cloud method above.
+--centre fit is the silhouette / point-cloud method above. --centre parallax (default here) uses no depth at all: the
+mask outline is cast onto the top's and the table's planes and the parallax is undone (parallax_center); simulated
+it is within ~1.5 mm across the field, for upright objects.
 
 An object with neither a silhouette fit nor --min-points depth points (plain or shiny surfaces, glare under the
 camera) is not dropped: its x, y come the same way as a bin's (mean mask pixel, camera ray onto the plane at half
@@ -69,9 +71,10 @@ def add_vision_args(ap):
     ap.add_argument("--min-depth", type=float, default=0.10, help="ignore points closer than this (meters)")
     ap.add_argument("--max-depth", type=float, default=2.00, help="ignore points farther than this (meters)")
     ap.add_argument("--min-points", type=int, default=5, help="minimum valid mask points for a center estimate")
-    ap.add_argument("--centre", choices=["rect", "fit"], default="rect",
-                    help="objects' x, y: rect = centre of the smallest rectangle around their points seen from above "
-                         "(z from the STL); fit = silhouette fit / point-cloud mean")
+    ap.add_argument("--centre", choices=["parallax", "rect", "fit"], default="parallax",
+                    help="objects' x, y: parallax = from the mask outline with the parallax corrected, no depth "
+                         "(upright objects; z from the STL); rect = centre of the smallest rectangle around their "
+                         "points seen from above; fit = silhouette fit / point-cloud mean")
     ap.add_argument("--rect-min-z", type=float, default=0.008,
                     help="rect: points lower than this above the table [m] are table, not object")
     ap.add_argument("--rect-trim", type=float, default=0.05,
@@ -199,6 +202,36 @@ def rect_center(cloud, polygon, roi, camera_to_robot, height, width, args, footp
     return centre, len(xy), corners, tuple(extent), angle, how
 
 
+def parallax_center(polygon_full, cam, height):
+    """x, y of an upright object from its mask outline alone (no depth), correcting the parallax.
+
+    Away from the point under the camera (the nadir), the mask is the top face plus the walls facing the camera, so
+    its centre is pulled towards the nadir. Every outline point is on a camera ray; the outline is cast onto the
+    plane of the top (z = height) and of the table (z = 0). With r the direction from the nadir to the object:
+      far edge  (max along r)        - the top face's far edge: from the outline cast at z = height
+      near edge (min along r)        - the bottom's near edge:  from the outline cast at z = 0
+      sides     (min/max across r)   - the top face's sides:    from the outline cast at z = height
+    (cast at the wrong plane, the other parts of the outline land inside the object, never beyond these.) The
+    centre is the middle of both pairs: exact for shapes symmetric about their centre (cube, cylinder, hexagonal
+    prism) standing upright; an approximation for the dodecahedron. Returns (xy, top outline, bottom outline,
+    (far, near, side_a, side_b) points) in the robot frame, metres."""
+    poly = np.asarray(polygon_full, dtype=float).reshape(-1, 2)
+    top = np.array([cam.ray_to_plane(u, v, height)[:2] for u, v in poly])
+    bottom = np.array([cam.ray_to_plane(u, v, 0.0)[:2] for u, v in poly])
+    nadir = cam.pos[:2]
+    r = top.mean(axis=0) - nadir
+    if np.linalg.norm(r) < 1e-3:                        # right under the camera: no parallax to correct
+        r = np.array([1.0, 0.0])
+    r = r / np.linalg.norm(r)
+    q = np.array([-r[1], r[0]])
+    far, near = top @ r, bottom @ r
+    side = top @ q
+    along = (far.max() + near.min()) / 2
+    across = (side.max() + side.min()) / 2
+    points = (top[far.argmax()], bottom[near.argmin()], top[side.argmin()], top[side.argmax()])
+    return along * r + across * q, top, bottom, points
+
+
 def bin_center_from_pixels(polygon, roi, cam, plane_z):
     """A bin's centre without depth: the mean of the mask's pixels, then the camera ray through that pixel
     meets the plane Z = plane_z (robot frame, the table at 0). Returns (xyz, pixel count, (u, v)) or
@@ -259,7 +292,7 @@ class Vision:
             self.grab()
             intrinsics = intrinsics_from_cloud(self.cloud_mat.get_data()[..., :3])
         self.cam = Camera(self.camera_to_robot, intrinsics)   # pixel <-> robot frame, for the bins' rays
-        self.fitter = (None if args.no_silhouette or args.centre == "rect"
+        self.fitter = (None if args.no_silhouette or args.centre != "fit"
                        else LiveFitter(self.cam, self.camera_to_robot))
 
     def grab(self):
@@ -332,6 +365,27 @@ class Vision:
                     continue
                 class_name = names[class_id]
                 rect_failed, no_depth_reason = False, "no depth"
+                if args.centre == "parallax" and class_name.casefold() in OBJECT_STL_FILES:
+                    from control.gripper import object_height
+
+                    height = object_height(OBJECT_STL_FILES[class_name.casefold()])
+                    xy, top_xy, bottom_xy, (far, near, side_a, side_b) = parallax_center(
+                        polygon + [x0, y0], self.cam, height)
+                    center = np.array([xy[0], xy[1], height])           # top of the object, from its STL
+                    count = len(polygon)
+                    cv2.polylines(canvas, [points], True, color, 2)
+                    for a_, b_ in ((far, near), (side_a, side_b)):      # the two measured widths, at the top
+                        pa, pb = self.cam.project(np.array([[*a_, height], [*b_, height]]))
+                        cv2.line(canvas, tuple(np.rint(pa).astype(int)), tuple(np.rint(pb).astype(int)), color, 1)
+                    cx, cy = (int(round(v)) for v in self.cam.project(center)[0])
+                    cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+                    text = f"{class_name} {confidence:.2f} PARALLAX X{center[0]:+.3f} Y{center[1]:+.3f}"
+                    objects.append((class_name, confidence, center, count))
+                    self.last_polygons.append(points)
+                    px, py = points.min(axis=0)
+                    cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                                color, 2)
+                    continue
                 if args.centre == "rect" and class_name.casefold() in OBJECT_STL_FILES:
                     from control.gripper import object_footprint, object_height, object_top_face, object_width
 
