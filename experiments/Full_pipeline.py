@@ -30,7 +30,9 @@ from vision.live import Vision, add_vision_args  # noqa: E402
 
 GRIPPER_OPEN = 80.0      # LeRobot 0-100 scale
 WAYPOINT_STEP_DEG = 4.0  # the motors lag on long moves, so send short steps
-HOME_Q = np.radians([0.0, 0.0, 0.0, 0.0, -90.0])  # shoulder_pan, lift, elbow, wrist_flex, wrist_roll
+from control.arm_config import HOME_DEG, HOME_GRIPPER  # noqa: E402  (the home pose, set in control/arm_config.py)
+
+HOME_Q = np.radians(HOME_DEG)  # shoulder_pan, lift, elbow, wrist_flex, wrist_roll
 GRIP_CURRENT_MA = 80.0   # gripper motor current that means the object is held
 GRIP_CONFIRM_READINGS = 3
 GRIP_SQUEEZE_UNITS = 2.0  # units held past the contact position
@@ -72,13 +74,13 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
     return False, position, position, current_ma
 
 
-def move_along(robot, path, send_joints):
-    """Send the joint path in short steps, gripper open."""
+def move_along(robot, path, send_joints, gripper=GRIPPER_OPEN):
+    """Send the joint path in short steps, the gripper at `gripper` (open by default)."""
     for a, b in zip(path[:-1], path[1:]):
         a, b = np.asarray(a), np.asarray(b)
         n = max(1, int(np.ceil(np.degrees(np.abs(b - a).max()) / WAYPOINT_STEP_DEG)))
         for t in np.linspace(0, 1, n + 1)[1:]:
-            send_joints(robot, (1 - t) * a + t * b, gripper=GRIPPER_OPEN)
+            send_joints(robot, (1 - t) * a + t * b, gripper=gripper)
 
 
 def main():
@@ -104,7 +106,7 @@ def main():
     # 0. robot: go to the home pose before anything else (--execute)
     robot = None
     if not args.no_robot:
-        from control.IK_control import connect_robot, read_joints_rad, send_joints
+        from control.IK_control import connect_robot, park_and_disconnect, read_joints_rad, send_joints
 
         robot = connect_robot()
         if args.execute:
@@ -112,7 +114,7 @@ def main():
             if input("Type 'yes' to move the real arm to the home pose: ").strip().lower() != "yes":
                 robot.disconnect()
                 raise SystemExit("Not executed.")
-            move_along(robot, [read_joints_rad(robot), HOME_Q], send_joints)
+            move_along(robot, [read_joints_rad(robot), HOME_Q], send_joints, HOME_GRIPPER)
 
     # 1. vision
     vision = Vision(args)
@@ -177,7 +179,10 @@ def main():
         input("Final pose held. Press Enter to end... ")
     finally:
         if robot is not None:
-            robot.disconnect()
+            if args.execute:
+                park_and_disconnect(robot)     # back to the home pose, torque kept
+            else:
+                robot.disconnect()             # nothing was moved: leave it as it is
 
 
 if __name__ == "__main__":

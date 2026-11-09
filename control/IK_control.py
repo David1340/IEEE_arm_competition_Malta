@@ -38,6 +38,10 @@ ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wris
 EE_LINK = "gripper_frame_link"
 REPO = Path(__file__).resolve().parents[1]
 
+from control.arm_config import HOME_DEG, HOME_GRIPPER  # noqa: E402  (the one place to change the home pose)
+
+HOME_Q = [math.radians(v) for v in HOME_DEG]
+
 
 def arm_files(arm: str | None) -> tuple[str | None, Path]:
     """(port, LeRobot calibration file) of an arm by its LeRobot id (follower_pink, follower_blue), from
@@ -177,9 +181,14 @@ def connect_robot(arm: str | None = None, port: str | None = None):
     return robot
 
 
+def go_home(robot, gripper=HOME_GRIPPER):
+    """Move the arm smoothly to the home pose (control/arm_config.py HOME_DEG) with the gripper at HOME_GRIPPER."""
+    return follow_path(robot, [read_joints_rad(robot), list(HOME_Q)], gripper)
+
+
 def park_pose(robot) -> list[float]:
     """Where an arm parks when a script ends: arms.json "park_deg" of that follower if set (5 joint angles, deg),
-    else the pose it was in when the script connected to it."""
+    else the home pose (control/arm_config.py HOME_DEG)."""
     arm = robot_arm(robot)
     if arm is not None:
         from control import arm_config
@@ -187,11 +196,12 @@ def park_pose(robot) -> list[float]:
         degrees = arm_config.entry(arm).get("park_deg")
         if degrees:
             return [math.radians(float(v)) for v in degrees]
-    return list(getattr(robot, "start_q", None) or read_joints_rad(robot))
+    return list(HOME_Q)
 
 
 def park_and_disconnect(robot, park=None, release=None):
-    """End of a script: move the arm smoothly back to its park pose (see park_pose), then disconnect. The motors
+    """End of a script: move the arm smoothly to its park pose (see park_pose; the home pose, gripper at
+    HOME_GRIPPER), then disconnect. The motors
     keep their torque, so the arm holds that pose instead of dropping onto the table (MOTION["release"] or
     release=True turns the torque off after parking, the old behaviour)."""
     park = MOTION["park"] if park is None else park
@@ -200,7 +210,7 @@ def park_and_disconnect(robot, park=None, release=None):
     try:
         if park:
             print(f"{name}: parking ...", flush=True)
-            follow_path(robot, [read_joints_rad(robot), park_pose(robot)])
+            follow_path(robot, [read_joints_rad(robot), park_pose(robot)], HOME_GRIPPER)
     except Exception as error:                       # never leave the bus open because a move failed
         print(f"{name}: could not park ({error})")
     keep = not release and hasattr(getattr(robot, "config", None), "disable_torque_on_disconnect")
@@ -297,7 +307,7 @@ def add_motion_args(ap):
                     help="a move counts as arrived when every joint is this close to its goal [deg]; raise it "
                          "(e.g. 6) when the arm sags under a load and each move waits 3 s for the last degrees")
     ap.add_argument("--no-park", action="store_true",
-                    help="on quitting, leave the arms where they are (default: back to where they started)")
+                    help="on quitting, leave the arms where they are (default: back to the home pose)")
     ap.add_argument("--release-on-quit", action="store_true",
                     help="turn the motors' torque off after parking (default: keep it on so the arms hold their pose)")
 
@@ -515,7 +525,11 @@ def main():
     ctrl = EEController(gui=args.gui, lock_wrist_roll=not args.free_wrist_roll, arm=args.arm)
     robot = None if args.sim_only else connect_robot(args.arm)
     if robot:
+        print("Going to the home pose ...")
+        go_home(robot)
         ctrl.set_sim_state(read_joints_rad(robot))
+    else:
+        ctrl.set_sim_state(list(HOME_Q))
 
     orient = p.getQuaternionFromEuler([math.pi, 0, 0]) if args.orient_down else None
     offset = np.array(args.offset)

@@ -393,6 +393,7 @@ def main():
     state = {"pending": None, "status": "click a shape's centre or a box", "plan": {}}
     frame = cloud = None
     try:
+        home_all()                           # start at the home pose (control/arm_config.py), out of the camera's view
         zed = open_zed(args.serial)
     except BaseException:
         disconnect_all()

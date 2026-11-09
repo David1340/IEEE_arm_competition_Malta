@@ -17,6 +17,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FILE = ROOT / "arms.json"
 
+# The home pose: where every script starts (the arms go there first) and finishes (park_and_disconnect), and where
+# the arms wait between picks, out of the camera's view. Degrees: shoulder_pan, shoulder_lift, elbow_flex,
+# wrist_flex, wrist_roll (keep wrist_roll at -90: the planners lock it there). A follower's "park_deg" in arms.json
+# overrides where that arm parks at the end.
+HOME_DEG = [0.0, -100.0, 90.0, -75.0, -90.0]
+HOME_GRIPPER = 60.0     # gripper at the home pose, LeRobot 0-100
+
 
 @lru_cache(maxsize=4)
 def _read(path: str, mtime_ns: int) -> dict:

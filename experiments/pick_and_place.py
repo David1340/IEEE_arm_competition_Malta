@@ -44,7 +44,7 @@ from control import gripper as jaw  # noqa: E402
 from control import task_config  # noqa: E402
 from calibration.calibrate import arm_from_table, arms, default_arm  # noqa: E402
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
-                                       GRIPPER_OPEN, HOME_Q,
+                                       GRIPPER_OPEN, HOME_GRIPPER, HOME_Q,
                                        close_gripper_with_current_feedback)
 from experiments.sim_plan import TABLE_CLEARANCE, World  # noqa: E402
 from vision.detection import OBJECT_STL_FILES  # noqa: E402
@@ -167,7 +167,7 @@ def follow(robot, path, gripper, send_joints=None):
 
 
 def go_home(robot, send_joints, read_joints_rad):
-    follow(robot, [read_joints_rad(robot), HOME_Q], GRIPPER_OPEN, send_joints)
+    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints)
 
 
 def main():
@@ -365,7 +365,7 @@ def main():
     finally:
         for robot in robots.values():
             if robot is not None:
-                park_and_disconnect(robot)
+                park_and_disconnect(robot, park=None if args.execute else False)   # without --execute nothing moves
 
 
 if __name__ == "__main__":

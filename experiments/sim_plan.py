@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from control.arm_config import HOME_DEG  # noqa: E402
 from control.modified_frpso_ik import ModifiedFRPSOIK, load_robot_for_collision  # noqa: E402
 from control.rrt_connect import RRTConnectPlanner  # noqa: E402
 
@@ -41,7 +42,7 @@ OBJECTS = [
 TARGET = (0.37, -0.04)         # x, y of the point between the jaws (default: first object)
 HEIGHT = 0.02                  # z of the point between the jaws [m]
 # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll  [rad]
-START_Q = [0.0553, -0.7104, 0.1461, -1.1745, -math.pi / 2]
+START_Q = [math.radians(v) for v in HOME_DEG]   # the home pose (control/arm_config.py)
 TABLE_CLEARANCE = 0.015        # gripper links stay this far above the table [m]
 OBJECT_COLOR = [(0.9, 0.3, 0.2), (0.2, 0.5, 0.9), (0.2, 0.7, 0.3), (0.8, 0.7, 0.1)]
 # ---------------------------------------------------------------------------

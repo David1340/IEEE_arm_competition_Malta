@@ -14,7 +14,7 @@ Keys in the camera window:
     left click   choose a target (shown with its base-frame x y z)
     g            go to the target
     o / c        open / close the gripper at the target on the next g (toggle)
-    h            home pose (0 0 0 0 -90 deg)
+    h            home pose (control/arm_config.py HOME_DEG, gripper HOME_GRIPPER); the arms also start there
     q / Esc      quit
 """
 
@@ -34,7 +34,9 @@ import cv2  # noqa: E402
 from calibration.calibrate import FILE as CALIBRATION_FILE, arm_from_table, arms, camera_to_table, open_zed  # noqa: E402
 
 WINDOW = "click to go"
-HOME_Q = np.radians([0.0, 0.0, 0.0, 0.0, -90.0])
+from control.arm_config import HOME_DEG, HOME_GRIPPER  # noqa: E402
+
+HOME_Q = np.radians(HOME_DEG)
 PATCH = 4  # pixels around the click whose point-cloud median is used
 
 
@@ -102,7 +104,11 @@ def main():
             ctrls[name] = EEController(gui=args.gui and not ctrls, lock_wrist_roll=not args.free_wrist_roll, arm=name)
             robots[name] = robot
             if robots[name]:
+                print(f"{name}: going to the home pose ...")
+                follow_path(robot, [read_joints_rad(robot), list(HOME_Q)], HOME_GRIPPER)
                 ctrls[name].set_sim_state(read_joints_rad(robots[name]))
+            else:
+                ctrls[name].set_sim_state(list(HOME_Q))
             print(f"{name}: base at x {bases[name][0]:.3f} y {bases[name][1]:.3f} m (table frame)"
                   + ("" if robots[name] else ", simulation only"))
         orient = p.getQuaternionFromEuler([math.pi, 0, 0]) if args.orient_down else None
@@ -177,7 +183,7 @@ def main():
                 for name in names:
                     if robots[name]:
                         print(f"{name}: going home ...")
-                        follow_path(robots[name], [read_joints_rad(robots[name]), list(HOME_Q)])
+                        follow_path(robots[name], [read_joints_rad(robots[name]), list(HOME_Q)], HOME_GRIPPER)
                         ctrls[name].set_sim_state(read_joints_rad(robots[name]))
                     else:
                         ctrls[name].set_sim_state(list(HOME_Q))
