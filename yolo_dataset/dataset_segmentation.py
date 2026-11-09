@@ -12,8 +12,11 @@ Keys (click the window first):
     ENTER   save labels for this image and go to the next
     k       skip image without saving
     p       go back to the previous image (it opens with its saved objects; ENTER saves it again)
+    l       legends: all objects -> selected object only -> none -> all ... (kept for the next images)
+    h       hide / show the legend of the selected object
 Every object shows its class name next to its outline (also the saved ones --add-missing opens), so wrong
-labels are easy to spot: select it with [ / ], then d deletes it or b reopens it to label again.
+labels are easy to spot: select it with [ / ], then d deletes it or b reopens it to label again. When the
+legends cover the objects, l or h hides them (the outlines stay).
     q/ESC   quit
 Usage:
     python dataset_segmentation.py --images images            # classes from classes.txt
@@ -33,6 +36,7 @@ import cv2
 import numpy as np
 from ultralytics import SAM
 
+LEGEND_MODES = ["all", "selected", "none"]   # which objects' class names are drawn (key l)
 COLORS = [(0, 255, 0), (0, 128, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0)]
 IMG_EXT = {".jpg", ".jpeg", ".png"}
 HERE = Path(__file__).resolve().parent
@@ -119,6 +123,7 @@ def main():
     cv2.setMouseCallback(win, on_mouse)
 
     quit_all = False
+    legend_mode = 0                  # index in LEGEND_MODES; kept from image to image
     while 0 <= index < len(files) and not quit_all:
         f = files[index]
         file_i = index + 1
@@ -136,6 +141,7 @@ def main():
                     polygon = np.asarray(parts[1:], dtype=float).reshape(-1, 2)
                     objects.append((int(parts[0]), polygon, [], []))
         selected = 0 if objects else None
+        hidden = set()                   # id() of the polygons whose legend h hid (this image only)
         quit_armed = False
         state.update(points=[], labels=[], poly=None, dirty=True)
 
@@ -150,6 +156,9 @@ def main():
                 color = (255, 255, 255) if object_i == selected else COLORS[c % len(COLORS)]
                 pts = (poly * [w, h]).astype(np.int32)
                 cv2.polylines(vis, [pts], True, color, 5 if object_i == selected else 3)
+                mode = LEGEND_MODES[legend_mode]
+                if id(poly) in hidden or mode == "none" or (mode == "selected" and object_i != selected):
+                    continue
                 name = args.classes[c] if c < len(args.classes) else "?"
                 draw_label(vis, f"{c}: {name}" + ("  (selected)" if object_i == selected else ""), pts, color)
             if state["poly"] is not None:
@@ -157,7 +166,8 @@ def main():
                 overlay = vis.copy()
                 cv2.fillPoly(overlay, [pts], COLORS[cls % len(COLORS)])
                 vis = cv2.addWeighted(overlay, 0.4, vis, 0.6, 0)
-                draw_label(vis, f"{cls}: {args.classes[cls]}  (n confirms)", pts, COLORS[cls % len(COLORS)])
+                if LEGEND_MODES[legend_mode] != "none":
+                    draw_label(vis, f"{cls}: {args.classes[cls]}  (n confirms)", pts, COLORS[cls % len(COLORS)])
             # Points are stored in full-resolution coordinates.
             for (x, y), l in zip(state["points"], state["labels"]):
                 cv2.circle(vis, (int(x), int(y)), 8, (0, 255, 0) if l else (0, 0, 255), -1)
@@ -168,6 +178,7 @@ def main():
             if args.add_missing:
                 selected_text = f"selected {selected + 1}/{len(objects)}" if selected is not None else "no object selected"
                 text = f"[{file_i}/{len(files)}] {f.name} | class {cls}:{args.classes[cls]} | {selected_text} | objects={len(objects)}"
+            text += f" | legends: {LEGEND_MODES[legend_mode]} (l)" + (f", {len(hidden)} hidden (h)" if hidden else "")
             if quit_armed:
                 text = "Press q again to quit (unsaved work on this image is lost), any other key cancels"
             cv2.putText(vis, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -209,6 +220,10 @@ def main():
                 selected = (selected - 1) % len(objects) if selected is not None else len(objects) - 1
             elif key == ord("]") and objects:
                 selected = (selected + 1) % len(objects) if selected is not None else 0
+            elif key == ord("l"):
+                legend_mode = (legend_mode + 1) % len(LEGEND_MODES)
+            elif key == ord("h") and selected is not None:
+                hidden ^= {id(objects[selected][1])}
             elif key == ord("k"):
                 break
             elif key == ord("p"):
