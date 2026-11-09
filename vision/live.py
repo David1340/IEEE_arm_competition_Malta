@@ -14,8 +14,11 @@ the walls the camera sees, so its mean pixel lies between the rim and the base: 
 
 --centre rect (default here) finds an object's x, y without fitting the STL: the ZED points inside its YOLO mask
 are put in the robot frame, the table and stray depth are dropped (only points between --rect-min-z above the table
-and its STL height + 2 cm, within its STL half-width + 1 cm of their median), and the centre of the smallest
-rectangle around them, seen from above (cv2.minAreaRect), is the object's x, y. z is not measured: the object
+and its STL height + 2 cm, within its STL half-width + 1 cm of their median), and the object's x, y is the centre of
+a rectangle around them seen from above: only the top face's points when there are enough (--rect-top-band,
+--rect-top-min), its sides from the middle 90 % of the points (--rect-trim), and no wider than the object's real
+size from the STL (a window of that size where the most points are). The label says which: RECT[top] / RECT[all],
++size when the size limit moved it. z is not measured: the object
 stands on the table, so its top is its STL height (returned, as the grasp needs it) and its middle half of that.
 --centre fit is the silhouette / point-cloud method above.
 
@@ -71,6 +74,15 @@ def add_vision_args(ap):
                          "(z from the STL); fit = silhouette fit / point-cloud mean")
     ap.add_argument("--rect-min-z", type=float, default=0.008,
                     help="rect: points lower than this above the table [m] are table, not object")
+    ap.add_argument("--rect-trim", type=float, default=0.05,
+                    help="rect: share of the points ignored at each end of each side (0 = the extreme points)")
+    ap.add_argument("--rect-top-band", type=float, default=0.01,
+                    help="rect: points within this of the STL height [m] are the top face")
+    ap.add_argument("--rect-top-min", type=int, default=30,
+                    help="rect: use only the top face when it has at least this many points")
+    ap.add_argument("--rect-partial", type=float, default=0.7,
+                    help="rect: a rectangle side under this share of the object's STL size means part of it has no "
+                         "depth; it is then placed from its mask's pixels")
     ap.add_argument("--no-pixel-fallback", action="store_true",
                     help="drop an object with no fit and too few depth points (default: place it from its pixels)")
     ap.add_argument("--no-silhouette", action="store_true",
@@ -111,11 +123,32 @@ def inside_bins(valid, names, roi_shape, min_overlap):
     return inside
 
 
-def rect_center(cloud, polygon, roi, camera_to_robot, height, width, args):
-    """x, y of an object from its point cloud: the centre of the smallest rectangle (any angle) around its points
-    seen from above, in the robot frame. Only points between args.rect_min_z and height + 2 cm above the table,
-    within width / 2 + 1 cm of their median x, y, count. Returns (centre_xy, corners 4 x 2, (w, l), angle_deg,
-    point count) in metres, or (None, count, ...) with fewer than args.min_points points."""
+def _window_centre(values, length):
+    """Centre of the window `length` long holding the most of these 1-D values (ties: the middle one)."""
+    v = np.sort(values)
+    ends = np.searchsorted(v, v + length, side="right")
+    counts = ends - np.arange(len(v))
+    best = np.flatnonzero(counts == counts.max())
+    i = best[len(best) // 2]
+    return v[i] + length / 2
+
+
+def rect_center(cloud, polygon, roi, camera_to_robot, height, width, args, footprint=None, top_face=None):
+    """x, y of an object from its point cloud, seen from above in the robot frame. Returns (centre_xy, corners
+    4 x 2, (w, l), angle_deg, point count, how) in metres, or (None, count, None, None, None, None) with fewer than
+    args.min_points points. Steps:
+      1. the points inside the mask, without the table (below args.rect_min_z), stray depth (above height + 2 cm)
+         and points farther than width / 2 + 1 cm from their median x, y;
+      2. top face: when at least args.rect_top_min of them lie within args.rect_top_band of the STL height, only
+         those are used (an upright object's top face is centred on it: no sides, no edge bleeding);
+      3. the rectangle's angle from cv2.minAreaRect of the points nearest the median (the outer args.rect_trim
+         dropped), then along each of its two sides the extent is the args.rect_trim .. 1 - args.rect_trim
+         quantile range of the points, not their extremes;
+      4. known size: where that extent is wider than the object can be (footprint / top_face (short, long) from
+         the STL, + 4 mm), the window of the object's size holding the most points gives the centre on that side;
+      5. where it is much narrower (a side under args.rect_partial of the STL size), part of the object has no depth
+         and the rectangle cannot know where the rest is: (None, count, None, None, None, "partial") is returned,
+         and the caller places the object from its mask's pixels instead (the mask covers the whole object)."""
     x0, y0, w, h = roi
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [np.rint(np.asarray(polygon, dtype=np.float32)).astype(np.int32)], 1)
@@ -126,15 +159,44 @@ def rect_center(cloud, polygon, roi, camera_to_robot, height, width, args):
     xyz = xyz @ camera_to_robot[:3, :3].T + camera_to_robot[:3, 3]
     xyz = xyz[(xyz[:, 2] >= args.rect_min_z) & (xyz[:, 2] <= height + 0.02)]
     if len(xyz) >= args.min_points:
-        xy = xyz[:, :2]
-        xy = xy[np.linalg.norm(xy - np.median(xy, axis=0), axis=1) <= width / 2 + 0.01]
+        keep = np.linalg.norm(xyz[:, :2] - np.median(xyz[:, :2], axis=0), axis=1) <= width / 2 + 0.01
+        xyz = xyz[keep]
+    if len(xyz) < args.min_points:
+        return None, len(xyz), None, None, None, None
+    # 2. top face only, when there is enough of it
+    top = xyz[xyz[:, 2] >= height - args.rect_top_band]
+    if len(top) >= max(args.rect_top_min, args.min_points):
+        xy, how, size = top[:, :2], "top", top_face
     else:
-        xy = xyz[:0, :2]
-    if len(xy) < args.min_points:
-        return None, len(xy), None, None, None
-    (cx, cy), (rw, rl), angle = cv2.minAreaRect((1000 * xy).astype(np.float32))   # mm: integer-ish precision
-    corners = cv2.boxPoints(((cx, cy), (rw, rl), angle)) / 1000.0
-    return np.array([cx, cy]) / 1000.0, len(xy), corners, (rw / 1000.0, rl / 1000.0), angle
+        xy, how, size = xyz[:, :2], "all", footprint
+    # 3. angle from the inner points, then trimmed extents along the rectangle's two sides
+    median = np.median(xy, axis=0)
+    dist = np.linalg.norm(xy - median, axis=1)
+    inner = xy[dist <= np.quantile(dist, 1 - args.rect_trim)] if args.rect_trim > 0 else xy
+    if len(inner) < 3:
+        inner = xy
+    _, _, angle = cv2.minAreaRect((1000 * inner).astype(np.float32))
+    a = np.radians(angle)
+    axes = np.array([[np.cos(a), np.sin(a)], [-np.sin(a), np.cos(a)]])     # rows: the rectangle's two sides
+    proj = xy @ axes.T
+    lo, hi = np.quantile(proj, [args.rect_trim, 1 - args.rect_trim], axis=0)
+    centre_uv, extent = (lo + hi) / 2, hi - lo
+    # 5. much narrower than the object: depth missing on part of it
+    if size is not None and np.min(np.sort(extent) / np.maximum(sorted(size), 1e-6)) < args.rect_partial:
+        return None, len(xy), None, None, None, "partial"
+    # 4. known size: an extent wider than the object can be -> the best window of its real size on that side
+    if size is not None:
+        order = np.argsort(extent)                                         # match short side to short side
+        for axis, known in zip(order, sorted(size)):
+            if extent[axis] > known + 0.004:
+                centre_uv[axis] = _window_centre(proj[:, axis], known)
+                extent[axis] = known
+                how += "+size"
+    centre = centre_uv @ axes
+    half = extent / 2
+    corners = np.array([centre + sx * half[0] * axes[0] + sy * half[1] * axes[1]
+                        for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+    return centre, len(xy), corners, tuple(extent), angle, how
 
 
 def bin_center_from_pixels(polygon, roi, cam, plane_z):
@@ -269,14 +331,15 @@ class Vision:
                                 color, 2)
                     continue
                 class_name = names[class_id]
-                rect_failed = False
+                rect_failed, no_depth_reason = False, "no depth"
                 if args.centre == "rect" and class_name.casefold() in OBJECT_STL_FILES:
-                    from control.gripper import object_height, object_width
+                    from control.gripper import object_footprint, object_height, object_top_face, object_width
 
                     stl = OBJECT_STL_FILES[class_name.casefold()]
                     height = object_height(stl)
-                    xy, count, corners, size, angle = rect_center(cloud, polygon, current_roi, self.camera_to_robot,
-                                                                  height, object_width(stl), args)
+                    xy, count, corners, size, angle, how = rect_center(
+                        cloud, polygon, current_roi, self.camera_to_robot, height, object_width(stl), args,
+                        footprint=object_footprint(stl), top_face=object_top_face(stl))
                     if xy is not None:
                         center = np.array([xy[0], xy[1], height])        # top of the object, from its STL
                         rect_px = self.cam.project(np.column_stack([corners, np.full(4, height)]))
@@ -284,7 +347,7 @@ class Vision:
                         cv2.polylines(canvas, [points], True, color, 1)
                         cx, cy = (int(round(v)) for v in self.cam.project(center)[0])
                         cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
-                        text = (f"{class_name} {confidence:.2f} RECT X{center[0]:+.3f} Y{center[1]:+.3f} "
+                        text = (f"{class_name} {confidence:.2f} RECT[{how}] X{center[0]:+.3f} Y{center[1]:+.3f} "
                                 f"{1000 * size[0]:.0f}x{1000 * size[1]:.0f}mm ({count} pts)")
                         objects.append((class_name, confidence, center, count))
                         self.last_polygons.append(points)
@@ -292,7 +355,8 @@ class Vision:
                         cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
                         continue
-                    rect_failed = True                                    # too few points: place it from pixels
+                    rect_failed = True                     # too few points / partial depth: place it from pixels
+                    no_depth_reason = "partial depth" if how == "partial" else "no depth"
                 if rect_failed:
                     center, pixel_center, top_mask = None, None, None
                 else:
@@ -327,7 +391,7 @@ class Vision:
                         center = np.array([xy[0], xy[1], height])
                         cv2.polylines(canvas, [points], True, color, 2)
                         cv2.drawMarker(canvas, pixel_center, (255, 255, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
-                        text = (f"{class_name} {confidence:.2f} PIXELS (no depth) X{center[0]:+.3f} "
+                        text = (f"{class_name} {confidence:.2f} PIXELS ({no_depth_reason}) X{center[0]:+.3f} "
                                 f"Y{center[1]:+.3f} Z{center[2]:+.3f}m")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)

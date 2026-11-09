@@ -138,6 +138,36 @@ def object_height(stl_path):
     return height / 1000.0 if height > 1.0 else height
 
 
+def _min_rect_size(xy):
+    """(short, long) sides of the smallest rectangle, any angle, around 2-D points (1 degree steps)."""
+    best = None
+    for angle in np.radians(np.arange(0.0, 90.0, 1.0)):
+        c, s_ = np.cos(angle), np.sin(angle)
+        u, v = xy @ [c, s_], xy @ [-s_, c]
+        size = (np.ptp(u), np.ptp(v))
+        if best is None or size[0] * size[1] < best[0] * best[1]:
+            best = size
+    return tuple(sorted(best))
+
+
+@lru_cache(maxsize=32)
+def object_footprint(stl_path):
+    """(short, long) sides [m] of the smallest rectangle around the object seen from above, standing as in its STL."""
+    v = _stl_vertices(stl_path)
+    scale = 1000.0 if np.ptp(v[:, 2]) > 1.0 else 1.0
+    return tuple(x / scale for x in _min_rect_size(v[:, :2]))
+
+
+@lru_cache(maxsize=32)
+def object_top_face(stl_path):
+    """(short, long) sides [m] of the smallest rectangle around the object's top face (its vertices within 0.5 mm
+    of its highest point), standing as in its STL."""
+    v = _stl_vertices(stl_path)
+    scale = 1000.0 if np.ptp(v[:, 2]) > 1.0 else 1.0
+    top = v[v[:, 2] >= v[:, 2].max() - 0.5 * (scale / 1000.0)]
+    return tuple(x / scale for x in _min_rect_size(top[:, :2]))
+
+
 @lru_cache(maxsize=32)
 def object_width(stl_path):
     """Widest horizontal extent [m] of an object model, over every direction (STL in mm or m)."""
