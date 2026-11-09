@@ -6,15 +6,18 @@ move is planned (sim_plan's World: table and the other objects as obstacles) and
     above the object -> down to it -> close the gripper (motor current) -> lift -> over the bin -> open
 Positions come from the shared TABLE frame of the ArUco calibration (calibration/calibrate.py).
 
+    python experiments/pick_and_place.py                             # the mode set in pick_and_place.json
     python experiments/pick_and_place.py --round colour              # plan + preview each pick, arms do not move
     python experiments/pick_and_place.py --round colour --execute    # move the arms ('yes' before each object)
     python experiments/pick_and_place.py --round shape --execute --auto   # no confirmations (watch the arms!)
     python experiments/pick_and_place.py --arm follower_pink         # only one arm
     python experiments/pick_and_place.py --no-robot                  # no arms connected: vision + planning only
 
-Rounds (Robot Championship 2026, Game 1): colour = object colour -> same-colour bin; shape = cube -> red,
-cylinder -> blue, dodecahedron -> green, hexagonal prism -> yellow. Detecting again every cycle also follows
-objects and bins that are moved (round 3: use --round shape).
+The rounds and which bin each object goes in come from pick_and_place.json (repo root, read by
+control/task_config.py): colour = object colour -> same-colour bin; shape = cube -> red, cylinder -> blue,
+dodecahedron -> green, hexagonal prism -> yellow (Robot Championship 2026, Game 1). --round picks the mode,
+otherwise the file's "mode" is used. Detecting again every cycle also follows objects and bins that are moved
+(round 3: use --round shape).
 
 Needs a trained YOLO segmentation model (runs/segment/*/weights/best.pt, or --weights) whose classes include the
 objects and "bin".
@@ -33,6 +36,7 @@ if str(ROOT) not in sys.path:
 sys.path.insert(0, str(ROOT / "yolo_dataset"))
 
 from block_color import classify, load_colors, object_pixels, to_hsv  # noqa: E402
+from control import task_config  # noqa: E402
 from calibration.calibrate import arm_from_table, arms, default_arm  # noqa: E402
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
                                        GRIPPER_OPEN, HOME_Q,
@@ -41,8 +45,6 @@ from experiments.sim_plan import TABLE_CLEARANCE, World  # noqa: E402
 from vision.detection import OBJECT_STL_FILES  # noqa: E402
 from vision.live import Vision, add_vision_args  # noqa: E402
 
-SHAPE_TO_BIN = {"cube": "red", "cylinder": "blue", "dodecahedron": "green",
-                "hexagonal": "yellow", "hexagonal_prism": "yellow"}
 BIN_CLASS = "bin"
 
 
@@ -88,8 +90,8 @@ def look(vision, colors, table_from_default):
 
 
 def bin_for(obj, bins, round_name):
-    """The bin this object belongs in (None when that bin is not in view)."""
-    wanted = obj["colour"] if round_name == "colour" else SHAPE_TO_BIN.get(obj["name"])
+    """The bin this object belongs in under pick_and_place.json's rules (None when that bin is not in view)."""
+    wanted = task_config.bin_colour(obj["name"], obj["colour"], round_name)
     matches = [b for b in bins if b["colour"] == wanted]
     return min(matches, key=lambda b: np.linalg.norm(b["xyz"][:2] - obj["xyz"][:2])) if matches else None
 
@@ -166,7 +168,8 @@ def go_home(robot, send_joints, read_joints_rad):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_vision_args(ap)
-    ap.add_argument("--round", choices=["colour", "shape"], default="colour", help="which bin each object goes in")
+    ap.add_argument("--round", choices=task_config.modes(), default=task_config.default_mode(),
+                    help="which bin each object goes in: a mode of pick_and_place.json (default: its 'mode')")
     ap.add_argument("--arm", default="both", help="follower_pink, follower_blue, or both (default)")
     ap.add_argument("--execute", action="store_true", help="move the real arms")
     ap.add_argument("--auto", action="store_true", help="with --execute: no 'yes' before each object")
@@ -199,6 +202,7 @@ def main():
         raise SystemExit(f"unknown arm {args.arm!r}; known: {', '.join(all_arms)} or both")
     table_from_default = np.linalg.inv(arm_from_table(default_arm()))   # camera_transform.npy is in its frame
     colors = load_colors()
+    print("Sorting " + task_config.describe(args.round))
 
     from control.IK_control import arm_files, connect_robot, park_and_disconnect, read_joints_rad, send_joints
 
@@ -239,8 +243,9 @@ def main():
                         continue
                     target_bin = bin_for(obj, bins, args.round)
                     if target_bin is None:
-                        wanted = obj["colour"] if args.round == "colour" else SHAPE_TO_BIN.get(obj["name"])
-                        print(f"  {label}: its {wanted} bin is not in view")
+                        wanted = task_config.bin_colour(obj["name"], obj["colour"], args.round)
+                        print(f"  {label}: " + (f"its {wanted} bin is not in view" if wanted else
+                                                f"no bin for it in {task_config.FILE.name} ({args.round})"))
                         continue
                     if np.linalg.norm(obj["xyz"][:2] - target_bin["xyz"][:2]) < 0.06:
                         continue                                  # already in (or on) its bin
