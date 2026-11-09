@@ -12,6 +12,10 @@ the walls the camera sees, so its mean pixel lies between the rim and the base: 
 (simulated 15 x 15 x 8 cm bin across the field: at most ~17 mm off at 0.04 m; 47 mm at 0, 56 mm at the rim).
 --bin-point-cloud goes back to the point-cloud mean for bins.
 
+An object with neither a silhouette fit nor --min-points depth points (plain or shiny surfaces, glare under the
+camera) is not dropped: its x, y come the same way as a bin's (mean mask pixel, camera ray onto the plane at half
+its STL height) and its top is its STL height. Labelled "PIXELS (no depth)"; --no-pixel-fallback drops it instead.
+
 Objects inside a bin are left out (already sorted, or out of the gripper's way): an object whose mask lies at least
 --in-bin-overlap inside a bin's outline (its convex hull, so the bin's open inside counts) is drawn grey, labelled
 "in bin", and not returned. --keep-in-bin returns them as before.
@@ -26,6 +30,7 @@ import cv2
 import numpy as np
 
 from vision.detection import (
+    OBJECT_STL_FILES,
     CALIBRATION_FILE,
     ROI_FILE,
     camera_intrinsics,
@@ -53,7 +58,9 @@ def add_vision_args(ap):
     ap.add_argument("--depth-mode", choices=["QUALITY", "ULTRA", "NEURAL"], default="QUALITY")
     ap.add_argument("--min-depth", type=float, default=0.10, help="ignore points closer than this (meters)")
     ap.add_argument("--max-depth", type=float, default=2.00, help="ignore points farther than this (meters)")
-    ap.add_argument("--min-points", type=int, default=20, help="minimum valid mask points for a center estimate")
+    ap.add_argument("--min-points", type=int, default=5, help="minimum valid mask points for a center estimate")
+    ap.add_argument("--no-pixel-fallback", action="store_true",
+                    help="drop an object with no fit and too few depth points (default: place it from its pixels)")
     ap.add_argument("--no-silhouette", action="store_true",
                     help="use the point-cloud mean instead of the fitted STL top-face center")
     ap.add_argument("--silhouette-min-iou", type=float, default=0.7,
@@ -241,6 +248,26 @@ class Vision:
                             f"Z{center[2]:+.3f}m IoU{track.fit.iou:.2f}")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
+                elif center is None and not args.no_pixel_fallback and class_name.casefold() in OBJECT_STL_FILES:
+                    # No fit and no depth: x, y from the mask's mean pixel and the camera ray at half the object's
+                    # height (as for the bins); the top at its STL height (standing).
+                    from control.gripper import object_height
+
+                    height = object_height(OBJECT_STL_FILES[class_name.casefold()])
+                    xy, _, pixel_center = bin_center_from_pixels(polygon, current_roi, self.cam, height / 2)
+                    if xy is None:
+                        center = None
+                    else:
+                        center = np.array([xy[0], xy[1], height])
+                        cv2.polylines(canvas, [points], True, color, 2)
+                        cv2.drawMarker(canvas, pixel_center, (255, 255, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
+                        text = (f"{class_name} {confidence:.2f} PIXELS (no depth) X{center[0]:+.3f} "
+                                f"Y{center[1]:+.3f} Z{center[2]:+.3f}m")
+                    objects.append((class_name, confidence, center, count))
+                    self.last_polygons.append(points)
+                    if center is None:
+                        cv2.polylines(canvas, [points], True, (128, 128, 128), 1)
+                        text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"
                 elif center is None:
                     cv2.polylines(canvas, [points], True, (128, 128, 128), 1)
                     text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"

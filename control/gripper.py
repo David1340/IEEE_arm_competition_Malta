@@ -131,6 +131,14 @@ def _stl_vertices(path):
 
 
 @lru_cache(maxsize=32)
+def object_height(stl_path):
+    """Height [m] of an object model as it stands in its STL (STL in mm or m)."""
+    z = _stl_vertices(stl_path)[:, 2]
+    height = float(z.max() - z.min())
+    return height / 1000.0 if height > 1.0 else height
+
+
+@lru_cache(maxsize=32)
 def object_width(stl_path):
     """Widest horizontal extent [m] of an object model, over every direction (STL in mm or m)."""
     xy = _stl_vertices(stl_path)[:, :2]
