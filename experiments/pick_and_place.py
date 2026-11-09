@@ -234,7 +234,8 @@ def main():
             while done < args.max_objects:
                 canvas, objects, bins = look(vision, colors, table_from_default)
                 print(f"\n{len(objects)} object(s), bins: "
-                      + (", ".join(f"{b['colour']}" for b in bins) or "none"))
+                      + (", ".join(f"{b['colour'] or '?'} at x {b['xyz'][0]:.2f} y {b['xyz'][1]:.2f}" for b in bins)
+                         or "none"))
                 todo = []
                 for obj in objects:
                     key = (obj["name"], obj["colour"], *np.round(obj["xyz"][:2], 2))
@@ -251,7 +252,11 @@ def main():
                         continue                                  # already in (or on) its bin
                     arm = choose_arm(obj, target_bin, bases, args.max_reach)
                     if arm is None:
-                        print(f"  {label}: no arm reaches both it and its bin within {100 * args.max_reach:.0f} cm")
+                        far = ", ".join(f"{n} {100 * np.linalg.norm(obj['xyz'][:2] - b):.0f} / "
+                                        f"{100 * np.linalg.norm(target_bin['xyz'][:2] - b):.0f} cm"
+                                        for n, b in bases.items())
+                        print(f"  {label}: no arm reaches both it and its bin within {100 * args.max_reach:.0f} cm "
+                              f"(object / bin from each arm's base: {far})")
                         continue
                     todo.append((np.linalg.norm(obj["xyz"][:2] - bases[arm]), obj, target_bin, arm, key))
                 cv2.imshow("pick and place (any key = continue, q = stop)", canvas)
