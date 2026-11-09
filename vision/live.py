@@ -4,6 +4,13 @@
     frame, cloud = vision.grab()
     canvas, objects = vision.detect(frame, cloud)
     # objects: [(class_name, confidence, center_xyz_in_robot_frame_or_None, point_count), ...]
+
+Centres: objects with an STL get the fitted top-face centre (else the point-cloud mean of the mask). Bins use
+no depth at all: the mean pixel of the YOLO mask is turned into x, y by the camera ray through it meeting the
+plane --bin-plane-z above the table (camera calibration + lens parameters only). The mask holds the rim and
+the walls the camera sees, so its mean pixel lies between the rim and the base: half the bin's height works best
+(simulated 15 x 15 x 8 cm bin across the field: at most ~17 mm off at 0.04 m; 47 mm at 0, 56 mm at the rim).
+--bin-point-cloud goes back to the point-cloud mean for bins.
 """
 import json
 import os
@@ -24,6 +31,7 @@ from vision.detection import (
     visible_surface_center,
 )
 
+BIN_CLASS = "bin"
 COLORS = [(0, 255, 0), (0, 128, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0),
           (128, 0, 255), (0, 200, 120), (200, 120, 0), (120, 120, 255)]
 
@@ -46,6 +54,25 @@ def add_vision_args(ap):
                     help="use the point-cloud mean instead of the fitted STL top-face center")
     ap.add_argument("--silhouette-min-iou", type=float, default=0.7,
                     help="minimum mask/silhouette IoU to trust the top-face center")
+    ap.add_argument("--bin-plane-z", type=float, default=0.04,
+                    help="bins: height above the table [m] of the plane the mask's mean pixel is cast onto "
+                         "(about half the bin's height)")
+    ap.add_argument("--bin-point-cloud", action="store_true",
+                    help="bins: use the point-cloud mean of the mask instead of the mean pixel")
+
+
+def bin_center_from_pixels(polygon, roi, cam, plane_z):
+    """A bin's centre without depth: the mean of the mask's pixels, then the camera ray through that pixel
+    meets the plane Z = plane_z (robot frame, the table at 0). Returns (xyz, pixel count, (u, v)) or
+    (None, count, None) for a mask with no pixels."""
+    x0, y0, width, height = roi
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(mask, [np.rint(np.asarray(polygon, dtype=np.float32)).astype(np.int32)], 1)
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return None, 0, None
+    u, v = xs.mean() + x0, ys.mean() + y0
+    return cam.ray_to_plane(u, v, plane_z), len(xs), (int(round(u)), int(round(v)))
 
 
 class Vision:
@@ -84,18 +111,17 @@ class Vision:
         self.image_mat, self.cloud_mat = sl.Mat(), sl.Mat()
         self.runtime = sl.RuntimeParameters()
 
-        self.fitter = None
-        if not args.no_silhouette:
-            from vision.silhouette import Camera
-            from vision.silhouette_live import LiveFitter, intrinsics_from_cloud
+        from vision.silhouette import Camera
+        from vision.silhouette_live import LiveFitter, intrinsics_from_cloud
 
-            try:
-                intrinsics = camera_intrinsics(self.zed)
-            except Exception as error:
-                print(f"Could not read ZED intrinsics ({error}); estimating them from the point cloud")
-                self.grab()
-                intrinsics = intrinsics_from_cloud(self.cloud_mat.get_data()[..., :3])
-            self.fitter = LiveFitter(Camera(self.camera_to_robot, intrinsics), self.camera_to_robot)
+        try:
+            intrinsics = camera_intrinsics(self.zed)
+        except Exception as error:
+            print(f"Could not read ZED intrinsics ({error}); estimating them from the point cloud")
+            self.grab()
+            intrinsics = intrinsics_from_cloud(self.cloud_mat.get_data()[..., :3])
+        self.cam = Camera(self.camera_to_robot, intrinsics)   # pixel <-> robot frame, for the bins' rays
+        self.fitter = None if args.no_silhouette else LiveFitter(self.cam, self.camera_to_robot)
 
     def grab(self):
         """Latest left image (BGR) and XYZRGBA point cloud, blocking until a frame arrives."""
@@ -141,6 +167,21 @@ class Vision:
             for polygon, class_id, confidence in valid:
                 points = np.rint(polygon + [x0, y0]).astype(np.int32)
                 color = COLORS[class_id % len(COLORS)]
+                if names[class_id].casefold() == BIN_CLASS and not args.bin_point_cloud:
+                    center, count, pixel_center = bin_center_from_pixels(polygon, current_roi, self.cam,
+                                                                         args.bin_plane_z)
+                    cv2.polylines(canvas, [points], True, color, 2)
+                    if center is None:
+                        text = f"{BIN_CLASS} {confidence:.2f} XY n/a (mask too small)"
+                    else:
+                        cv2.drawMarker(canvas, pixel_center, (255, 255, 255), cv2.MARKER_TILTED_CROSS, 22, 2)
+                        text = f"{BIN_CLASS} {confidence:.2f} PIXELS X{center[0]:+.3f} Y{center[1]:+.3f}m"
+                    objects.append((BIN_CLASS, confidence, center, count))
+                    self.last_polygons.append(points)
+                    px, py = points.min(axis=0)
+                    cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                                color, 2)
+                    continue
                 center, count, pixel_center, top_mask = visible_surface_center(
                     cloud, polygon, current_roi, args.min_depth, args.max_depth, args.min_points,
                     self.camera_to_robot,
