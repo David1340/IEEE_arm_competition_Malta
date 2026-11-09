@@ -106,9 +106,12 @@ def matrix_to_quaternion(R):
 class World:
     """Table, objects and robot in PyBullet, plus the M-FRPSO solver and the RRT-Connect planner."""
 
-    def __init__(self, objects, start_q, *, gui=True, clearance=TABLE_CLEARANCE, arm=None, calibration_path=None):
+    def __init__(self, objects, start_q, *, gui=True, clearance=TABLE_CLEARANCE, arm=None, calibration_path=None,
+                 gripper_open=None):
         """objects: [(stl_path, x, y, yaw_deg), ...]; arm: which arm's joint limits (calibration_path, its LeRobot
-        calibration file) and fine offsets to use (default: the older single-arm files)."""
+        calibration file) and fine offsets to use (default: the older single-arm files); gripper_open: how far the
+        jaws are open in the collision model, as a fraction of the gripper range (default GRIPPER_OPEN), i.e. the
+        LeRobot 0-100 command / 100 (control/gripper.py)."""
         self.start_q = list(start_q)
         self.client = c = p.connect(p.GUI if gui else p.DIRECT)
         p.setGravity(0, 0, 0, physicsClientId=c)
@@ -121,7 +124,8 @@ class World:
         link = {info[12].decode(): info[0] for info in infos}
         arm = [joint[n] for n in JOINTS]
         low, high = infos[joint["gripper"]][8:10]
-        p.resetJointState(self.robot, joint["gripper"], low + GRIPPER_OPEN * (high - low), physicsClientId=c)
+        opening = GRIPPER_OPEN if gripper_open is None else gripper_open
+        p.resetJointState(self.robot, joint["gripper"], low + opening * (high - low), physicsClientId=c)
 
         self.checker = ModifiedFRPSOIK(
             self.robot, link["grasp_center_link"], arm,

@@ -19,6 +19,10 @@ dodecahedron -> green, hexagonal prism -> yellow (Robot Championship 2026, Game 
 otherwise the file's "mode" is used. Detecting again every cycle also follows objects and bins that are moved
 (round 3: use --round shape).
 
+The gripper opens only as wide as each object needs (its STL's widest direction + --grip-margin, control/gripper.py),
+in the planner's collision model too, so the jaw does not sweep into the neighbouring objects; --grip-open 80 is the
+old fixed opening.
+
 Needs a trained YOLO segmentation model (runs/segment/*/weights/best.pt, or --weights) whose classes include the
 objects and "bin".
 """
@@ -36,6 +40,7 @@ if str(ROOT) not in sys.path:
 sys.path.insert(0, str(ROOT / "yolo_dataset"))
 
 from block_color import classify, load_colors, object_pixels, to_hsv  # noqa: E402
+from control import gripper as jaw  # noqa: E402
 from control import task_config  # noqa: E402
 from calibration.calibrate import arm_from_table, arms, default_arm  # noqa: E402
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
@@ -188,6 +193,12 @@ def main():
     ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
+    ap.add_argument("--grip-margin", type=float, default=0.02,
+                    help="the jaws open to the object's width (its STL, widest direction) plus this much in total "
+                         "[m], half on each side; for the detection and arm errors (control/gripper.py)")
+    ap.add_argument("--grip-open", type=float, default=None,
+                    help=f"open the jaws to this fixed command (0-100) for every object instead (the old: "
+                         f"{GRIPPER_OPEN:.0f})")
     from control.IK_control import add_motion_args, apply_motion_args
 
     add_motion_args(ap)
@@ -274,12 +285,19 @@ def main():
                 print(f"{arm}: {obj['colour']} {obj['name']} at x {o[0]:.3f} y {o[1]:.3f} (top {100 * top:.1f} cm) "
                       f"-> {target_bin['colour']} bin at x {b[0]:.3f} y {b[1]:.3f}")
 
+                if args.grip_open is not None:
+                    open_cmd = args.grip_open
+                else:
+                    width = jaw.object_width(OBJECT_STL_FILES[obj["name"]])
+                    open_cmd = jaw.open_command(width, args.grip_margin)
+                    print(f"  gripper opens to {open_cmd:.1f}/100 ({100 * jaw.opening_width(open_cmd):.1f} cm) for "
+                          f"a {100 * width:.1f} cm wide {obj['name']}")
                 robot = robots[arm]
                 start_q = HOME_Q if robot is None or not args.execute else read_joints_rad(robot)
                 others = [(OBJECT_STL_FILES[x["name"]], *(to_arm @ np.append(x["xyz"], 1.0))[:2], 0.0)
                           for x in objects if x is not obj]
                 world = World(others, start_q, gui=not args.no_gui, clearance=args.clearance,
-                              arm=arm, calibration_path=arm_files(arm)[1])
+                              arm=arm, calibration_path=arm_files(arm)[1], gripper_open=open_cmd / 100)
                 try:
                     # The point between the jaws reaches about 4 cm above the table at the lowest; if the grasp
                     # height has no pose, try 5 mm higher each time, up to 1.5 cm over the object's top (the jaw
@@ -314,8 +332,8 @@ def main():
                         skipped.add(key)
                         continue
                     (_, to_above), (_, to_grasp), (_, to_lift), (_, to_bin) = plans
-                    follow(robot, to_above, GRIPPER_OPEN, send_joints)
-                    follow(robot, to_grasp, GRIPPER_OPEN, send_joints)
+                    follow(robot, to_above, open_cmd, send_joints)
+                    follow(robot, to_grasp, open_cmd, send_joints)
                     grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
                         robot, 0.0, args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS)
                     if not grasped:
@@ -325,7 +343,7 @@ def main():
                               + ("trying again" if again else f"giving up after {args.attempts} attempts"))
                         if not again:
                             skipped.add(key)
-                        follow(robot, to_lift, GRIPPER_OPEN, send_joints)
+                        follow(robot, to_lift, open_cmd, send_joints)
                         go_home(robot, send_joints, read_joints_rad)
                         continue
                     print(f"  holding it ({current_ma:.0f} mA)")
