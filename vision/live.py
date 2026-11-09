@@ -42,6 +42,7 @@ import cv2
 import numpy as np
 
 from vision.detection import (
+    OBJECT_SIZES,
     OBJECT_STL_FILES,
     CALIBRATION_FILE,
     ROI_FILE,
@@ -287,6 +288,54 @@ def parallax_center(polygon_full, cam, height, quantile=0.02):
     return along * r + across * q, top, bottom, points
 
 
+_FOOTPRINT_CACHE = {}
+
+
+def rendered_area(stl, cam, xy):
+    """Pixel area of an object model standing on the table at xy (robot frame), seen through the camera."""
+    if stl not in _FOOTPRINT_CACHE:
+        from control.gripper import _stl_vertices
+
+        v = _stl_vertices(stl).astype(float)
+        if np.ptp(v[:, 2]) > 1.0:
+            v = v / 1000.0                                     # STL in mm
+        v[:, :2] -= v[:, :2].mean(axis=0)
+        v[:, 2] -= v[:, 2].min()
+        _FOOTPRINT_CACHE[stl] = v
+    v = _FOOTPRINT_CACHE[stl] + [xy[0], xy[1], 0.0]
+    px = cam.project(v)
+    # the objects are convex, so their outline is the convex hull of their projected corners (filling the
+    # triangles one call would cancel the overlapping faces: fillPoly's even-odd rule)
+    lo = np.floor(px.min(axis=0)).astype(int) - 2
+    size = np.ceil(px.max(axis=0)).astype(int) - lo + 3
+    canvas = np.zeros((size[1], size[0]), np.uint8)
+    cv2.fillConvexPoly(canvas, cv2.convexHull(np.rint(px - lo).astype(np.int32)), 1)
+    return int(canvas.sum())
+
+
+def parallax_with_size(polygon_full, cam, class_name):
+    """The parallax centre for each size of the object (small / large STL: different heights), keeping the size
+    whose model, rendered at its centre, covers about as many pixels as the mask (a small object has about half
+    the area of a large one, so this is clear-cut). Returns (size, height, parallax_center result)."""
+    from control.gripper import object_height
+
+    poly = np.asarray(polygon_full, dtype=float).reshape(-1, 2)
+    mask = np.zeros((int(poly[:, 1].max()) + 3, int(poly[:, 0].max()) + 3), np.uint8)
+    cv2.fillPoly(mask, [np.rint(poly).astype(np.int32)], 1)
+    area = max(int(mask.sum()), 1)
+    best = None
+    for size, stl in OBJECT_SIZES.get(class_name, {}).items():
+        height = object_height(stl)
+        result = parallax_center(poly, cam, height)
+        mismatch = abs(np.log(max(rendered_area(stl, cam, result[0]), 1) / area))
+        if best is None or mismatch < best[0]:
+            best = (mismatch, size, height, result)
+    if best is None:                                           # no size list: the one STL
+        height = object_height(OBJECT_STL_FILES[class_name])
+        return "", height, parallax_center(poly, cam, height)
+    return best[1], best[2], best[3]
+
+
 def bin_center_from_pixels(polygon, roi, cam, plane_z):
     """A bin's centre without depth: the mean of the mask's pixels, then the camera ray through that pixel
     meets the plane Z = plane_z (robot frame, the table at 0). Returns (xyz, pixel count, (u, v)) or
@@ -423,12 +472,9 @@ class Vision:
                 class_name = names[class_id]
                 rect_failed, no_depth_reason = False, "no depth"
                 if args.centre == "parallax" and class_name.casefold() in OBJECT_STL_FILES:
-                    from control.gripper import object_height
-
-                    height = object_height(OBJECT_STL_FILES[class_name.casefold()])
-                    xy, top_xy, bottom_xy, (far, near, side_a, side_b) = parallax_center(
-                        polygon + [x0, y0], self.cam, height)
-                    xy = self.smoother.smooth(class_name, xy)             # median of its last frames
+                    size, height, (xy, top_xy, bottom_xy, (far, near, side_a, side_b)) = parallax_with_size(
+                        polygon + [x0, y0], self.cam, class_name.casefold())
+                    xy = self.smoother.smooth(f"{class_name} {size}", xy)  # median of its last frames
                     center = np.array([xy[0], xy[1], height])           # top of the object, from its STL
                     count = len(polygon)
                     cv2.polylines(canvas, [points], True, color, 2)
@@ -437,7 +483,8 @@ class Vision:
                         cv2.line(canvas, tuple(np.rint(pa).astype(int)), tuple(np.rint(pb).astype(int)), color, 1)
                     cx, cy = (int(round(v)) for v in self.cam.project(center)[0])
                     cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
-                    text = f"{class_name} {confidence:.2f} PARALLAX X{center[0]:+.3f} Y{center[1]:+.3f}"
+                    text = (f"{size} {class_name} {confidence:.2f} PARALLAX X{center[0]:+.3f} Y{center[1]:+.3f} "
+                            f"top {1000 * height:.0f}mm")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
                     px, py = points.min(axis=0)

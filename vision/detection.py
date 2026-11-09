@@ -23,6 +23,10 @@ OBJECT_STL_FILES = {
     "hexagonal": ROOT / "stl" / "hexagonal_prism_large.stl",
     "hexagonal_prism": ROOT / "stl" / "hexagonal_prism_large.stl",
 }
+# Every size of each object (YOLO does not tell them apart): {class: {"small": stl, "large": stl}}
+OBJECT_SIZES = {name: {size: path.with_name(path.name.replace("_large", f"_{size}")) for size in ("small", "large")
+                       if path.with_name(path.name.replace("_large", f"_{size}")).is_file()}
+                for name, path in OBJECT_STL_FILES.items()}
 IGNORED_OBJECT_CLASSES = {"gripper", "bin"}
 
 
