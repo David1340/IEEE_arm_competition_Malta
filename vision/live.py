@@ -12,6 +12,13 @@ the walls the camera sees, so its mean pixel lies between the rim and the base: 
 (simulated 15 x 15 x 8 cm bin across the field: at most ~17 mm off at 0.04 m; 47 mm at 0, 56 mm at the rim).
 --bin-point-cloud goes back to the point-cloud mean for bins.
 
+--centre rect (default here) finds an object's x, y without fitting the STL: the ZED points inside its YOLO mask
+are put in the robot frame, the table and stray depth are dropped (only points between --rect-min-z above the table
+and its STL height + 2 cm, within its STL half-width + 1 cm of their median), and the centre of the smallest
+rectangle around them, seen from above (cv2.minAreaRect), is the object's x, y. z is not measured: the object
+stands on the table, so its top is its STL height (returned, as the grasp needs it) and its middle half of that.
+--centre fit is the silhouette / point-cloud method above.
+
 An object with neither a silhouette fit nor --min-points depth points (plain or shiny surfaces, glare under the
 camera) is not dropped: its x, y come the same way as a bin's (mean mask pixel, camera ray onto the plane at half
 its STL height) and its top is its STL height. Labelled "PIXELS (no depth)"; --no-pixel-fallback drops it instead.
@@ -59,6 +66,11 @@ def add_vision_args(ap):
     ap.add_argument("--min-depth", type=float, default=0.10, help="ignore points closer than this (meters)")
     ap.add_argument("--max-depth", type=float, default=2.00, help="ignore points farther than this (meters)")
     ap.add_argument("--min-points", type=int, default=5, help="minimum valid mask points for a center estimate")
+    ap.add_argument("--centre", choices=["rect", "fit"], default="rect",
+                    help="objects' x, y: rect = centre of the smallest rectangle around their points seen from above "
+                         "(z from the STL); fit = silhouette fit / point-cloud mean")
+    ap.add_argument("--rect-min-z", type=float, default=0.008,
+                    help="rect: points lower than this above the table [m] are table, not object")
     ap.add_argument("--no-pixel-fallback", action="store_true",
                     help="drop an object with no fit and too few depth points (default: place it from its pixels)")
     ap.add_argument("--no-silhouette", action="store_true",
@@ -97,6 +109,32 @@ def inside_bins(valid, names, roi_shape, min_overlap):
         if area and int((mask & bin_mask).sum()) >= min_overlap * area:
             inside.add(id(polygon))
     return inside
+
+
+def rect_center(cloud, polygon, roi, camera_to_robot, height, width, args):
+    """x, y of an object from its point cloud: the centre of the smallest rectangle (any angle) around its points
+    seen from above, in the robot frame. Only points between args.rect_min_z and height + 2 cm above the table,
+    within width / 2 + 1 cm of their median x, y, count. Returns (centre_xy, corners 4 x 2, (w, l), angle_deg,
+    point count) in metres, or (None, count, ...) with fewer than args.min_points points."""
+    x0, y0, w, h = roi
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [np.rint(np.asarray(polygon, dtype=np.float32)).astype(np.int32)], 1)
+    mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=1)
+    ys, xs = np.nonzero(mask)
+    xyz = cloud[y0:y0 + h, x0:x0 + w, :3][ys, xs].astype(np.float64)
+    xyz = xyz[np.isfinite(xyz).all(axis=1) & (xyz[:, 2] >= args.min_depth) & (xyz[:, 2] <= args.max_depth)]
+    xyz = xyz @ camera_to_robot[:3, :3].T + camera_to_robot[:3, 3]
+    xyz = xyz[(xyz[:, 2] >= args.rect_min_z) & (xyz[:, 2] <= height + 0.02)]
+    if len(xyz) >= args.min_points:
+        xy = xyz[:, :2]
+        xy = xy[np.linalg.norm(xy - np.median(xy, axis=0), axis=1) <= width / 2 + 0.01]
+    else:
+        xy = xyz[:0, :2]
+    if len(xy) < args.min_points:
+        return None, len(xy), None, None, None
+    (cx, cy), (rw, rl), angle = cv2.minAreaRect((1000 * xy).astype(np.float32))   # mm: integer-ish precision
+    corners = cv2.boxPoints(((cx, cy), (rw, rl), angle)) / 1000.0
+    return np.array([cx, cy]) / 1000.0, len(xy), corners, (rw / 1000.0, rl / 1000.0), angle
 
 
 def bin_center_from_pixels(polygon, roi, cam, plane_z):
@@ -159,7 +197,8 @@ class Vision:
             self.grab()
             intrinsics = intrinsics_from_cloud(self.cloud_mat.get_data()[..., :3])
         self.cam = Camera(self.camera_to_robot, intrinsics)   # pixel <-> robot frame, for the bins' rays
-        self.fitter = None if args.no_silhouette else LiveFitter(self.cam, self.camera_to_robot)
+        self.fitter = (None if args.no_silhouette or args.centre == "rect"
+                       else LiveFitter(self.cam, self.camera_to_robot))
 
     def grab(self):
         """Latest left image (BGR) and XYZRGBA point cloud, blocking until a frame arrives."""
@@ -229,11 +268,38 @@ class Vision:
                     cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
                                 color, 2)
                     continue
-                center, count, pixel_center, top_mask = visible_surface_center(
-                    cloud, polygon, current_roi, args.min_depth, args.max_depth, args.min_points,
-                    self.camera_to_robot,
-                )
                 class_name = names[class_id]
+                rect_failed = False
+                if args.centre == "rect" and class_name.casefold() in OBJECT_STL_FILES:
+                    from control.gripper import object_height, object_width
+
+                    stl = OBJECT_STL_FILES[class_name.casefold()]
+                    height = object_height(stl)
+                    xy, count, corners, size, angle = rect_center(cloud, polygon, current_roi, self.camera_to_robot,
+                                                                  height, object_width(stl), args)
+                    if xy is not None:
+                        center = np.array([xy[0], xy[1], height])        # top of the object, from its STL
+                        rect_px = self.cam.project(np.column_stack([corners, np.full(4, height)]))
+                        cv2.polylines(canvas, [np.rint(rect_px).astype(np.int32)], True, color, 2)
+                        cv2.polylines(canvas, [points], True, color, 1)
+                        cx, cy = (int(round(v)) for v in self.cam.project(center)[0])
+                        cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+                        text = (f"{class_name} {confidence:.2f} RECT X{center[0]:+.3f} Y{center[1]:+.3f} "
+                                f"{1000 * size[0]:.0f}x{1000 * size[1]:.0f}mm ({count} pts)")
+                        objects.append((class_name, confidence, center, count))
+                        self.last_polygons.append(points)
+                        px, py = points.min(axis=0)
+                        cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
+                        continue
+                    rect_failed = True                                    # too few points: place it from pixels
+                if rect_failed:
+                    center, pixel_center, top_mask = None, None, None
+                else:
+                    center, count, pixel_center, top_mask = visible_surface_center(
+                        cloud, polygon, current_roi, args.min_depth, args.max_depth, args.min_points,
+                        self.camera_to_robot,
+                    )
                 track = track_by_detection.get(id(polygon))
                 if track is not None and track.fit is not None and track.fit.iou >= args.silhouette_min_iou:
                     # Top face of the fitted STL: its centre sits above the object axis.
