@@ -11,6 +11,10 @@ plane --bin-plane-z above the table (camera calibration + lens parameters only).
 the walls the camera sees, so its mean pixel lies between the rim and the base: half the bin's height works best
 (simulated 15 x 15 x 8 cm bin across the field: at most ~17 mm off at 0.04 m; 47 mm at 0, 56 mm at the rim).
 --bin-point-cloud goes back to the point-cloud mean for bins.
+
+Objects inside a bin are left out (already sorted, or out of the gripper's way): an object whose mask lies at least
+--in-bin-overlap inside a bin's outline (its convex hull, so the bin's open inside counts) is drawn grey, labelled
+"in bin", and not returned. --keep-in-bin returns them as before.
 """
 import json
 import os
@@ -59,6 +63,33 @@ def add_vision_args(ap):
                          "(about half the bin's height)")
     ap.add_argument("--bin-point-cloud", action="store_true",
                     help="bins: use the point-cloud mean of the mask instead of the mean pixel")
+    ap.add_argument("--in-bin-overlap", type=float, default=0.5,
+                    help="an object with at least this share of its mask inside a bin's outline is in the bin and "
+                         "left out")
+    ap.add_argument("--keep-in-bin", action="store_true", help="do not leave out the objects inside bins")
+
+
+def inside_bins(valid, names, roi_shape, min_overlap):
+    """ids of the masks (non-bin detections) lying at least min_overlap inside a bin's outline. valid: [(polygon
+    in ROI pixels, class_id, confidence)]. The bin's convex hull is used, so its open inside counts even when its
+    mask is only the rim."""
+    bins = [polygon for polygon, class_id, _ in valid if names[class_id].casefold() == BIN_CLASS]
+    if not bins:
+        return set()
+    height, width = roi_shape
+    bin_mask = np.zeros((height, width), dtype=np.uint8)
+    for polygon in bins:
+        cv2.fillPoly(bin_mask, [cv2.convexHull(np.rint(polygon).astype(np.int32))], 1)
+    inside = set()
+    for polygon, class_id, _ in valid:
+        if names[class_id].casefold() == BIN_CLASS:
+            continue
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, [np.rint(polygon).astype(np.int32)], 1)
+        area = int(mask.sum())
+        if area and int((mask & bin_mask).sum()) >= min_overlap * area:
+            inside.add(id(polygon))
+    return inside
 
 
 def bin_center_from_pixels(polygon, roi, cam, plane_z):
@@ -155,6 +186,15 @@ class Vision:
             valid = [(polygon, class_id, confidence)
                      for polygon, class_id, confidence in zip(result.masks.xy, classes, confidences)
                      if len(polygon) >= 3]
+            in_bin = set() if args.keep_in_bin else inside_bins(valid, names, (roi_h, roi_w), args.in_bin_overlap)
+            for polygon, class_id, confidence in valid:
+                if id(polygon) in in_bin:
+                    points = np.rint(polygon + [x0, y0]).astype(np.int32)
+                    cv2.polylines(canvas, [points], True, (150, 150, 150), 1)
+                    px, py = points.min(axis=0)
+                    cv2.putText(canvas, f"{names[class_id]} in bin", (int(px), max(int(py) - 5, 16)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+            valid = [item for item in valid if id(item[0]) not in in_bin]
             track_by_detection = {}
             if fitter is not None:
                 shape_items = [item for item in valid if names[item[1]] in SHAPE_CLASSES]

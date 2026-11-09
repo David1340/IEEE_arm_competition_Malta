@@ -208,6 +208,9 @@ class ReplaySource:
         pass
 
 
+IN_BIN_OVERLAP = 0.5    # share of an object's mask inside a bin's outline that makes it "in the bin" (left out)
+
+
 class ZedYoloSource:
     def __init__(self, args):
         import pyzed.sl as sl
@@ -270,9 +273,15 @@ class ZedYoloSource:
                                  conf=self.conf, verbose=False)[0]
         dets = []
         if res.masks is not None:
-            for poly, cls, cf in zip(res.masks.xy, res.boxes.cls.int().tolist(), res.boxes.conf.tolist()):
-                if len(poly) >= 3:
-                    dets.append(Detection(str(self.model.names[cls]), float(cf), np.asarray(poly) + [x0, y0]))
+            from vision.live import inside_bins          # objects inside a bin are left out, as in vision/live.py
+
+            valid = [(np.asarray(poly), cls, cf)
+                     for poly, cls, cf in zip(res.masks.xy, res.boxes.cls.int().tolist(), res.boxes.conf.tolist())
+                     if len(poly) >= 3]
+            in_bin = inside_bins(valid, self.model.names, (h, w), IN_BIN_OVERLAP)
+            for poly, cls, cf in valid:
+                if id(poly) not in in_bin:
+                    dets.append(Detection(str(self.model.names[cls]), float(cf), poly + [x0, y0]))
         return frame, cloud, dets
 
     def close(self):
