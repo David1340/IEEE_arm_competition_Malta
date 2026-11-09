@@ -119,7 +119,7 @@ def main():
     # 1. vision
     vision = Vision(args)
     try:
-        canvas, objects = vision.detect(*vision.grab())
+        _, _, canvas, objects = vision.detect_steady()            # several frames: median centres
     finally:
         vision.close()
     cv2.imshow("YOLO + ZED (any key = continue, q/Esc = cancel)", canvas)

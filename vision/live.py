@@ -77,6 +77,9 @@ def add_vision_args(ap):
                          "points seen from above; fit = silhouette fit / point-cloud mean")
     ap.add_argument("--rect-min-z", type=float, default=0.008,
                     help="rect: points lower than this above the table [m] are table, not object")
+    ap.add_argument("--smooth-frames", type=int, default=8,
+                    help="parallax / rect: each object's centre is the median of its last this many frames (1 = off); "
+                         "the scripts that take one look (pick_and_place, Full_pipeline) look this many frames")
     ap.add_argument("--rect-trim", type=float, default=0.05,
                     help="rect: share of the points ignored at each end of each side (0 = the extreme points)")
     ap.add_argument("--rect-top-band", type=float, default=0.01,
@@ -202,7 +205,55 @@ def rect_center(cloud, polygon, roi, camera_to_robot, height, width, args, footp
     return centre, len(xy), corners, tuple(extent), angle, how
 
 
-def parallax_center(polygon_full, cam, height):
+class CentreSmoother:
+    """Median of each object's last `frames` centres, so a jagged mask that changes a little every frame does not
+    make the centre jump. A centre within `radius` of a track of the same class continues it; a track not seen for
+    `frames` frames is dropped, so a moved object is followed within a few frames."""
+
+    def __init__(self, frames=8, radius=0.03):
+        self.frames, self.radius = frames, radius
+        self.tracks = []                   # [{"cls", "xy": [recent centres], "missed"}]
+
+    def begin(self):
+        for t in self.tracks:
+            t["missed"] += 1
+            t["used"] = False
+
+    def smooth(self, cls, xy):
+        xy = np.asarray(xy, float)
+        if self.frames <= 1:
+            return xy
+        best, best_d = None, self.radius
+        for t in self.tracks:
+            if t["cls"] == cls and not t["used"]:
+                d = np.linalg.norm(np.median(t["xy"], axis=0) - xy)
+                if d < best_d:
+                    best, best_d = t, d
+        if best is None:
+            best = {"cls": cls, "xy": [], "missed": 0, "used": False}
+            self.tracks.append(best)
+        best["xy"] = (best["xy"] + [xy])[-self.frames:]
+        best["missed"], best["used"] = 0, True
+        return np.median(best["xy"], axis=0)
+
+    def end(self):
+        self.tracks = [t for t in self.tracks if t["missed"] <= self.frames]
+
+
+def resample_outline(polygon, step=1.0):
+    """The closed outline with points every `step` pixels along it (YOLO's vertices are unevenly spaced, so
+    quantiles of them would weigh the detailed parts more)."""
+    poly = np.asarray(polygon, dtype=float).reshape(-1, 2)
+    closed = np.vstack([poly, poly[:1]])
+    seg = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+    length = np.concatenate([[0], np.cumsum(seg)])
+    if length[-1] <= 0:
+        return poly
+    at = np.arange(0, length[-1], step)
+    return np.column_stack([np.interp(at, length, closed[:, 0]), np.interp(at, length, closed[:, 1])])
+
+
+def parallax_center(polygon_full, cam, height, quantile=0.02):
     """x, y of an upright object from its mask outline alone (no depth), correcting the parallax.
 
     Away from the point under the camera (the nadir), the mask is the top face plus the walls facing the camera, so
@@ -213,9 +264,11 @@ def parallax_center(polygon_full, cam, height):
       sides     (min/max across r)   - the top face's sides:    from the outline cast at z = height
     (cast at the wrong plane, the other parts of the outline land inside the object, never beyond these.) The
     centre is the middle of both pairs: exact for shapes symmetric about their centre (cube, cylinder, hexagonal
-    prism) standing upright; an approximation for the dodecahedron. Returns (xy, top outline, bottom outline,
-    (far, near, side_a, side_b) points) in the robot frame, metres."""
-    poly = np.asarray(polygon_full, dtype=float).reshape(-1, 2)
+    prism) standing upright; an approximation for the dodecahedron. The outline is resampled evenly and each edge
+    is the `quantile` / 1 - `quantile` point along its direction, not the single extreme one, so one stray pixel of
+    YOLO's jagged mask does not move it. Returns (xy, top outline, bottom outline, (far, near, side_a, side_b)
+    points) in the robot frame, metres."""
+    poly = resample_outline(polygon_full)
     top = np.array([cam.ray_to_plane(u, v, height)[:2] for u, v in poly])
     bottom = np.array([cam.ray_to_plane(u, v, 0.0)[:2] for u, v in poly])
     nadir = cam.pos[:2]
@@ -226,9 +279,11 @@ def parallax_center(polygon_full, cam, height):
     q = np.array([-r[1], r[0]])
     far, near = top @ r, bottom @ r
     side = top @ q
-    along = (far.max() + near.min()) / 2
-    across = (side.max() + side.min()) / 2
-    points = (top[far.argmax()], bottom[near.argmin()], top[side.argmin()], top[side.argmax()])
+    f, n = np.quantile(far, 1 - quantile), np.quantile(near, quantile)
+    s_lo, s_hi = np.quantile(side, [quantile, 1 - quantile])
+    along, across = (f + n) / 2, (s_lo + s_hi) / 2
+    pick = lambda values, target, pts: pts[np.argmin(np.abs(values - target))]
+    points = (pick(far, f, top), pick(near, n, bottom), pick(side, s_lo, top), pick(side, s_hi, top))
     return along * r + across * q, top, bottom, points
 
 
@@ -292,6 +347,7 @@ class Vision:
             self.grab()
             intrinsics = intrinsics_from_cloud(self.cloud_mat.get_data()[..., :3])
         self.cam = Camera(self.camera_to_robot, intrinsics)   # pixel <-> robot frame, for the bins' rays
+        self.smoother = CentreSmoother(getattr(args, "smooth_frames", 8))
         self.fitter = (None if args.no_silhouette or args.centre != "fit"
                        else LiveFitter(self.cam, self.camera_to_robot))
 
@@ -321,6 +377,7 @@ class Vision:
         objects = []
         self.last_polygons = []   # full-frame pixel outline of each entry of objects, in the same order
 
+        self.smoother.begin()
         if result.masks is not None:
             classes = result.boxes.cls.int().tolist()
             confidences = result.boxes.conf.tolist()
@@ -371,6 +428,7 @@ class Vision:
                     height = object_height(OBJECT_STL_FILES[class_name.casefold()])
                     xy, top_xy, bottom_xy, (far, near, side_a, side_b) = parallax_center(
                         polygon + [x0, y0], self.cam, height)
+                    xy = self.smoother.smooth(class_name, xy)             # median of its last frames
                     center = np.array([xy[0], xy[1], height])           # top of the object, from its STL
                     count = len(polygon)
                     cv2.polylines(canvas, [points], True, color, 2)
@@ -395,6 +453,7 @@ class Vision:
                         cloud, polygon, current_roi, self.camera_to_robot, height, object_width(stl), args,
                         footprint=object_footprint(stl), top_face=object_top_face(stl))
                     if xy is not None:
+                        xy = self.smoother.smooth(class_name, xy)         # median of its last frames
                         center = np.array([xy[0], xy[1], height])        # top of the object, from its STL
                         rect_px = self.cam.project(np.column_stack([corners, np.full(4, height)]))
                         cv2.polylines(canvas, [np.rint(rect_px).astype(np.int32)], True, color, 2)
@@ -471,9 +530,19 @@ class Vision:
                 cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
 
+        self.smoother.end()
         canvas = cv2.addWeighted(overlay, 0.30, canvas, 0.70, 0)
         cv2.rectangle(canvas, (x0, y0), (x0 + roi_w, y0 + roi_h), (255, 255, 255), 2)
         return canvas, objects
+
+    def detect_steady(self):
+        """Look --smooth-frames frames and return the last detection (frame, cloud, canvas, objects): its centres
+        are then the median over those frames. For the scripts that take a single look per decision."""
+        for _ in range(max(1, getattr(self.args, "smooth_frames", 1)) - 1):
+            self.detect(*self.grab())
+        frame, cloud = self.grab()
+        canvas, objects = self.detect(frame, cloud)
+        return frame, cloud, canvas, objects
 
     def close(self):
         self.zed.close()

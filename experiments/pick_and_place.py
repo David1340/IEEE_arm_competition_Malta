@@ -72,8 +72,7 @@ def colour_of(frame, polygon, colors):
 def look(vision, colors, table_from_default):
     """One camera frame -> (canvas, objects, bins). Each is a dict: name, colour, xyz (TABLE frame, top-face
     centre for objects, visible-surface centre for bins)."""
-    frame, cloud = vision.grab()
-    canvas, detections = vision.detect(frame, cloud)
+    frame, cloud, canvas, detections = vision.detect_steady()     # several frames: median centres
     objects, bins = [], []
     for (name, conf, centre, _), polygon in zip(detections, vision.last_polygons):
         if centre is None:
