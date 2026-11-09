@@ -3,4 +3,3 @@ cylinder
 dodecahedron
 hexagonal
 bin
-gripper
