@@ -18,6 +18,8 @@ Usage:
     python experiments/object_3d_live.py --arm follower_blue       # only one of the arms
     python experiments/object_3d_live.py --weights runs/segment/train/weights/best.pt
     python experiments/object_3d_live.py --serial 27500226
+
+Keys in the camera window: s = save the view with its labels to outputs/screenshots/ (PNG), q / Esc = quit.
 """
 
 import argparse
@@ -283,8 +285,14 @@ def main():
                               f"X={center[0]:+.3f} Y={center[1]:+.3f} Z={center[2]:.3f} m ({count} points)")
                 last_report = now
 
-            if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
                 break
+            if key == ord("s"):      # the camera view with every label, as a PNG to share (full resolution)
+                shot = ROOT / "outputs" / "screenshots" / f"object_3d_live_{datetime.now():%Y%m%d_%H%M%S}.png"
+                shot.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(shot), canvas)
+                print(f"saved {shot}")
     finally:
         if twin is not None:
             twin.close()

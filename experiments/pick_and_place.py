@@ -270,6 +270,10 @@ def main():
                               f"(object / bin from each arm's base: {far})")
                         continue
                     todo.append((np.linalg.norm(obj["xyz"][:2] - bases[arm]), obj, target_bin, arm, key))
+                shot = ROOT / "outputs" / "screenshots" / "pick_and_place_view.png"   # the latest view, to share
+                shot.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(shot), canvas)
+                print(f"camera view saved to {shot}")
                 cv2.imshow("pick and place (any key = continue, q = stop)", canvas)
                 if cv2.waitKey(0 if not args.auto else 500) & 0xFF in (ord("q"), 27):
                     break
