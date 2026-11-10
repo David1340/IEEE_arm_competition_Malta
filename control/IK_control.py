@@ -290,17 +290,34 @@ def send_joints(
         for name, value in zip(ARM_JOINTS, goal)
     }
     final["gripper.pos"] = g1
+    # Sag compensation: the motors' position control is too soft to hold the arm fully against gravity (a joint
+    # can stay ~3 deg short: 1-2 cm at the gripper, always on the same side). A joint that stays short gets its
+    # command moved past the goal by a growing amount (an integral term, at most MOTION["sag_max"] deg) until it
+    # sits within MOTION["sag_tol"]; the move then counts as done only that close.
+    sag = MOTION.get("sag_comp", False)
+    if sag:
+        tol_deg = min(tol_deg, MOTION["sag_tol"])
+    push = {name: 0.0 for name in ARM_JOINTS}
+    last = None                                   # the previous reading: only a joint that has stopped is pushed
     t0 = time.time()
     while time.time() - t0 < timeout:
-        robot.send_action(final)
+        command = dict(final)
+        for name in ARM_JOINTS:
+            command[f"{name}.pos"] = final[f"{name}.pos"] + push[name]
+        robot.send_action(command)
         time.sleep(dt)
         obs = robot.get_observation()
         if feedback_callback is not None:
             feedback_callback(obs)
-        arm_errors = {
-            name: abs(obs[f"{name}.pos"] - final[f"{name}.pos"])
-            for name in ARM_JOINTS
-        }
+        signed_errors = {name: final[f"{name}.pos"] - obs[f"{name}.pos"] for name in ARM_JOINTS}
+        arm_errors = {name: abs(error) for name, error in signed_errors.items()}
+        if sag:
+            for name, error in signed_errors.items():
+                still = last is not None and abs(obs[f"{name}.pos"] - last[f"{name}.pos"]) < 0.15
+                if still and abs(error) > MOTION["sag_tol"] / 2:
+                    push[name] = float(np.clip(push[name] + MOTION["sag_gain"] * error,
+                                               -MOTION["sag_max"], MOTION["sag_max"]))
+            last = obs
         arm_err = max(arm_errors.values())
         grip_err = abs(obs["gripper.pos"] - g1)
         if arm_err <= tol_deg and (gripper is None or grip_err <= gripper_tolerance):
@@ -314,7 +331,8 @@ def send_joints(
 
 # ---------------------------------------------------------------------------------------------- smooth motion
 # How follow_path() moves the arm; the scripts' --speed / --accel / --profile set these (add_motion_args).
-MOTION = {"speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0, "settle_tol": 3.0,
+MOTION = {"sag_comp": True, "sag_tol": 1.0, "sag_max": 4.0, "sag_gain": 0.15,   # see send_joints
+          "speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0, "settle_tol": 3.0,
           "park": True, "release": False}
 
 
@@ -329,6 +347,11 @@ def add_motion_args(ap):
     ap.add_argument("--settle-tol", type=float, default=MOTION["settle_tol"],
                     help="a move counts as arrived when every joint is this close to its goal [deg]; raise it "
                          "(e.g. 6) when the arm sags under a load and each move waits 3 s for the last degrees")
+    ap.add_argument("--no-sag-comp", action="store_true",
+                    help="no sag compensation: stop when every joint is within --settle-tol of its goal (the old "
+                         "behaviour; the arm can then stay ~3 deg short under gravity)")
+    ap.add_argument("--sag-max", type=float, default=MOTION["sag_max"],
+                    help="largest extra command a joint gets to reach its goal against gravity [deg]")
     ap.add_argument("--no-park", action="store_true",
                     help="on quitting, leave the arms where they are (default: back to the home pose)")
     ap.add_argument("--release-on-quit", action="store_true",
@@ -337,7 +360,8 @@ def add_motion_args(ap):
 
 def apply_motion_args(args):
     MOTION.update(speed=args.speed, accel=args.accel, profile=args.profile, max_lag=args.max_lag,
-                  settle_tol=args.settle_tol, park=not args.no_park, release=args.release_on_quit)
+                  settle_tol=args.settle_tol, park=not args.no_park, release=args.release_on_quit,
+                  sag_comp=not args.no_sag_comp, sag_max=args.sag_max)
 
 
 def motion_profile(length, speed, accel, profile):
