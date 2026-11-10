@@ -16,6 +16,7 @@ Commands in the prompt (meters, base frame):
 """
 
 import argparse
+import os
 import math
 import time
 from pathlib import Path
@@ -30,7 +31,8 @@ from control.fine_joint_offsets import correct_joint_position_deg, load_fine_joi
 
 logging.getLogger("lerobot.robots.utils").setLevel(logging.ERROR)
 
-ROOT = Path("/home/cris/.cache/huggingface/lerobot")
+# LeRobot's data folder of whoever runs this (HF_LEROBOT_HOME if set, as LeRobot itself does), not one PC's path
+ROOT = Path(os.environ.get("HF_LEROBOT_HOME", Path.home() / ".cache" / "huggingface" / "lerobot")).expanduser()
 URDF = ROOT / "lerobot" / "SO-ARM100" / "Simulation" / "SO101" / "so101_new_calib.urdf"
 CALIB = ROOT / "calibration" / "robots" / "so_follower" / "my_follower_arm.json"
 PORT_FILE = ROOT / "ports" / "follower_port.txt"
