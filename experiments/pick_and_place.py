@@ -1,34 +1,37 @@
-"""Game 1 pick-and-place: sort every object on the field into its bin, with both arms.
+"""Game 1 pick-and-place: the live view of every object and bin, Enter, and the arms sort them straight away.
 
-Each cycle: the arms go home (out of the camera's view), the camera (YOLO + ZED) finds the objects and bins and
-their colours, the next object is chosen with its bin, the arm that reaches both best is chosen, and the whole
-move is planned (sim_plan's World: table and the other objects as obstacles) and shown in PyBullet:
-    above the object -> down to it -> close the gripper (motor current) -> lift -> over the bin -> open
-Positions come from the shared TABLE frame of the ArUco calibration (calibration/calibrate.py).
+    python experiments/pick_and_place.py                          # both arms, working at the same time
+    python experiments/pick_and_place.py --arm follower_pink      # one arm
+    python experiments/pick_and_place.py --round shape            # sort by shape (pick_and_place.json)
+    python experiments/pick_and_place.py --one-at-a-time          # both arms, but one task at a time
+    python experiments/pick_and_place.py --no-robot               # no arms: detection and planning only
 
-    python experiments/pick_and_place.py                             # the mode set in pick_and_place.json
-    python experiments/pick_and_place.py --round colour              # plan + preview each pick, arms do not move
-    python experiments/pick_and_place.py --round colour --execute    # move the arms ('yes' before each object)
-    python experiments/pick_and_place.py --round shape --execute --auto   # no confirmations (watch the arms!)
-    python experiments/pick_and_place.py --arm follower_pink         # only one arm
-    python experiments/pick_and_place.py --no-robot                  # no arms connected: vision + planning only
+The arms go to their home pose at once (control/arm_config.py) and the camera window shows, live:
+  every object and bin YOLO finds, with its colour and, under it, what will happen to it:
+      -> pink                 follower_pink takes it to its bin
+      -> pink > drop > blue   follower_pink puts it down in the drop-off area, follower_blue takes it to its bin
+      no arm / no red bin     why it will be left
+  each arm's reach on the table: its far limit (--max-reach, solid ring) and near limit (--min-reach, thin ring),
+  the area both arms reach (light) and, inside it, the drop-off area (brighter): the middle strip between the arms
+  where one arm leaves an object for the other. Any free point of it is used, not one fixed point.
+Enter: the objects and bins in view now become the round's tasks; each is planned and done at once (no PyBullet
+preview, no confirmation, no pauses), both arms at the same time where they do not get in each other's way
+(control/coordinator.py: each arm's side and the middle strip are reserved by one arm at a time). When the round is
+done its time is printed; Enter again for what is left. h = arms home, q / Esc = quit (after the moves running now;
+the arms park at home).
 
-The rounds and which bin each object goes in come from pick_and_place.json (repo root, read by
-control/task_config.py): colour = object colour -> same-colour bin; shape = cube -> red, cylinder -> blue,
-dodecahedron -> green, hexagonal prism -> yellow (Robot Championship 2026, Game 1). --round picks the mode,
-otherwise the file's "mode" is used. Detecting again every cycle also follows objects and bins that are moved
-(round 3: use --round shape).
-
-The gripper opens only as wide as each object needs (its STL's widest direction + --grip-margin, control/gripper.py),
-in the planner's collision model too, so the jaw does not sweep into the neighbouring objects; --grip-open 80 is the
-old fixed opening.
+Which bin each object goes in comes from pick_and_place.json (control/task_config.py): colour = the object's colour,
+shape = cube -> red, cylinder -> blue, dodecahedron -> green, hexagonal prism -> yellow. Object centres come from the
+vision code (vision/live.py, --centre); objects already inside a bin are left out. The gripper opens only as wide as
+each object needs (control/gripper.py, --grip-margin).
 
 Needs a trained YOLO segmentation model (runs/segment/*/weights/best.pt, or --weights) whose classes include the
-objects and "bin".
+objects and "bin", and the ArUco calibration (calibration/calibrate.py).
 """
 import argparse
-import math
 import sys
+import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -43,14 +46,17 @@ from block_color import classify, load_colors, object_pixels, to_hsv  # noqa: E4
 from control import gripper as jaw  # noqa: E402
 from control import task_config  # noqa: E402
 from calibration.calibrate import arm_from_table, arms, default_arm  # noqa: E402
-from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
-                                       GRIPPER_OPEN, HOME_GRIPPER, HOME_Q,
+from experiments.Full_pipeline import (GRIP_CURRENT_MA, GRIPPER_OPEN, HOME_GRIPPER, HOME_Q)  # noqa: E402,F401
+from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS,  # noqa: E402,F401
                                        close_gripper_with_current_feedback)
-from experiments.sim_plan import TABLE_CLEARANCE, World  # noqa: E402
+from experiments.sim_plan import TABLE_CLEARANCE  # noqa: E402
 from vision.detection import OBJECT_STL_FILES  # noqa: E402
 from vision.live import Vision, add_vision_args  # noqa: E402
 
 BIN_CLASS = "bin"
+WINDOW = "pick and place (Enter = go, h = home, q = quit)"
+ARM_BGR = {"follower_pink": (180, 105, 255), "follower_blue": (255, 140, 0)}
+BIN_BGR = {"red": (40, 40, 230), "green": (40, 180, 40), "blue": (230, 90, 30), "yellow": (30, 220, 240)}
 
 
 # ---------------------------------------------------------------------------------------------- perception
@@ -69,27 +75,23 @@ def colour_of(frame, polygon, colors):
     return name, confidence
 
 
-def look(vision, colors, table_from_default):
-    """One camera frame -> (canvas, objects, bins). Each is a dict: name, colour, xyz (TABLE frame, top-face
-    centre for objects, visible-surface centre for bins)."""
-    frame, cloud, canvas, detections = vision.detect_steady()     # several frames: median centres
+def detect(vision, colors, table_from_default):
+    """One live frame -> (canvas, objects, bins). Each is a dict: name, colour, xyz (TABLE frame; an object's top
+    centre), pixel. The centres are the median over the last frames (vision/live.py --smooth-frames)."""
+    frame, cloud = vision.grab()
+    canvas, detections = vision.detect(frame, cloud)
     objects, bins = [], []
     for (name, conf, centre, _), polygon in zip(detections, vision.last_polygons):
         if centre is None:
             continue
-        colour, colour_conf = colour_of(frame, polygon, colors)
+        colour, _ = colour_of(frame, polygon, colors)
         xyz = (table_from_default @ np.append(np.asarray(centre, float), 1.0))[:3]
-        item = {"name": name.casefold(), "conf": conf, "colour": colour, "colour_conf": colour_conf, "xyz": xyz,
+        item = {"name": name.casefold(), "conf": conf, "colour": colour, "xyz": xyz,
                 "pixel": np.asarray(polygon).reshape(-1, 2).mean(axis=0)}
         if item["name"] == BIN_CLASS:
             bins.append(item)
         elif item["name"] in OBJECT_STL_FILES:
             objects.append(item)
-    for item in objects + bins:
-        label = f"{item['colour'] or '?'} {item['name']}"
-        org = tuple(int(v) for v in item["pixel"])
-        cv2.putText(canvas, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4)
-        cv2.putText(canvas, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     return canvas, objects, bins
 
 
@@ -98,15 +100,6 @@ def bin_for(obj, bins, round_name):
     wanted = task_config.bin_colour(obj["name"], obj["colour"], round_name)
     matches = [b for b in bins if b["colour"] == wanted]
     return min(matches, key=lambda b: np.linalg.norm(b["xyz"][:2] - obj["xyz"][:2])) if matches else None
-
-
-def choose_arm(obj, target_bin, bases, max_reach):
-    """The arm whose base is closest to both the object and its bin (the farther of the two counts), or None
-    when neither reaches both."""
-    def need(name):
-        return max(np.linalg.norm(obj["xyz"][:2] - bases[name]), np.linalg.norm(target_bin["xyz"][:2] - bases[name]))
-    name = min(bases, key=need)
-    return name if need(name) <= max_reach else None
 
 
 # ---------------------------------------------------------------------------------------------- motion
@@ -169,54 +162,130 @@ def go_home(robot, send_joints, read_joints_rad):
     follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints)
 
 
+# ---------------------------------------------------------------------------------------------- the view
+def short(arm):
+    return arm.replace("follower_", "")
+
+
+class TableView:
+    """Draws TABLE-frame things on the camera image: each arm's far and near reach rings, the area both arms reach
+    and the drop-off area inside it (worked out once: the camera does not move)."""
+
+    def __init__(self, cam, bases, regions, max_reach, min_reach, image_shape, step=0.01):
+        self.cam = cam
+        self.default_from_table = arm_from_table(default_arm())
+        self.rings = []
+        angles = np.linspace(0, 2 * np.pi, 181)
+        for name, b in bases.items():
+            for radius, thickness in ((max_reach, 2), (min_reach, 1)):
+                ring = np.column_stack([b[0] + radius * np.cos(angles), b[1] + radius * np.sin(angles),
+                                        np.zeros_like(angles)])
+                self.rings.append((self.pixels(ring), ARM_BGR.get(name, (200, 200, 200)), thickness))
+        gx, gy = np.meshgrid(np.arange(-0.10, 0.80, step), np.arange(-0.70, 0.70, step))
+        cells = np.column_stack([gx.ravel(), gy.ravel()])
+        within = np.stack([(np.linalg.norm(cells - b, axis=1) >= min_reach) &
+                           (np.linalg.norm(cells - b, axis=1) <= max_reach) for b in bases.values()])
+        both = within.all(axis=0) if len(bases) > 1 else np.zeros(len(cells), bool)
+        drop = both & np.array([regions.of(c) == "middle" for c in cells])
+        h, w = image_shape[:2]
+        self.shared = self.area(cells[both], step, (h, w))
+        self.drop = self.area(cells[drop], step, (h, w))
+        self.drop_label = self.pixels(np.append(cells[drop].mean(axis=0), 0.0)[None])[0] if drop.any() else None
+
+    def pixels(self, table_xyz):
+        """TABLE-frame points (n x 3) -> image pixels (n x 2, int)."""
+        p = np.column_stack([table_xyz, np.ones(len(table_xyz))]) @ self.default_from_table.T
+        return np.rint(self.cam.project(p[:, :3])).astype(np.int32)
+
+    def area(self, cells, step, shape):
+        mask = np.zeros(shape, np.uint8)
+        if len(cells):
+            half = step / 2
+            corners = np.concatenate([np.column_stack([cells + [dx, dy], np.zeros(len(cells))])
+                                      for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half))])
+            px = np.ascontiguousarray(self.pixels(corners).reshape(4, -1, 2).transpose(1, 0, 2))
+            for quad in px:
+                cv2.fillConvexPoly(mask, quad, 1)
+        return mask.astype(bool)
+
+    def draw(self, canvas):
+        tint = canvas.copy()
+        tint[self.shared] = (235, 235, 235)
+        tint[self.drop] = (255, 255, 0)
+        canvas = cv2.addWeighted(tint, 0.25, canvas, 0.75, 0)
+        for px, colour, thickness in self.rings:
+            cv2.polylines(canvas, [px], True, colour, thickness)
+        if self.drop_label is not None:
+            put(canvas, "drop-off area", tuple(self.drop_label - [50, 0]), (255, 255, 0), 0.6)
+        return canvas
+
+
+def put(canvas, text, org, colour, scale=0.55):
+    org = (int(org[0]), int(org[1]))
+    cv2.putText(canvas, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4)
+    cv2.putText(canvas, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, 2)
+
+
+# ---------------------------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_vision_args(ap)
     ap.add_argument("--round", choices=task_config.modes(), default=task_config.default_mode(),
                     help="which bin each object goes in: a mode of pick_and_place.json (default: its 'mode')")
     ap.add_argument("--arm", default="both", help="follower_pink, follower_blue, or both (default)")
-    ap.add_argument("--execute", action="store_true", help="move the real arms")
-    ap.add_argument("--auto", action="store_true", help="with --execute: no 'yes' before each object")
-    ap.add_argument("--no-robot", action="store_true", help="no arms connected: vision and planning only")
-    ap.add_argument("--no-gui", action="store_true", help="no PyBullet window")
-    ap.add_argument("--max-objects", type=int, default=100, help="stop after this many objects")
-    ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per object before skipping it")
+    ap.add_argument("--one-at-a-time", action="store_true",
+                    help="with both arms: one task at a time (default: both arms work at once where it is safe)")
+    ap.add_argument("--no-robot", action="store_true", help="no arms connected: detection and planning only")
+    ap.add_argument("--execute", action="store_true", help=argparse.SUPPRESS)     # old flag: Enter now moves the arms
+    ap.add_argument("--max-reach", type=float, default=0.45, help="far limit of an arm, from its base [m]")
+    ap.add_argument("--min-reach", type=float, default=0.12, help="near limit of an arm, from its base [m]")
+    ap.add_argument("--drop-step", type=float, default=0.04, help="spacing of the drop-off area's points [m]")
+    ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per object")
     ap.add_argument("--approach", type=float, default=0.06, help="height above the object's top to come down from [m]")
-    ap.add_argument("--grasp-depth", type=float, default=0.015,
-                    help="the point between the jaws goes this far below the object's top [m]")
-    ap.add_argument("--min-grasp-z", type=float, default=0.04,
-                    help="lowest point between the jaws [m] (the jaws reach ~4 cm at the lowest in the model)")
+    ap.add_argument("--grasp-depth", type=float, default=0.015, help="jaws this far below the object's top [m]")
+    ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the object's top [m]")
-    ap.add_argument("--drop-z", type=float, default=0.16, help="height of the jaws over a bin when releasing [m]")
-    ap.add_argument("--max-reach", type=float, default=0.45, help="farthest point an arm is asked to reach [m]")
+    ap.add_argument("--close-radius", type=float, default=0.22,
+                    help="closer than this to an arm's base, the gripper picks top-down instead of level [m]")
+    ap.add_argument("--box-height", type=float, default=0.08, help="height of the bins [m]")
+    ap.add_argument("--box-size", type=float, default=0.15, help="width of the bins, for the planner [m]")
+    ap.add_argument("--box-margin", type=float, default=0.03, help="the arm keeps this much above a bin's rim [m]")
+    ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over a bin's rim at release [m]")
+    ap.add_argument("--drop-inset", type=float, default=0.04,
+                    help="the object is released this far inside the bin's rim nearest the arm [m]")
     ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--grip-margin", type=float, default=0.02,
-                    help="the jaws open to the object's width (its STL, widest direction) plus this much in total "
-                         "[m], half on each side; for the detection and arm errors (control/gripper.py)")
+                    help="the jaws open to the object's width (its STL, widest direction) plus this much [m]")
     ap.add_argument("--grip-open", type=float, default=None,
-                    help=f"open the jaws to this fixed command (0-100) for every object instead (the old: "
-                         f"{GRIPPER_OPEN:.0f})")
+                    help=f"open the jaws to this fixed command (0-100) instead (the old: {GRIPPER_OPEN:.0f})")
+    ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
     from control.IK_control import add_motion_args, apply_motion_args
 
     add_motion_args(ap)
     args = ap.parse_args()
     apply_motion_args(args)
-    if args.execute and args.no_robot:
-        raise SystemExit("--execute needs the arms: drop --no-robot")
+    args.gui = False                       # plan in the background: no PyBullet window, no playback
 
+    from control import arm_config
+    from control.coordinator import BOX_SLACK, DIRECT, Coordinator, Regions, build_tasks, handoff_area
+    from experiments import click_pick_place as cpp     # the arms' workers (planning, moving, handoffs)
+
+    BOX_SLACK["value"] = max(0.0, args.box_size / 2 - args.drop_inset)
     all_arms = arms()
     names = list(all_arms) if args.arm == "both" else [args.arm]
     if any(n not in all_arms for n in names):
         raise SystemExit(f"unknown arm {args.arm!r}; known: {', '.join(all_arms)} or both")
-    table_from_default = np.linalg.inv(arm_from_table(default_arm()))   # camera_transform.npy is in its frame
+    table_from_default = np.linalg.inv(arm_from_table(default_arm()))   # the vision code works in this frame
     colors = load_colors()
     print("Sorting " + task_config.describe(args.round))
 
-    from control.IK_control import arm_files, connect_robot, park_and_disconnect, read_joints_rad, send_joints
+    from control.IK_control import connect_robot, park_and_disconnect, read_joints_rad, send_joints
 
-    robots = {}
+    robots, workers, vision = {}, [], None
+    run = {"coordinator": None, "start": 0.0, "reported": True, "status": "Enter: sort what is in view"}
+    close_checker = lambda: None
     try:
         for name in names:
             if args.no_robot:
@@ -224,151 +293,181 @@ def main():
                 continue
             try:
                 robots[name] = connect_robot(name)
-            except (ConnectionError, OSError) as error:
+            except (ConnectionError, OSError, RuntimeError) as error:
                 if len(names) == 1:
                     raise
                 print(f"{name}: could not connect ({str(error).strip().splitlines()[0]}); continuing without it")
         if not robots:
             raise SystemExit("no arm connected")
         bases = {n: np.array([all_arms[n]["x"], all_arms[n]["y"]]) for n in robots}
-        if args.execute:
-            print(f"Home pose [deg]: {np.round(np.degrees(HOME_Q), 1)}")
-            if input("Type 'yes' to send the arms home and start: ").strip().lower() != "yes":
-                raise SystemExit("Not executed.")
-            for robot in robots.values():
-                go_home(robot, send_joints, read_joints_rad)
+        regions = Regions(bases, arm_config.middle_half_width())
+        last_q = {n: list(HOME_Q) for n in robots}
 
-        vision = Vision(args)
-        done, skipped, misses = 0, set(), {}
-        try:
-            while done < args.max_objects:
-                canvas, objects, bins = look(vision, colors, table_from_default)
-                print(f"\n{len(objects)} object(s), bins: "
-                      + (", ".join(f"{b['colour'] or '?'} at x {b['xyz'][0]:.2f} y {b['xyz'][1]:.2f}" for b in bins)
-                         or "none"))
-                todo = []
-                for obj in objects:
-                    key = (obj["name"], obj["colour"], *np.round(obj["xyz"][:2], 2))
-                    label = f"{obj['colour'] or '?'} {obj['name']} at x {obj['xyz'][0]:.2f} y {obj['xyz'][1]:.2f}"
-                    if key in skipped:
-                        continue
-                    target_bin = bin_for(obj, bins, args.round)
-                    if target_bin is None:
-                        wanted = task_config.bin_colour(obj["name"], obj["colour"], args.round)
-                        print(f"  {label}: " + (f"its {wanted} bin is not in view" if wanted else
-                                                f"no bin for it in {task_config.FILE.name} ({args.round})"))
-                        continue
-                    if np.linalg.norm(obj["xyz"][:2] - target_bin["xyz"][:2]) < 0.06:
-                        continue                                  # already in (or on) its bin
-                    arm = choose_arm(obj, target_bin, bases, args.max_reach)
-                    if arm is None:
-                        far = ", ".join(f"{n} {100 * np.linalg.norm(obj['xyz'][:2] - b):.0f} / "
-                                        f"{100 * np.linalg.norm(target_bin['xyz'][:2] - b):.0f} cm"
-                                        for n, b in bases.items())
-                        print(f"  {label}: no arm reaches both it and its bin within {100 * args.max_reach:.0f} cm "
-                              f"(object / bin from each arm's base: {far})")
-                        continue
-                    todo.append((np.linalg.norm(obj["xyz"][:2] - bases[arm]), obj, target_bin, arm, key))
-                shot = ROOT / "outputs" / "screenshots" / "pick_and_place_view.png"   # the latest view, to share
-                shot.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(shot), canvas)
-                print(f"camera view saved to {shot}")
-                cv2.imshow("pick and place (any key = continue, q = stop)", canvas)
-                if cv2.waitKey(0 if not args.auto else 500) & 0xFF in (ord("q"), 27):
-                    break
-                if not todo:
-                    print("Nothing left that can be sorted (no object with a visible bin within reach).")
-                    break
-                _, obj, target_bin, arm, key = min(todo, key=lambda item: item[0])   # nearest first
-                to_arm = arm_from_table(arm)
-                o = (to_arm @ np.append(obj["xyz"], 1.0))[:3]
-                b = (to_arm @ np.append(target_bin["xyz"], 1.0))[:3]
-                top = max(o[2], 0.0)
-                grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
-                print(f"{arm}: {obj['colour']} {obj['name']} at x {o[0]:.3f} y {o[1]:.3f} (top {100 * top:.1f} cm) "
-                      f"-> {target_bin['colour']} bin at x {b[0]:.3f} y {b[1]:.3f}")
-
-                if args.grip_open is not None:
-                    open_cmd = args.grip_open
-                else:
-                    width = jaw.object_width(OBJECT_STL_FILES[obj["name"]])
-                    open_cmd = jaw.open_command(width, args.grip_margin)
-                    print(f"  gripper opens to {open_cmd:.1f}/100 ({100 * jaw.opening_width(open_cmd):.1f} cm) for "
-                          f"a {100 * width:.1f} cm wide {obj['name']}")
-                robot = robots[arm]
-                start_q = HOME_Q if robot is None or not args.execute else read_joints_rad(robot)
-                others = [(OBJECT_STL_FILES[x["name"]], *(to_arm @ np.append(x["xyz"], 1.0))[:2], 0.0)
-                          for x in objects if x is not obj]
-                world = World(others, start_q, gui=not args.no_gui, clearance=args.clearance,
-                              arm=arm, calibration_path=arm_files(arm)[1], gripper_open=open_cmd / 100)
-                try:
-                    # The point between the jaws reaches about 4 cm above the table at the lowest; if the grasp
-                    # height has no pose, try 5 mm higher each time, up to 1.5 cm over the object's top (the jaw
-                    # tips reach ~2 cm below that point, so they still close on its upper part).
-                    plans, error = None, None
-                    for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):
-                        try:
-                            plans = plan_sequence(world, start_q, [
-                                ("above object", [o[0], o[1], top + args.approach]),
-                                ("grasp", [o[0], o[1], z]),
-                                ("lift", [o[0], o[1], top + args.lift]),
-                                ("over bin", [b[0], b[1], args.drop_z]),
-                            ], args.seed)
-                            print(f"  grasp at {100 * z:.1f} cm above the table")
-                            break
-                        except RuntimeError as exc:
-                            error = exc
-                            if "grasp" not in str(exc):
-                                break
-                    if plans is None:
-                        print(f"  skipped: {error}")
-                        skipped.add(key)
-                        continue
-                    for label, path in plans:
-                        world.start_q = list(path[0])      # play() starts from start_q
-                        world.play(path, realtime=not args.no_gui)
-                    if not args.execute:
-                        print("  planned (add --execute to move the arm)")
-                        skipped.add(key)
-                        continue
-                    if not args.auto and input("  Type 'yes' to do it: ").strip().lower() != "yes":
-                        skipped.add(key)
-                        continue
-                    (_, to_above), (_, to_grasp), (_, to_lift), (_, to_bin) = plans
-                    follow(robot, to_above, open_cmd, send_joints)
-                    follow(robot, to_grasp, open_cmd, send_joints)
-                    grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
-                        robot, 0.0, args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS)
-                    if not grasped:
-                        misses[key] = misses.get(key, 0) + 1
-                        again = misses[key] < args.attempts
-                        print(f"  missed it (gripper closed to {stop:.0f}/100, {current_ma:.0f} mA); "
-                              + ("trying again" if again else f"giving up after {args.attempts} attempts"))
-                        if not again:
-                            skipped.add(key)
-                        follow(robot, to_lift, open_cmd, send_joints)
-                        go_home(robot, send_joints, read_joints_rad)
-                        continue
-                    print(f"  holding it ({current_ma:.0f} mA)")
-                    follow(robot, to_lift, hold, send_joints)
-                    follow(robot, to_bin, hold, send_joints)
-                    send_joints(robot, to_bin[-1], gripper=GRIPPER_OPEN)
+        def home_all():
+            for name, robot in robots.items():
+                if robot is not None:
                     go_home(robot, send_joints, read_joints_rad)
-                    done += 1
-                    print(f"  placed ({done} so far)")
-                    # Seen again in the same place next time means it did not leave: counts as an attempt.
-                    misses[key] = misses.get(key, 0) + 1
-                    if misses[key] >= args.attempts:
-                        skipped.add(key)
-                finally:
-                    world.close()
-        finally:
-            vision.close()
-            cv2.destroyAllWindows()
+                    last_q[name] = read_joints_rad(robot)
+
+        print("Arms going home ...")
+        home_all()
+        vision = Vision(args)
+        area = handoff_area(bases, args.max_reach, args.min_reach, regions, step=args.drop_step)
+        fixed = [list(p) for p in arm_config.handoff_points()] if len(bases) > 1 else []
+        handoff_points = []                   # this round's free drop-off points (filled on Enter)
+        can_grasp, close_checker = cpp.handoff_checker(handoff_points, args)
+        marks, view = [], None
+        print(f"Arms: {', '.join(bases)} | drop-off area: {len(area)} points"
+              + ("" if len(bases) > 1 else " (one arm: no drop-off)")
+              + ("" if len(bases) < 2 else
+                 f" | {'one task at a time' if args.one_at_a_time else 'both arms at once where safe'}"))
+
+        def free_points(objects, bins):
+            """The drop-off points not taken by an object or a bin (7 cm clear of them)."""
+            taken = [o["xyz"][:2] for o in objects] + [b["xyz"][:2] for b in bins]
+            return [p for p in fixed + area if all(np.linalg.norm(np.asarray(p) - t) >= 0.07 for t in taken)]
+
+        def to_marks(objects, bins):
+            """The detections as the coordinator's marks: shapes (colour = the colour of the bin they go in) and
+            boxes; and {id(object): why it is left} for the ones without a rule or a bin in view."""
+            boxes = [{"kind": "box", "colour": b["colour"], "xyz": b["xyz"], "pixel": b["pixel"], "state": "todo"}
+                     for b in bins if b["colour"]]
+            shapes, notes = [], {}
+            for o in objects:
+                wanted = task_config.bin_colour(o["name"], o["colour"], args.round)
+                if wanted is None:
+                    notes[id(o)] = f"no rule ({o['colour'] or 'colour?'})"
+                    continue
+                if not any(b["colour"] == wanted for b in boxes):
+                    notes[id(o)] = f"no {wanted} bin"
+                    continue
+                opening = (args.grip_open if args.grip_open is not None
+                           else jaw.open_command(jaw.object_width(OBJECT_STL_FILES[o["name"]]), args.grip_margin))
+                shapes.append({"kind": "shape", "colour": wanted, "label": f"{o['colour'] or '?'} {o['name']}",
+                               "xyz": o["xyz"], "pixel": o["pixel"], "state": "todo", "open_cmd": opening,
+                               "source": id(o)})
+            return shapes, boxes, notes
+
+        def plan_labels(objects, bins):
+            """{id(object): what will happen to it} (distances only: quick enough for every frame)."""
+            shapes, boxes, labels = to_marks(objects, bins)
+            tasks, skipped = build_tasks(shapes, boxes, bases, free_points(objects, bins), args.max_reach, regions,
+                                         None, max_usable=1)
+            for t in tasks:
+                labels[t.shape["source"]] = (f"-> {short(t.arm)}" if t.kind == DIRECT
+                                             else f"-> {short(t.arm)} > drop > {short(t.then_arm)}")
+            for shape, _ in skipped:
+                labels[shape["source"]] = "no arm reaches"
+            return labels
+
+        def go(objects, bins):
+            shapes, boxes, notes = to_marks(objects, bins)
+            for o in objects:
+                if id(o) in notes:
+                    print(f"{o['colour'] or '?'} {o['name']}: left, {notes[id(o)]}")
+            if not shapes:
+                run["status"] = "nothing to sort: no object with its bin in view"
+                return
+            handoff_points[:] = free_points(objects, bins)
+            checked = time.monotonic()
+            tasks, skipped = build_tasks(shapes, boxes, bases, handoff_points, args.max_reach, regions, can_grasp,
+                                         max_usable=3)
+            for shape, why in skipped:
+                print(f"{shape['label']} at x {shape['xyz'][0]:.2f} y {shape['xyz'][1]:.2f}: left, {why}")
+            if not tasks:
+                run["status"] = "nothing the arms can do (see the terminal)"
+                return
+            print(f"\nPlan ({time.monotonic() - checked:.1f} s to check the drop-off points):")
+            for task in tasks:
+                then = f", then {task.then_arm} to the {task.box['colour']} bin" if task.then_arm else ""
+                print(f"  {task.label()}{then}")
+            marks[:] = shapes + boxes
+            coordinator = Coordinator(tasks, regions, handoff_points, not args.one_at_a_time,
+                                      arm_config.handoff_min_spacing())
+            cpp.CURRENT["coordinator"] = coordinator
+            run.update(coordinator=coordinator, start=time.monotonic(), reported=False, status="working ...")
+            workers.clear()
+            for name, robot in robots.items():
+                worker = threading.Thread(target=cpp.arm_worker, daemon=True, name=name,
+                                          args=(name, robot, coordinator, marks, last_q, args,
+                                                (send_joints, read_joints_rad), handoff_points))
+                workers.append(worker)
+                worker.start()
+
+        def draw(canvas, objects, labels, busy):
+            canvas = view.draw(canvas)
+            if not busy:
+                for o in objects:
+                    text = labels.get(id(o))
+                    if text:
+                        wanted = task_config.bin_colour(o["name"], o["colour"], args.round)
+                        put(canvas, text, o["pixel"] + [-30, 34], BIN_BGR.get(wanted, (255, 255, 255)))
+            for m in marks:                    # the round's objects and what happened to them
+                if m["kind"] != "shape" or not run["coordinator"]:
+                    continue
+                u, v = (int(c) for c in m["pixel"])
+                if m["state"] == "placed":
+                    cv2.circle(canvas, (u, v), 14, (0, 220, 0), 3)
+                elif m["state"] == "failed":
+                    cv2.drawMarker(canvas, (u, v), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 28, 3)
+                elif m["state"] == "handoff" and m.get("handoff_xyz") is not None:
+                    target = tuple(int(c) for c in view.pixels(np.asarray(m["handoff_xyz"], float)[None])[0])
+                    cv2.arrowedLine(canvas, (u, v), target, (255, 255, 0), 2, tipLength=0.1)
+                    cv2.circle(canvas, target, 12, (255, 255, 0), 2)
+            lines = [f"{args.round} round | Enter go | h home | q quit", run["status"]]
+            if run["coordinator"] is not None and busy:
+                lines += [f"{short(a)}: {s}" for a, s in sorted(run["coordinator"].arm_state.items())]
+            for i, text in enumerate(lines):
+                put(canvas, text, (15, 32 + 28 * i), (0, 255, 0), 0.65)
+            return canvas
+
+        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        sized = False
+        while True:
+            canvas, objects, bins = detect(vision, colors, table_from_default)
+            if view is None:
+                view = TableView(vision.cam, bases, regions, args.max_reach, args.min_reach, canvas.shape)
+            busy = any(w.is_alive() for w in workers)
+            if not busy and not run["reported"]:
+                took = time.monotonic() - run["start"]
+                placed = sum(m["state"] == "placed" for m in marks if m["kind"] == "shape")
+                failed = sum(m["state"] == "failed" for m in marks if m["kind"] == "shape")
+                run.update(reported=True, status=f"done in {took:.1f} s: {placed} placed, {failed} failed; "
+                                                 f"Enter for the next round")
+                print(f"\nRound done in {took:.1f} s: {placed} placed, {failed} failed"
+                      + (f" ({took / placed:.1f} s per object)" if placed else ""))
+            labels = {} if busy else plan_labels(objects, bins)
+            out = draw(canvas, objects, labels, busy)
+            if args.width < out.shape[1]:
+                out = cv2.resize(out, (args.width, round(out.shape[0] * args.width / out.shape[1])))
+            cv2.imshow(WINDOW, out)
+            if not sized:
+                cv2.resizeWindow(WINDOW, out.shape[1], out.shape[0])
+                sized = True
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                if busy:
+                    print("Stopping after the moves running now ...")
+                break
+            if busy:
+                continue
+            if key in (13, 10, 32):              # Enter or Space
+                go(objects, bins)
+            elif key == ord("h"):
+                home_all()
+                run["status"] = "home"
     finally:
+        if run["coordinator"] is not None:
+            run["coordinator"].stop.set()
+        for worker in workers:
+            worker.join()
+        if vision is not None:
+            vision.close()
+        cv2.destroyAllWindows()
+        close_checker()
         for robot in robots.values():
             if robot is not None:
-                park_and_disconnect(robot, park=None if args.execute else False)   # without --execute nothing moves
+                park_and_disconnect(robot)
 
 
 if __name__ == "__main__":

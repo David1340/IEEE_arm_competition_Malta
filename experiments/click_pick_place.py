@@ -104,7 +104,8 @@ def handoff_checker(handoff_points, args):
     cache, worlds = {}, {}
 
     def can_grasp(arm, i, top):
-        key = (arm, i, round(float(top), 2))
+        # keyed by the point's position, not its index: a caller may replace the list's points between rounds
+        key = (arm, round(float(handoff_points[i][0]), 3), round(float(handoff_points[i][1]), 3), round(float(top), 2))
         if key not in cache:
             with PLAN_LOCK:
                 if arm not in worlds:
@@ -150,8 +151,9 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     drop = drop_point(task.box["xyz"], [base["x"], base["y"]])      # inside the box, on the side nearest the arm
     b = (to_arm @ np.array([*drop, 0.0, 1.0]))[:3]
     top = max(o[2], 0.0)
+    opening = task.shape.get("open_cmd", GRIPPER_OPEN)        # the jaws open only as wide as this shape needs
     world = World([], start_q, gui=args.gui, clearance=args.clearance, arm=arm,
-                  calibration_path=arm_config.follower_calibration(arm))
+                  calibration_path=arm_config.follower_calibration(arm), gripper_open=opening / 100)
     try:
         for other in obstacles["shapes"]:
             if other is task.shape or other is task.shape.get("origin"):
@@ -207,13 +209,14 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
 def execute(task, robot, plans, args, send_joints):
     """Do the planned task. Returns 'done' or 'missed'."""
     steps = dict(plans)
-    follow(robot, steps["above shape"], GRIPPER_OPEN, send_joints)
-    follow(robot, steps["grasp"], GRIPPER_OPEN, send_joints)
+    opening = task.shape.get("open_cmd", GRIPPER_OPEN)        # as wide as this shape needs (pick_and_place.py)
+    follow(robot, steps["above shape"], opening, send_joints)
+    follow(robot, steps["grasp"], opening, send_joints)
     grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
         robot, 0.0, args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS)
     if not grasped:
         print(f"  {task.arm}: missed it (gripper closed to {stop:.0f}/100, {current_ma:.0f} mA)")
-        follow(robot, steps["lift"], GRIPPER_OPEN, send_joints)
+        follow(robot, steps["lift"], opening, send_joints)
         return "missed"
     print(f"  {task.arm}: holding it ({current_ma:.0f} mA)")
     follow(robot, steps["lift"], hold, send_joints)

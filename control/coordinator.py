@@ -46,7 +46,7 @@ class Task:
         point = "" if self.slot is None else f" H{self.slot}"
         where = {DIRECT: f"-> {self.box['colour']} box", TO_HANDOFF: f"-> handoff{point}",
                  FROM_HANDOFF: f"handoff{point} -> {self.box['colour']} box"}[self.kind]
-        return f"#{self.id} {self.arm}: {self.shape['colour']} shape {where}"
+        return f"#{self.id} {self.arm}: {self.shape.get('label', self.shape['colour'] + ' shape')} {where}"
 
 
 class Regions:
@@ -115,10 +115,28 @@ def why_skipped(shape, box, bases, handoff_points, max_reach):
             f"one both arms can grasp at (within {cm(max_reach)} and an IK check; arms.json \"handoff\" points)")
 
 
-def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_grasp=None):
+def handoff_area(bases, max_reach, min_reach, regions, step=0.04, margin=0.03, x_range=(0.0, 0.70)):
+    """Handoff (drop-off) points spread over the area both arms reach: a grid, every `step` m, of the points at
+    least min_reach + margin and at most max_reach - margin from every base, in the middle strip between the arms
+    (TABLE frame). The arms' coordinator uses any of them, so a handoff is not tied to one or two fixed points."""
+    if len(bases) < 2:
+        return []
+    ys = [float(b[1]) for b in bases.values()]
+    points = []
+    for x in np.arange(x_range[0], x_range[1] + 1e-9, step):
+        for y in np.arange(min(ys), max(ys) + 1e-9, step / 2):
+            p = np.array([x, y])
+            d = [np.linalg.norm(p - np.asarray(b, float)) for b in bases.values()]
+            if min(d) >= min_reach + margin and max(d) <= max_reach - margin and regions.of(p) == "middle":
+                points.append([round(float(x), 3), round(float(y), 3)])
+    return points
+
+
+def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_grasp=None, max_usable=None):
     """Tasks for the shapes (todo marks), and [(shape, reason)] for the ones no arm or handoff can do.
     can_grasp(arm, point index, top z): whether that arm really reaches a shape of that height on that handoff
-    point (an IK check); without it only the distance is checked."""
+    point (an IK check); without it only the distance is checked. Handoff points are tried shortest detour first
+    (shape -> point -> box); max_usable: stop after this many usable ones (an area has many points, each IK-checked)."""
     ids = itertools.count(1)
     tasks, skipped = [], []
     for shape in shapes:
@@ -139,9 +157,17 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_gr
         for first in [a for a in by_distance if reach(shape["xyz"], bases[a]) <= max_reach]:
             for second in [a for a in bases if a != first and box_reach(box, bases[a]) <= max_reach]:
                 top = float(shape["xyz"][2])
-                usable = [i for i, p in enumerate(handoff_points)
-                          if reach(p, bases[first]) <= max_reach and reach(p, bases[second]) <= max_reach
-                          and (can_grasp is None or (can_grasp(first, i, top) and can_grasp(second, i, top)))]
+                order = sorted(range(len(handoff_points)),
+                               key=lambda i: reach(shape["xyz"], handoff_points[i][:2])
+                               + reach(box["xyz"], handoff_points[i][:2]))
+                usable = []
+                for i in order:
+                    p = handoff_points[i]
+                    if (reach(p, bases[first]) <= max_reach and reach(p, bases[second]) <= max_reach
+                            and (can_grasp is None or (can_grasp(first, i, top) and can_grasp(second, i, top)))):
+                        usable.append(i)
+                        if max_usable is not None and len(usable) >= max_usable:
+                            break
                 if usable:
                     plan = (first, second, usable)
                     break
