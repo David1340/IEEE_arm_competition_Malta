@@ -5,6 +5,8 @@
     python teleop.py --here                   # every pair in this terminal (Ctrl+C stops all)
     python teleop.py --pair follower_blue     # only that follower (or name its leader)
     python teleop.py --print                  # only print the lerobot-teleoperate commands
+    python teleop.py --gui                    # live telemetry: every joint's angle, current, load, temperature
+                                              # (teleop_gui.py drives the arms itself; --gui --log saves a CSV)
     python teleop.py -- --display_data=true   # anything after -- is passed on to lerobot-teleoperate
 
 With arms.json as it is: follower_pink <- leader_blue, follower_blue <- leader_green.
@@ -109,6 +111,10 @@ def main():
     ap.add_argument("--pair", nargs="+", metavar="ARM", help="only these followers (or their leaders)")
     ap.add_argument("--here", action="store_true", help="run in this terminal instead of new windows")
     ap.add_argument("--print", action="store_true", help="only print the commands")
+    ap.add_argument("--gui", action="store_true",
+                    help="teleoperate with a live telemetry window (teleop_gui.py) instead of lerobot-teleoperate")
+    import teleop_gui
+    teleop_gui.add_args(ap)
     ap.add_argument("--conda-env", default=os.environ.get("CONDA_ENV", "lerobot"),
                     help="conda env activated in the new windows (default: lerobot)")
     args = ap.parse_args(argv)
@@ -116,6 +122,9 @@ def main():
     pairs = arm_config.teleop_pairs(args.pair)
     if not pairs:
         raise SystemExit(f"No teleop pair matches {args.pair}; pairs in arms.json: {arm_config.teleop_pairs()}")
+    if args.gui:
+        teleop_gui.run(pairs, args)
+        return
     jobs = [(f"{follower} <- {leader}", command(follower, leader, extra)) for follower, leader in pairs]
     if args.print:
         for title, cmd in jobs:
