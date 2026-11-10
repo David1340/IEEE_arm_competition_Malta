@@ -337,6 +337,12 @@ def main():
     if any(name not in all_arms for name in names):
         raise SystemExit(f"unknown arm {args.arm!r}; known: {', '.join(all_arms)} or both")
     bases = {name: (all_arms[name]["x"], all_arms[name]["y"], all_arms[name]["yaw_deg"]) for name in names}
+    for name, (x, y, yaw) in bases.items():         # what the twin uses (arms.json is read only at the start)
+        print(f"{name}: base x {x:+.4f} y {y:+.4f} m, yaw {yaw:+.1f} deg (arms.json)")
+    if len(bases) == 2:
+        (_, a), (_, b) = bases.items()
+        print(f"  the two shoulder-pan axes are {100 * np.hypot(a[0] - b[0], a[1] - b[1]):.1f} cm apart in the model: "
+              f"measure the real distance with a tape")
     # Vision gives positions in the default arm's frame (camera_transform.npy); the twin shows the TABLE frame.
     table_from_default = np.linalg.inv(arm_from_table(default_arm()))
 
