@@ -425,6 +425,7 @@ class Vision:
         overlay = canvas.copy()
         objects = []
         self.last_polygons = []   # full-frame pixel outline of each entry of objects, in the same order
+        self.last_sizes = []      # "small" / "large" (parallax centre) or "" (unknown), in the same order
 
         self.smoother.begin()
         if result.masks is not None:
@@ -454,6 +455,7 @@ class Vision:
             for polygon, class_id, confidence in valid:
                 points = np.rint(polygon + [x0, y0]).astype(np.int32)
                 color = COLORS[class_id % len(COLORS)]
+                size = ""                        # small / large, when the parallax centre works it out
                 if names[class_id].casefold() == BIN_CLASS and not args.bin_point_cloud:
                     center, count, pixel_center = bin_center_from_pixels(polygon, current_roi, self.cam,
                                                                          args.bin_plane_z)
@@ -465,6 +467,7 @@ class Vision:
                         text = f"{BIN_CLASS} {confidence:.2f} PIXELS X{center[0]:+.3f} Y{center[1]:+.3f}m"
                     objects.append((BIN_CLASS, confidence, center, count))
                     self.last_polygons.append(points)
+                    self.last_sizes.append(size)
                     px, py = points.min(axis=0)
                     cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
                                 color, 2)
@@ -487,6 +490,7 @@ class Vision:
                             f"top {1000 * height:.0f}mm")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
+                    self.last_sizes.append(size)
                     px, py = points.min(axis=0)
                     cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
                                 color, 2)
@@ -511,6 +515,7 @@ class Vision:
                                 f"{1000 * size[0]:.0f}x{1000 * size[1]:.0f}mm ({count} pts)")
                         objects.append((class_name, confidence, center, count))
                         self.last_polygons.append(points)
+                        self.last_sizes.append(size)
                         px, py = points.min(axis=0)
                         cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
@@ -538,6 +543,7 @@ class Vision:
                             f"Z{center[2]:+.3f}m IoU{track.fit.iou:.2f}")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
+                    self.last_sizes.append(size)
                 elif center is None and not args.no_pixel_fallback and class_name.casefold() in OBJECT_STL_FILES:
                     # No fit and no depth: x, y from the mask's mean pixel and the camera ray at half the object's
                     # height (as for the bins); the top at its STL height (standing).
@@ -555,6 +561,7 @@ class Vision:
                                 f"Y{center[1]:+.3f} Z{center[2]:+.3f}m")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
+                    self.last_sizes.append(size)
                     if center is None:
                         cv2.polylines(canvas, [points], True, (128, 128, 128), 1)
                         text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"
@@ -563,6 +570,7 @@ class Vision:
                     text = f"{class_name} {confidence:.2f} XYZ n/a ({count} pts)"
                     objects.append((class_name, confidence, None, count))
                     self.last_polygons.append(points)
+                    self.last_sizes.append(size)
                 else:
                     roi_overlay = overlay[y0 : y0 + roi_h, x0 : x0 + roi_w]
                     roi_overlay[top_mask > 0] = color
@@ -573,6 +581,7 @@ class Vision:
                     text = f"{class_name} {confidence:.2f} TABLE X{center[0]:+.3f} Y{center[1]:+.3f} Z{center[2]:+.3f}m"
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
+                    self.last_sizes.append(size)
                 px, py = points.min(axis=0)
                 cv2.putText(canvas, text, (int(px), max(int(py) - 5, 16)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)

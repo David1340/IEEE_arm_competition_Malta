@@ -118,6 +118,18 @@ def tip_below_grasp():
     return float(grasp[2] - tip)
 
 
+def fixed_face_point():
+    """The fixed finger's inner face at the grasp point's height, gripper_link's frame [m] (x, y, z). An object the
+    gripper is closed on touches it, so its centre is half its width further along x."""
+    root = ET.parse(URDF).getroot()
+    joints = {joint.get("name"): joint for joint in root.findall("joint")}
+    R1, t1 = _origin(joints["gripper_frame_joint"])
+    _, t2 = _origin(joints["grasp_center_joint"])
+    grasp = R1 @ t2 + t1
+    _, _, info = jaw_table()
+    return np.array([info["fixed_face_x"], grasp[1], grasp[2]])
+
+
 def held_point(command):
     """Where the centre of an object held by the jaws is, in gripper_link's frame [m] (x, y, z): halfway between
     the fixed finger's inner face and the moving jaw at this gripper command (0-100), at the grasp point's height.

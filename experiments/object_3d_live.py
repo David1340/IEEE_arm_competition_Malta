@@ -222,16 +222,19 @@ class PyBulletTwin:
         self.p.resetBasePositionAndOrientation(self.grasp_balls[name], self.grasp_point(name).tolist(), [0, 0, 0, 1],
                                                physicsClientId=self.client)
 
-    def held_point(self, arm):
-        """Where an object held by that arm's jaws has its centre (halfway between the jaws at their live opening,
-        control/gripper.held_point), TABLE frame. With the real gripper closed on an object, compare the object's
-        detected centre with this."""
-        from control.gripper import held_point
+    def held_point(self, arm, half_width=None):
+        """Where an object held by that arm's jaws has its centre, TABLE frame. With half_width (the object's, from
+        its STL): it touches the fixed finger, so half its width from the finger's inner face - no gripper reading
+        needed. Without: halfway between the jaws at their live opening (control/gripper.held_point), which relies
+        on the gripper reading (0-100) matching the model's jaw angle."""
+        from control.gripper import fixed_face_point, held_point
 
         state = self.p.getLinkState(self.robot_ids[arm], self.gripper_link_index, computeForwardKinematics=True,
                                     physicsClientId=self.client)
         rotation = np.array(self.p.getMatrixFromQuaternion(state[5])).reshape(3, 3)
-        return np.asarray(state[4], float) + rotation @ held_point(self.gripper_command.get(arm, 50.0))
+        local = (fixed_face_point() + [half_width, 0.0, 0.0] if half_width is not None
+                 else held_point(self.gripper_command.get(arm, 50.0)))
+        return np.asarray(state[4], float) + rotation @ local
 
     def grasp_point(self, arm):
         """The planner's grasp point (between the jaws) of that arm's model, TABLE frame."""
@@ -242,6 +245,30 @@ class PyBulletTwin:
     def close(self):
         if self.p.isConnected(self.client):
             self.p.disconnect(physicsClientId=self.client)
+
+
+def half_width(name, size):
+    """Half an object's width across the jaws (the short side of its footprint, as when the jaws close on two flat
+    sides), from the STL of its size; None when the size is unknown."""
+    from control.gripper import object_footprint
+    from vision.detection import OBJECT_SIZES
+
+    stl = OBJECT_SIZES.get(name.casefold(), {}).get(size)
+    return None if stl is None else object_footprint(stl)[0] / 2
+
+
+def measure(twin, arm, objects, sizes):
+    """The nearest detected object to the arm's jaws and where a held object's centre is: (name, size, centre,
+    held point, how) or None."""
+    found = [(n, c, sz) for (n, _, c, _), sz in zip(objects, sizes) if c is not None and n.casefold() != "bin"]
+    if not found:
+        return None
+    jaw = twin.grasp_point(arm)
+    name, centre, size = min(found, key=lambda item: np.linalg.norm(np.asarray(item[1][:2]) - jaw[:2]))
+    half = half_width(name, size)
+    held = twin.held_point(arm, half)
+    how = f"{size} {name}: {1000 * half:.0f} mm from the fixed finger" if half is not None else "from the gripper reading"
+    return name, size, np.asarray(centre, float), held, how
 
 
 def jaw_offset(jaw, objects):
@@ -271,23 +298,27 @@ def base_correction(arm, samples, max_spread=0.008):
     return mean, f"{arm}: {len(samples)} samples agree within {1000 * spread:.0f} mm"
 
 
-def jaw_report(arm, jaw, base, objects):
-    """How far the arm's grasp point (the model, at the arm's live joint angles) is from the nearest detected
-    object: along the arm's reach (+ = the object is farther out than the jaws) and across it (+ = to the left,
-    looking out from the base), and above its top. Put the real jaws around a real object by hand: these numbers
-    are then the planner's error there (calibration), as the planner aims this point at the object's centre."""
-    found = [(n, c) for n, _, c, _ in objects if c is not None and n.casefold() != "bin"]
-    if not found:
-        return f"{arm}: no object detected"
-    name, centre = min(found, key=lambda item: np.linalg.norm(np.asarray(item[1][:2]) - jaw[:2]))
+def jaw_report(arm, jaw, base, objects, measured=None):
+    """How far the held-object point of the arm (the model, at the arm's live joint angles) is from the nearest
+    detected object: along the arm's reach (+ = the object is farther out than the jaws) and across it (+ = to the
+    left, looking out from the base), and the heights. With the real gripper closed on a real object these numbers
+    are the planner's error there (calibration). measured: measure()'s result (its point and how it was found)."""
+    if measured is not None:
+        name, _, centre, jaw, how = measured
+    else:
+        found = [(n, c) for n, _, c, _ in objects if c is not None and n.casefold() != "bin"]
+        if not found:
+            return f"{arm}: no object detected"
+        name, centre = min(found, key=lambda item: np.linalg.norm(np.asarray(item[1][:2]) - jaw[:2]))
+        how = "grasp point"
     out = np.asarray(centre[:2], float) - np.asarray(base[:2], float)
     out = out / max(np.linalg.norm(out), 1e-9)
     left = np.array([-out[1], out[0]])
     d = np.asarray(centre[:2], float) - jaw[:2]
     along, across = 1000 * d @ out, 1000 * d @ left
-    return (f"{arm}: jaws -> nearest {name}: {abs(along):.0f} mm {'farther out' if along > 0 else 'closer in'}, "
-            f"{abs(across):.0f} mm to the {'left' if across > 0 else 'right'}; jaws {100 * jaw[2]:.1f} cm high, "
-            f"its top {100 * centre[2]:.1f} cm")
+    return (f"{arm}: OFFSET jaws -> nearest {name}: {abs(along):.0f} mm {'farther out' if along > 0 else 'closer in'}, "
+            f"{abs(across):.0f} mm to the {'left' if across > 0 else 'right'}  (held centre {how}; jaws "
+            f"{100 * jaw[2]:.1f} cm high, its top {100 * centre[2]:.1f} cm)")
 
 
 def main():
@@ -368,7 +399,9 @@ def main():
                 print(f"\n{datetime.now():%H:%M:%S} | {len(objects)} objects")
                 for name in names:
                     if name in robots:
-                        print("  " + jaw_report(name, twin.held_point(name), bases[name], objects))
+                        found = measure(twin, name, objects, vision.last_sizes)
+                        print("  " + (f"{name}: no object detected" if found is None else
+                                      jaw_report(name, found[3], bases[name], objects, found)))
                 for index, (class_name, confidence, center, count) in enumerate(objects, 1):
                     if center is None:
                         print(f"  {index}. {class_name} conf={confidence:.2f}: depth unavailable ({count} points)")
@@ -382,13 +415,14 @@ def main():
                 break
             if key == ord("c"):      # record the jaw -> object offset of every live arm (real gripper closed on it)
                 for name in robots:
-                    found = jaw_offset(twin.held_point(name), objects)
+                    found = measure(twin, name, objects, vision.last_sizes)
                     if found is None:
                         print(f"{name}: no object detected, nothing recorded")
                         continue
-                    samples.setdefault(name, []).append(found[1])
-                    print(f"{name}: sample {len(samples[name])} recorded: the {found[0]} is "
-                          f"{1000 * found[1][0]:+.0f} mm in x, {1000 * found[1][1]:+.0f} mm in y from the model's jaws")
+                    offset = found[2][:2] - found[3][:2]
+                    samples.setdefault(name, []).append(offset)
+                    print(f"{name}: sample {len(samples[name])} recorded: the {found[0]} is {1000 * offset[0]:+.0f} mm "
+                          f"in x, {1000 * offset[1]:+.0f} mm in y from the model's held centre ({found[4]})")
             if key == ord("w"):      # write the base correction into arms.json
                 from control import arm_config
 
