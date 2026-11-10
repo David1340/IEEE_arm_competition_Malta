@@ -253,7 +253,9 @@ def main():
     ap.add_argument("--redetect-radius", type=float, default=0.12,
                     help="before each pick, the object is looked for this far from where it was [m]")
     ap.add_argument("--approach", type=float, default=0.06, help="height above the object's top to come down from [m]")
-    ap.add_argument("--grasp-depth", type=float, default=0.015, help="jaws this far below the object's top [m]")
+    ap.add_argument("--grasp-at", choices=["middle", "top"], default="middle",
+                    help="grasp at half the object's height (default), or --grasp-depth below its top")
+    ap.add_argument("--grasp-depth", type=float, default=0.015, help="--grasp-at top: this far below the top [m]")
     ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the object's top [m]")
     ap.add_argument("--close-radius", type=float, default=0.22,

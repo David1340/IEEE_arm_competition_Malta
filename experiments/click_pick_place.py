@@ -113,7 +113,7 @@ def handoff_checker(handoff_points, args):
                                         calibration_path=arm_config.follower_calibration(arm))
                 world = worlds[arm]
                 h = (arm_from_table(arm) @ np.array([*handoff_points[i][:2], 0.0, 1.0]))[:3]
-                grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
+                grasp_z = grasp_height(top, args)
                 ok = False
                 for posture in postures_for(h, args):
                     for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):
@@ -133,6 +133,14 @@ def handoff_checker(handoff_points, args):
         for world in worlds.values():
             world.close()
     return can_grasp, close
+
+
+def grasp_height(top, args):
+    """Height of the point between the jaws at the grasp: half the object's height (--grasp-at middle, the default)
+    or --grasp-depth below its top (--grasp-at top); never below --min-grasp-z (the lowest the jaws reach). If
+    there is no pose there, the planner tries 5 mm higher each time."""
+    z = top / 2 if getattr(args, "grasp_at", "middle") == "middle" else top - args.grasp_depth
+    return max(z, args.min_grasp_z)
 
 
 def postures_for(xy_arm, args):
@@ -177,7 +185,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             drop_z = max(args.box_height + args.drop_above, top + args.lift)
             rest = lambda z: [("over box", [b[0], b[1], drop_z])]
             place_postures = ["horizontal", "down"]
-        grasp_z = max(top - args.grasp_depth, args.min_grasp_z)
+        grasp_z = grasp_height(top, args)
         error = None
         # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails
         for posture in postures_for(o, args):
@@ -443,7 +451,9 @@ def main():
                     help="the shape is released this far inside the box's rim nearest the arm (so a box whose centre "
                          "is a little out of reach still works) [m]")
     ap.add_argument("--approach", type=float, default=0.06, help="height above the shape's top to come down from [m]")
-    ap.add_argument("--grasp-depth", type=float, default=0.015, help="jaws this far below the shape's top [m]")
+    ap.add_argument("--grasp-at", choices=["middle", "top"], default="middle",
+                    help="grasp at half the shape's height, or --grasp-depth below its top")
+    ap.add_argument("--grasp-depth", type=float, default=0.015, help="--grasp-at top: this far below the top [m]")
     ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the shape's top [m]")
     ap.add_argument("--close-radius", type=float, default=0.22,
