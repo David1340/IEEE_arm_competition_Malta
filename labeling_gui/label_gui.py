@@ -1,13 +1,19 @@
-"""Step 01: label large red speed-climbing handholds.
+"""Multi-class polygon labelling GUI for the arm-competition YOLO segmentation dataset.
 
-Run: python main.py
-Two options: Manual / Model-assisted. Works without a trained model.
-Input images: data/images; YOLO polygon labels: data/labels.
-Model-assisted: choose YOLO-seg masks or YOLO boxes -> SAM 2 masks.
-SAM weights: data/sam2_t.pt (optional; auto-download if missing).
+Run from the repo root (or anywhere):
+    python labeling_gui/label_gui.py                         # yolo_dataset/, newest runs/segment/*/weights/best.pt
+    python labeling_gui/label_gui.py --weights runs/segment/train-3/weights/best.pt
+    python labeling_gui/label_gui.py --data yolo_pouring     # another dataset folder (images/, labels/, classes.txt)
+
+Labels are written to <data>/labels/<image>.txt as YOLO segmentation polygons in FULL-frame coordinates,
+the same format roi.py / train_seg.py already use. Classes come from <data>/classes.txt.
+Model-assisted: the image is cropped to <data>/roi.json (as in training), YOLO runs on the crop at the
+ROI's native size, and the masks are mapped back. Mask source: YOLO's own masks or YOLO boxes -> SAM 2.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import os
 import queue
@@ -22,14 +28,67 @@ try:
 except ImportError:
     raise SystemExit("Pillow missing. Run: python -m pip install pillow")
 
-ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+RUNS = REPO / "runs" / "segment"
+# Set by configure() from the command line; defaults are the blocks dataset.
+DATA = REPO / "yolo_dataset"
 IMAGES = DATA / "images"
 LABELS = DATA / "labels"
 ORIGINALS = DATA / "originals"  # automatic backups before changing image orientation
-WEIGHTS = DATA / "best.pt"
-SAM_WEIGHTS = DATA / "sam2_t.pt"   # optional: Ultralytics downloads tiny SAM 2 on first use
+WEIGHTS = None                   # newest runs/segment/*/weights/best.pt unless --weights
+SAM_WEIGHTS = HERE / "sam2_t.pt"   # optional: Ultralytics downloads tiny SAM 2 on first use
+CONFIDENCE = 0.25
+CLASSES = []                     # names from classes.txt; index = YOLO class id
+ROI = None                       # roi.json contents, or None to run the model on the whole image
 SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+PALETTE = ["#ff5050", "#3fa9ff", "#ffd23f", "#b469ff", "#33dd88", "#ff8fd8", "#00e5e5", "#ff9a3c", "#a0e04a"]
+
+
+def class_colour(c):
+    return PALETTE[c % len(PALETTE)]
+
+
+def class_name(c):
+    return CLASSES[c] if 0 <= c < len(CLASSES) else f"class {c}"
+
+
+def latest_weights():
+    found = sorted(RUNS.glob("*/weights/best.pt"), key=lambda p: p.stat().st_mtime)
+    return found[-1] if found else None
+
+
+def configure(args):
+    global DATA, IMAGES, LABELS, ORIGINALS, WEIGHTS, SAM_WEIGHTS, CONFIDENCE, CLASSES, ROI
+    DATA = Path(args.data).expanduser().resolve()
+    IMAGES = DATA / "images"
+    LABELS = DATA / "labels"
+    ORIGINALS = DATA / "originals"
+    WEIGHTS = Path(args.weights).expanduser().resolve() if args.weights else latest_weights()
+    if args.sam:
+        SAM_WEIGHTS = Path(args.sam).expanduser().resolve()
+    CONFIDENCE = args.conf
+    classes_file = DATA / "classes.txt"
+    if not classes_file.is_file():
+        raise SystemExit(f"{classes_file} not found: one class name per line, in YOLO class-id order.")
+    CLASSES = [line.strip() for line in classes_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not CLASSES:
+        raise SystemExit(f"{classes_file} is empty.")
+    roi_file = DATA / "roi.json"
+    ROI = None if args.no_roi or not roi_file.is_file() else json.loads(roi_file.read_text())
+
+
+def roi_box(width, height):
+    """(x, y, w, h) of the training crop for an image of this size; the whole image without roi.json."""
+    if ROI is None:
+        return 0, 0, width, height
+    ref_w, ref_h = ROI.get("ref_size", [width, height])
+    sx, sy = width / ref_w, height / ref_h
+    x, y = max(0, round(ROI["x"] * sx)), max(0, round(ROI["y"] * sy))
+    w, h = min(width - x, round(ROI["w"] * sx)), min(height - y, round(ROI["h"] * sy))
+    if w <= 8 or h <= 8:
+        return 0, 0, width, height
+    return x, y, w, h
 
 
 def polygon_area(poly):
@@ -138,7 +197,7 @@ def transform_yolo_file(path, orientation, old_size, new_size):
     """Transform previously saved labels together with image pixels.
 
     Existing labels from the old sideways-image GUI remain attached to the
-    same physical holds. Non-YOLO rows are preserved verbatim rather than lost.
+    same physical objects. Non-YOLO rows are preserved verbatim rather than lost.
     """
     if not path.is_file():
         return
@@ -168,7 +227,7 @@ def transform_yolo_file(path, orientation, old_size, new_size):
 def load_upright_photo(path, label_file):
     """Read a photo as the user sees it, and normalise its pixel orientation.
 
-    Save corrected pixels into data/images so any future model/training tool
+    Save corrected pixels into images/ so any future model/training tool
     sees the same orientation as the annotation GUI. Originals are backed up.
     """
     with Image.open(path) as source:
@@ -185,68 +244,60 @@ def load_upright_photo(path, label_file):
     return corrected, True
 
 
-def detect_yolo_candidates(image, detector, confidence=0.23, tile_size=768, overlap=0.25):
-    """Run YOLO once per tile. Retain BOTH its bounding boxes and segmentation masks.
+def model_class_map(detector):
+    """YOLO class id -> index in CLASSES, matched by name; None for classes not in classes.txt."""
+    names = getattr(detector, 'names', None) or {}
+    lookup = {name.strip().lower(): i for i, name in enumerate(CLASSES)}
+    return {int(k): lookup.get(str(v).strip().lower()) for k, v in dict(names).items()}
 
-    Coordinates are in the complete upright photograph; duplicate overlapping
-    detections from tiles are suppressed before making annotation proposals.
+
+def detect_yolo_candidates(image, detector, confidence=None):
+    """Run YOLO on the ROI crop at its native size, exactly as train_seg.py trained it.
+
+    Returns boxes, masks and classes in full-image coordinates. Duplicates of the same
+    class are suppressed; objects of different classes may overlap (e.g. inside the bin).
     """
     import numpy as np
+    confidence = CONFIDENCE if confidence is None else confidence
     w, h = image.size
-    stride = max(1, int(tile_size * (1. - overlap)))
-    def positions(n):
-        if n <= tile_size: return [0]
-        seq = list(range(0, n-tile_size+1, stride))
-        if seq[-1] != n-tile_size: seq.append(n-tile_size)
-        return seq
+    x, y, rw, rh = roi_box(w, h)
+    bgr = np.asarray(image.crop((x, y, x+rw, y+rh)))[:, :, ::-1].copy()
+    result = detector.predict(source=bgr, conf=confidence, imgsz=max(rw, rh),
+                              retina_masks=True, verbose=False)[0]
+    if result.boxes is None:
+        return []
+    mapping = model_class_map(detector)
+    masks = result.masks.xy if result.masks is not None else []
     candidates = []
-    for y in positions(h):
-        for x in positions(w):
-            bgr = np.asarray(image.crop((x,y,min(x+tile_size,w),min(y+tile_size,h))))[:,:,::-1].copy()
-            result = detector.predict(source=bgr, conf=confidence, imgsz=tile_size,
-                                      retina_masks=True, verbose=False)[0]
-            if result.boxes is None: continue
-            masks = result.masks.xy if result.masks is not None else []
-            for i, box in enumerate(result.boxes):
-                if hasattr(box, 'cls') and int(box.cls[0]) != 0: continue
-                rect = box.xyxy[0].cpu().numpy().astype(float)
-                rect += [x,y,x,y]
-                rect[0::2] = np.clip(rect[0::2],0,w-1)
-                rect[1::2] = np.clip(rect[1::2],0,h-1)
-                if (rect[2]-rect[0])*(rect[3]-rect[1]) < 35: continue
-                poly = None
-                if i < len(masks) and len(masks[i]) >= 3:
-                    raw = [(float(px+x),float(py+y)) for px,py in masks[i]]
-                    cleaned = polish_outline(raw,scale=1.,closed=True,smooth=False)
-                    if (len(cleaned)>=3 and polygon_area(cleaned)>=25
-                            and not has_self_intersection(cleaned)):
-                        poly = cleaned
-                candidates.append(dict(score=float(box.conf[0]),box=rect.tolist(),polygon=poly))
-    kept=[]
-    for cand in sorted(candidates,key=lambda item:-item['score']):
-        bb=cand['box']
-        cx,cy=(bb[0]+bb[2])/2,(bb[1]+bb[3])/2
-        if any(bbox_iou(bb,other['box'])>0.38 or
-               (abs(cx-(other['box'][0]+other['box'][2])/2)<
-                     min(bb[2]-bb[0],other['box'][2]-other['box'][0])*.35
-                and abs(cy-(other['box'][1]+other['box'][3])/2)<
-                     min(bb[3]-bb[1],other['box'][3]-other['box'][1])*.35)
-               for other in kept):
+    for i, box in enumerate(result.boxes):
+        cls = mapping.get(int(box.cls[0]))
+        if cls is None:
+            continue  # the model knows a class that classes.txt does not list
+        rect = box.xyxy[0].cpu().numpy().astype(float)
+        rect += [x, y, x, y]
+        rect[0::2] = np.clip(rect[0::2], 0, w-1)
+        rect[1::2] = np.clip(rect[1::2], 0, h-1)
+        if (rect[2]-rect[0])*(rect[3]-rect[1]) < 35:
+            continue
+        poly = None
+        if i < len(masks) and len(masks[i]) >= 3:
+            raw = [(float(px+x), float(py+y)) for px, py in masks[i]]
+            cleaned = polish_outline(raw, scale=1., closed=True, smooth=False)
+            if len(cleaned) >= 3 and polygon_area(cleaned) >= 25 and not has_self_intersection(cleaned):
+                poly = cleaned
+        candidates.append(dict(score=float(box.conf[0]), box=rect.tolist(), polygon=poly, cls=cls))
+    kept = []
+    for cand in sorted(candidates, key=lambda item: -item['score']):
+        if any(other['cls'] == cand['cls'] and bbox_iou(cand['box'], other['box']) > 0.6 for other in kept):
             continue
         kept.append(cand)
     return kept
 
 
-def detect_boxes(image, detector, confidence=0.23, tile_size=768, overlap=0.25):
-    """Compatibility helper: boxes only (SAM prompts)."""
-    return [item['box'] for item in detect_yolo_candidates(
-        image,detector,confidence,tile_size,overlap)]
-
-
 def sam_mask_for_box(image, sam, box):
     """Crop around the proposed box, prompt SAM 2, return ONE cleaned outline.
 
-    The crop gives small holds more SAM input pixels; the box prompt remains
+    The crop gives small objects more SAM input pixels; the box prompt remains
     inside this crop. Return coordinates in the full original image.
     """
     import numpy as np
@@ -288,14 +339,14 @@ def sam_mask_for_box(image, sam, box):
 
 
 def model_polygons(image, detector, sam=None, notify=None, method='sam'):
-    """Propose polygons using YOLO's own masks OR YOLO boxes prompted through SAM.
+    """Propose (class, polygon) pairs using YOLO's own masks OR YOLO boxes prompted through SAM.
 
-    Both choices use the same detection boxes, and neither modifies saved labels.
+    Both choices use the same detections and YOLO's class, and neither modifies saved labels.
     """
     if method not in ('sam','yolo'):
         raise ValueError('Unknown model proposal method: '+str(method))
     if method=='yolo' and getattr(detector,'task','segment')!='segment':
-        raise RuntimeError('YOLO segmentation requires a -seg model in data/best.pt. '
+        raise RuntimeError('YOLO segmentation needs a -seg model. '
                            'Switch to YOLO boxes + SAM for detection-only weights.')
     if method=='sam' and sam is None:
         raise RuntimeError('SAM model is not loaded.')
@@ -307,11 +358,12 @@ def model_polygons(image, detector, sam=None, notify=None, method='sam'):
         poly=item['polygon'] if method=='yolo' else sam_mask_for_box(image,sam,item['box'])
         if method=='yolo' and poly is not None: mask_count+=1
         if poly is None:continue
-        if conflicts_with_existing(poly,proposals,threshold=.60):continue
-        proposals.append(poly)
+        same=[p for c,p in proposals if c==item['cls']]
+        if conflicts_with_existing(poly,same,threshold=.60):continue
+        proposals.append((item['cls'],poly))
     if method=='yolo' and candidates and mask_count==0:
         raise RuntimeError('This YOLO checkpoint has boxes but no segmentation masks. '
-                           'Use YOLO boxes + SAM or install your YOLO26n-seg weights.')
+                           'Use YOLO boxes + SAM instead.')
     return proposals
 
 
@@ -483,7 +535,7 @@ def redraw_arc_order(poly, stroke):
 
     A closed polygon has TWO arcs between any endpoints. The previous editor
     always chose the shorter one, which could create unwanted straight joins
-    when a user retraced half a hold. Instead compare the actual stroke to
+    when a user retraced half a object. Instead compare the actual stroke to
     both possible old arcs in drawing order. Each independent edit uses the
     *current* polygon; no previous strokes are retained or joined together.
     """
@@ -513,7 +565,7 @@ def redraw_arc_order(poly, stroke):
 
 
 def replace_local_boundary(poly, stroke, validator=None):
-    """Return an updated SINGLE closed hold outline or an explanatory error.
+    """Return an updated SINGLE closed object outline or an explanatory error.
 
     Reject both candidates when they self-cross, nearly collapse or grow
     implausibly; never return a disconnected line/second mask.
@@ -620,8 +672,8 @@ def overlapping_fraction(a, b):
 
 
 def conflicts_with_existing(poly, saved, skip=None, threshold=.42):
-    """Prevent near-duplicate masks while retaining distinct adjacent holds."""
-    return any(i != skip and overlapping_fraction(poly, other) > threshold
+    """Prevent near-duplicate masks while retaining distinct adjacent objects (None entries are ignored)."""
+    return any(i != skip and other is not None and overlapping_fraction(poly, other) > threshold
                for i,other in enumerate(saved))
 
 
@@ -629,7 +681,7 @@ class Annotator:
     def __init__(self, root, files):
         self.root = root
         self.files = files
-        self.root.title("Speed hold annotation | Local YOLO segmentation")
+        self.root.title("Object labelling | YOLO segmentation")
         self.root.geometry("1450x880")
         self.root.minsize(950, 570)
         IMAGES.mkdir(parents=True, exist_ok=True)
@@ -642,6 +694,9 @@ class Annotator:
         self.image_path = None
         self.image_size = (1, 1)
         self.polys = []
+        self.cls = []               # class id of each polygon, parallel to self.polys
+        self.current_class = 0      # class for new outlines (keys 1-9 or the dropdown)
+        self.class_var = tk.StringVar(value=self._class_label(0))
         self.draft = []
         self.trace = False
         self.selected = None
@@ -661,10 +716,10 @@ class Annotator:
         self.origin = [0.0, 0.0]
         self.tk_image = None
         self.dirty = False
-        self.suggestions = []       # orange previews; never saved until accepted
+        self.suggestions = []       # (class, polygon) previews; never saved until accepted
         self.assisted = False
         self.assist_var = tk.StringVar(value="manual")
-        self.proposal_method_var = tk.StringVar(value="YOLO boxes + SAM")
+        self.proposal_method_var = tk.StringVar(value="YOLO segmentation")
         self.model = None
         self.model_busy = False
         self.model_events = queue.Queue()
@@ -688,14 +743,21 @@ class Annotator:
                         value="assisted", command=lambda: self.set_assisted(True)).pack(side="left", padx=5)
         ttk.Label(choice, text="Mask source:").pack(side="left",padx=(18,5))
         self.method_choice = ttk.Combobox(choice, textvariable=self.proposal_method_var,
-                                         values=("YOLO boxes + SAM", "YOLO segmentation"),
+                                         values=("YOLO segmentation", "YOLO boxes + SAM"),
                                          state="readonly",width=21)
         self.method_choice.pack(side="left",padx=2)
         self.method_choice.bind("<<ComboboxSelected>>",lambda event: self.change_proposal_method())
         self.accept_button = ttk.Button(choice, text="Use all new suggestions", command=self.accept_suggestions)
         self.accept_button.pack(side="left", padx=(9, 4))
-        ttk.Label(choice, text="Click orange to accept/edit", foreground="#555").pack(side="left",padx=5)
-        ttk.Label(choice, text="Weights: data/best.pt", foreground="#666").pack(side="right", padx=8)
+        ttk.Label(choice, text="Click a dashed suggestion to accept/edit", foreground="#555").pack(side="left",padx=5)
+        ttk.Label(choice, text="Class (1-9):").pack(side="left", padx=(18, 5))
+        self.class_choice = ttk.Combobox(choice, textvariable=self.class_var, state="readonly", width=18,
+                                         values=[self._class_label(i) for i in range(len(CLASSES))])
+        self.class_choice.pack(side="left", padx=2)
+        self.class_choice.bind("<<ComboboxSelected>>",
+                               lambda event: self.set_class(self.class_choice.current()))
+        weights_text = f"Weights: {WEIGHTS.relative_to(REPO) if WEIGHTS and WEIGHTS.is_relative_to(REPO) else WEIGHTS}"
+        ttk.Label(choice, text=weights_text, foreground="#666").pack(side="right", padx=8)
 
         top = ttk.Frame(self.root, padding=7)
         top.pack(fill="x")
@@ -709,14 +771,14 @@ class Annotator:
             ttk.Radiobutton(top, text=title, variable=self.mode_var, value=name,
                             command=lambda n=name: self.set_mode(n)).pack(side="left", padx=4)
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=7)
-        ttk.Button(top, text="Finish hold (Enter)", command=self.finish).pack(side="left", padx=3)
+        ttk.Button(top, text="Finish object (Enter)", command=self.finish).pack(side="left", padx=3)
         ttk.Button(top, text="Undo (Ctrl+Z)", command=self.undo_edit).pack(side="left", padx=3)
         ttk.Button(top, text="Save (Ctrl+S)", command=self.save).pack(side="right", padx=5)
 
         editbar=ttk.Frame(self.root,padding=(7,0,7,5))
         editbar.pack(fill="x")
-        ttk.Button(editbar, text="Retrace whole selected hold", command=self.retrace_selected).pack(side="left",padx=3)
-        ttk.Button(editbar, text="Delete selected hold", command=self.delete_selected).pack(side="left",padx=3)
+        ttk.Button(editbar, text="Retrace whole selected object", command=self.retrace_selected).pack(side="left",padx=3)
+        ttk.Button(editbar, text="Delete selected object", command=self.delete_selected).pack(side="left",padx=3)
         ttk.Button(editbar, text="Undo draft point", command=self.undo_point).pack(side="left",padx=3)
 
         tools = ttk.Frame(self.root, padding=(7, 0, 7, 7))
@@ -727,7 +789,7 @@ class Annotator:
         ttk.Button(tools, text="Zoom +", command=lambda: self.zoom(1.25)).pack(side="left", padx=(20,3))
         ttk.Button(tools, text="Zoom −", command=lambda: self.zoom(1/1.25)).pack(side="left", padx=3)
         ttk.Button(tools, text="Fit image (F)", command=self.fit).pack(side="left", padx=3)
-        ttk.Button(tools, text="Focus hold (Z)", command=self.focus_selected).pack(side="left", padx=3)
+        ttk.Button(tools, text="Focus object (Z)", command=self.focus_selected).pack(side="left", padx=3)
         ttk.Button(tools, text="+ Point (A)", command=self.add_point).pack(side="left", padx=3)
         ttk.Button(tools, text="− Point (X)", command=self.remove_point).pack(side="left", padx=3)
         ttk.Button(tools, text="Smooth (S)", command=self.smooth_selected).pack(side="left", padx=3)
@@ -750,8 +812,10 @@ class Annotator:
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._on_list_select)
         ttk.Label(left, text="● = saved label    ○ = not saved", foreground="#555").pack(anchor="w", pady=(6, 2))
-        ttk.Label(left, text="Only complete large red speed\nhandholds. No footholds.",
-                  foreground="#555", justify="left").pack(anchor="w")
+        ttk.Label(left, text="Classes:", foreground="#555").pack(anchor="w", pady=(6, 0))
+        for i, name in enumerate(CLASSES):
+            tk.Label(left, text=f"  {i+1}  {name}", fg=class_colour(i), bg="#202329",
+                     anchor="w", font=("Consolas", 10, "bold")).pack(anchor="w", fill="x")
 
         right = ttk.Frame(body, padding=(3, 2, 7, 4))
         body.add(right, weight=1)
@@ -762,7 +826,7 @@ class Annotator:
         bottom = ttk.Frame(self.root, padding=7)
         bottom.pack(fill="x")
         ttk.Label(bottom, textvariable=self.status, wraplength=1300).pack(anchor="w")
-        ttk.Label(bottom, text="E select a hold. R redraw any section: start and finish on its boundary; release to replace that piece immediately. Repeat as often as needed. B box-delete. Ctrl+Z undo.",
+        ttk.Label(bottom, text="E select a object. R redraw any section: start and finish on its boundary; release to replace that piece immediately. Repeat as often as needed. B box-delete. Ctrl+Z undo.",
                   foreground="#555", wraplength=1350).pack(anchor="w", pady=(3, 0))
         self._refresh_list()
         self._update_assist_buttons()
@@ -801,7 +865,38 @@ class Annotator:
         self.root.bind_all("a", lambda e: self.add_point())
         self.root.bind_all("x", lambda e: self.remove_point())
         self.root.bind_all("s", lambda e: self.smooth_selected() if not (e.state & 4) else None)
+        for i in range(min(9, len(CLASSES))):
+            self.root.bind_all(str(i+1), lambda e, c=i: self.set_class(c) if e.widget is not self.listbox else None)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _class_label(self, c):
+        return f"{c+1}: {class_name(c)}"
+
+    def set_class(self, c):
+        """Class for new outlines; also relabels the selected outline in Edit mode."""
+        if not 0 <= c < len(CLASSES):
+            return
+        self.current_class = c
+        self.class_var.set(self._class_label(c))
+        if self.mode == "edit" and self.selected is not None and self.selected < len(self.polys) \
+                and self.cls[self.selected] != c:
+            k = self.selected
+            if conflicts_with_existing(self.polys[k], self._same_class(c), skip=k):
+                self._update_status(f"Outline {k+1} would duplicate another {class_name(c)}; class not changed.")
+                return
+            self._remember()
+            old = self.cls[k]
+            self.cls[k] = c
+            self.dirty = True
+            self.save()
+            self._draw_overlay()
+            self._update_status(f"Outline {k+1}: {class_name(old)} -> {class_name(c)}. Ctrl+Z undoes.")
+        else:
+            self._update_status(f"New outlines will be '{class_name(c)}'. In Edit mode, 1-9 relabels the selected outline.")
+
+    def _same_class(self, c):
+        """self.polys with other classes blanked out, so indices (and skip=) still line up."""
+        return [p if k == c else None for p, k in zip(self.polys, self.cls)]
 
     def _space(self, pressed):
         self.space_down = pressed
@@ -840,7 +935,7 @@ class Annotator:
         if not (0 <= index < len(self.files)):
             return
         if self.draft:
-            if not messagebox.askyesno("Unfinished hold", "Discard the unfinished polygon and change photograph?", parent=self.root):
+            if not messagebox.askyesno("Unfinished object", "Discard the unfinished polygon and change photograph?", parent=self.root):
                 self._refresh_list()
                 return
             self.draft = []
@@ -859,6 +954,7 @@ class Annotator:
             return
         self.image_size = self.image.size
         self.polys = []
+        self.cls = []
         self.selected = None
         self.selected_vertex = None
         self.selected_edge = None
@@ -872,21 +968,26 @@ class Annotator:
             for row in lab.read_text(encoding="utf-8-sig").splitlines():
                 vals = row.split()
                 if not vals: continue
-                if vals[0] != "0" or len(vals) < 7 or len(vals) % 2 == 0:
+                if (not vals[0].isdigit() or not int(vals[0]) < len(CLASSES)
+                        or len(vals) < 7 or len(vals) % 2 == 0):
                     rejected += 1
                     continue
                 try:
+                    c = int(vals[0])
                     coord = [float(a) for a in vals[1:]]
-                    if not all(math.isfinite(v) and 0 <= v <= 1 for v in coord):
+                    if not all(math.isfinite(v) and -.01 <= v <= 1.01 for v in coord):
                         rejected += 1
                         continue
+                    coord = [min(1., max(0., v)) for v in coord]
                     poly = [(coord[i] * self.image.width,coord[i+1] * self.image.height)
                             for i in range(0,len(coord),2)]
+                    # Only exact-ish duplicates of the SAME class are dropped; a cube inside the bin is fine.
                     if (len(poly) < 3 or polygon_area(poly) < 25 or
-                            has_self_intersection(poly) or conflicts_with_existing(poly,self.polys)):
+                            conflicts_with_existing(poly,self._same_class(c),threshold=.9)):
                         rejected += 1
                         continue
                     self.polys.append(poly)
+                    self.cls.append(c)
                 except (ValueError, TypeError):
                     rejected += 1
         if rejected:
@@ -896,14 +997,14 @@ class Annotator:
             self.save()
         self._fitted_once = False
         self._refresh_list()
-        self.root.title(f"Speed hold annotation  |  {self.image_path.name}")
+        self.root.title(f"Object labelling  |  {self.image_path.name}")
         self.root.after(30, self.fit)
         if rejected:
             self._update_status(f"Automatically discarded {rejected} malformed/duplicate saved polygons. Original labels backed up beside the .txt file.")
         elif was_rotated:
-            self._update_status("Photo rotated upright automatically. Original backed up in data/originals. Labels stay aligned.")
+            self._update_status("Photo rotated upright automatically. Original backed up in originals/. Labels stay aligned.")
         else:
-            self._update_status("Photo loaded. Draw one polygon per red speed handhold.")
+            self._update_status(f"Image loaded: {len(self.polys)} saved outlines. Pick a class (1-9), then draw one polygon per object.")
         self._update_assist_buttons()
         if self.assisted and not self.model_busy:
             self.request_suggestions()
@@ -937,7 +1038,7 @@ class Annotator:
             self.dirty = True
             self.save()
             self.fit()
-            self._update_status("Photo rotated and labels updated. Original is backed up in data/originals.")
+            self._update_status("Photo rotated and labels updated. Original is backed up in originals/.")
             if self.assisted:
                 self.request_suggestions()
         except Exception as exc:
@@ -953,7 +1054,7 @@ class Annotator:
         self._render()
 
     def focus_selected(self):
-        """Enlarge the selected hold in the main editor; not a second tiny window."""
+        """Enlarge the selected object in the main editor; not a second tiny window."""
         if self.selected is None or self.selected >= len(self.polys):
             return
         bb = polygon_bbox(self.polys[self.selected])
@@ -963,11 +1064,11 @@ class Annotator:
         self.scale=max(self.scale,scale)
         self.origin=[cw/2-cx*self.scale,ch/2-cy*self.scale]
         self._render()
-        self._update_status("Editing enlarged hold. Press R to redraw any section; F returns to full photo.")
+        self._update_status("Editing enlarged object. Press R to redraw any section; F returns to full photo.")
 
     def _remember(self):
         import copy
-        self.history.append(copy.deepcopy(self.polys))
+        self.history.append((copy.deepcopy(self.polys), self.cls[:]))
         self.history=self.history[-30:]
 
     def undo_edit(self):
@@ -975,7 +1076,7 @@ class Annotator:
             self.cancel_draft()
             return
         if self.history:
-            self.polys=self.history.pop()
+            self.polys,self.cls=self.history.pop()
             self.selected=None
             self.selected_vertex=None
             self.selected_edge=None
@@ -989,13 +1090,14 @@ class Annotator:
             return "Outline too small."
         if has_self_intersection(poly):
             return "That edge crosses itself; edit cancelled."
-        if conflicts_with_existing(poly,self.polys,skip=skip):
-            return "This overlaps another saved hold. Edit cancelled (Ctrl+Z is also available)."
+        c = self.cls[skip] if skip is not None and skip < len(self.cls) else self.current_class
+        if conflicts_with_existing(poly,self._same_class(c),skip=skip):
+            return f"This overlaps another saved {class_name(c)}. Edit cancelled (Ctrl+Z is also available)."
         return None
 
     def add_point(self):
         if self.mode != "edit" or self.selected is None or self.selected_edge is None:
-            self._update_status("Select a hold and click its boundary, then use A to add a point.")
+            self._update_status("Select a object and click its boundary, then use A to add a point.")
             return
         k=self.selected
         poly=self.polys[k]
@@ -1037,7 +1139,7 @@ class Annotator:
     def smooth_selected(self):
         """One gentle clean-up of an existing hand-drawn or model-predicted mask."""
         if self.selected is None or self.mode != "edit":
-            self._update_status("Select a hold in Edit mode before smoothing.")
+            self._update_status("Select a object in Edit mode before smoothing.")
             return
         k=self.selected
         trial=polish_outline(self.polys[k],self.scale,closed=True,smooth=True)
@@ -1133,14 +1235,18 @@ class Annotator:
             xy = [z for point in poly for z in self._screen_coords(point)]
             selected = (self.selected == k)
             invalid = has_self_intersection(poly)
-            c.create_polygon(*xy, fill="" if invalid else ("#00bb80" if not selected else "#ffe45c"),
+            colour = class_colour(self.cls[k])
+            c.create_polygon(*xy, fill="" if invalid else ("#ffe45c" if selected else colour),
                              stipple="gray25" if not invalid else "",
-                             outline="#ff4040" if invalid else ("#12ffa5" if not selected else "#ffff00"),
+                             outline="#ffffff" if invalid else ("#ffff00" if selected else colour),
+                             dash=(3, 3) if invalid else "",
                              width=3 if invalid or selected else 2, tags="shapes")
             centre = (sum(x for x, y in poly) / len(poly), sum(y for x, y in poly) / len(poly))
             sx, sy = self._screen_coords(centre)
-            c.create_text(sx, sy, text=str(k+1), fill="white", font=("Segoe UI", 12, "bold"),
-                          tags="shapes")
+            c.create_text(sx+1, sy+1, text=f"{k+1} {class_name(self.cls[k])}", fill="black",
+                          font=("Segoe UI", 11, "bold"), tags="shapes")
+            c.create_text(sx, sy, text=f"{k+1} {class_name(self.cls[k])}", fill="white",
+                          font=("Segoe UI", 11, "bold"), tags="shapes")
             if selected and self.mode == "edit":
                 # Avoid an unreadable forest of handles on a dense model mask.
                 jump = max(1, math.ceil(len(poly)/40))
@@ -1155,11 +1261,15 @@ class Annotator:
                     a,b=poly[self.selected_edge],poly[(self.selected_edge+1)%len(poly)]
                     ax,ay=self._screen_coords(a);bx,by=self._screen_coords(b)
                     c.create_line(ax,ay,bx,by,fill="#ff6100",width=5,tags="shapes")
-        for poly in self.suggestions:
+        for k, poly in self.suggestions:
             xy = [z for point in poly for z in self._screen_coords(point)]
             if len(xy) >= 6:
-                c.create_polygon(*xy, fill="#ff9333", stipple="gray25",
-                                 outline="#ff9333", width=2, dash=(6, 4), tags="shapes")
+                c.create_polygon(*xy, fill=class_colour(k), stipple="gray12",
+                                 outline=class_colour(k), width=2, dash=(6, 4), tags="shapes")
+                bb = polygon_bbox(poly)
+                tx, ty = self._screen_coords((bb[0], bb[1]))
+                c.create_text(tx, ty-8, text=f"? {class_name(k)}", fill=class_colour(k), anchor="w",
+                              font=("Segoe UI", 10, "bold"), tags="shapes")
         if self.pending_redraw:
             trial=self._pending_candidate()
             if trial:
@@ -1181,7 +1291,7 @@ class Annotator:
             for pt in stroke[::max(1, len(stroke)//150)]:
                 x, y = self._screen_coords(pt)
                 c.create_oval(x-2, y-2, x+2, y+2, fill="#ffff55", outline="", tags="shapes")
-        self.info.set(f"Photo {self.index+1}/{len(self.files)}   |   {len(self.polys)} saved masks"
+        self.info.set(f"Image {self.index+1}/{len(self.files)}   |   {len(self.polys)} saved masks"
                       + (f"   |   {len(self.suggestions)} proposed" if self.suggestions else "")
                       + (f"   |   {len(self.draft)} draft points" if self.draft else ""))
 
@@ -1231,15 +1341,15 @@ class Annotator:
         self.dirty=True
         self.save()
         self.set_mode('edit')
-        self._update_status('Boundary replaced, rest of hold preserved. Ctrl+Z to undo.')
+        self._update_status('Boundary replaced, rest of object preserved. Ctrl+Z to undo.')
 
     def retrace_selected(self):
         if self.selected is None:
-            self._update_status('Select a hold in Edit mode first, then click Retrace whole hold.')
+            self._update_status('Select a object in Edit mode first, then click Retrace whole object.')
             return
         self.pending_redraw=None
         self.set_mode('retrace')
-        self._update_status('Retrace selected hold: drag all the way around its boundary. Release to replace; Ctrl+Z undoes.')
+        self._update_status('Retrace selected object: drag all the way around its boundary. Release to replace; Ctrl+Z undoes.')
 
     def _press(self, event):
         if not self.image:return
@@ -1252,7 +1362,7 @@ class Annotator:
             self._draw_overlay();return
         if self.assisted and not self.draft and self.mode not in ('redraw','retrace'):
             for i in reversed(range(len(self.suggestions))):
-                if point_inside(*pt,self.suggestions[i]):
+                if point_inside(*pt,self.suggestions[i][1]):
                     self.use_one_suggestion(i);return
         if self.mode=='polygon':
             if not self.draft or math.dist(self.draft[-1],pt)>.8:self.draft.append(pt)
@@ -1262,19 +1372,19 @@ class Annotator:
         if self.mode not in ('edit','redraw'):return
         redraw=self.mode=='redraw' or bool(event.state&1)
         if redraw:
-            # If a different hold is selected, click it once to focus first.
+            # If a different object is selected, click it once to focus first.
             if self.selected is None or not (point_inside(*pt,self.polys[self.selected]) or
                     nearest_edge(self.polys[self.selected],pt)[0]<=20/max(self.scale,.1)):
-                if self._select_for_edit(pt):self._update_status('Hold selected. Now start the redraw on its boundary and finish on its boundary.')
-                else:self._update_status('Click a hold first, then start the redraw from its outline.')
+                if self._select_for_edit(pt):self._update_status('Object selected. Now start the redraw on its boundary and finish on its boundary.')
+                else:self._update_status('Click a object first, then start the redraw from its outline.')
                 self._draw_overlay();return
             dist,q,edge,_=nearest_edge(self.polys[self.selected],pt)
             if dist>22/max(self.scale,.1):
-                self._update_status('Start the redraw directly on the selected hold boundary.');return
+                self._update_status('Start the redraw directly on the selected object boundary.');return
             self.pending_redraw=None
             self.drag=('redraw',self.selected,pt,self.polys[self.selected][:],[q])
             self._draw_overlay();return
-        # Standard editing: choose a hold, then move vertex, edge or whole shape.
+        # Standard editing: choose a object, then move vertex, edge or whole shape.
         point=pt;radius=12/max(self.scale,.05);edge_radius=15/max(self.scale,.05)
         candidates=[]
         for k,poly in enumerate(self.polys):
@@ -1362,15 +1472,17 @@ class Annotator:
                 x0,y0,x1,y1=self.box_rect
                 if abs(x0-x1)*self.scale>8 and abs(y0-y1)*self.scale>8:
                     saved=masks_in_rectangle(self.polys,self.box_rect)
-                    proposed=masks_in_rectangle(self.suggestions,self.box_rect)
+                    proposed=masks_in_rectangle([p for _,p in self.suggestions],self.box_rect)
                     if saved:self._remember()
-                    for i in reversed(saved):del self.polys[i]
+                    for i in reversed(saved):
+                        del self.polys[i]
+                        del self.cls[i]
                     for i in reversed(proposed):del self.suggestions[i]
                     if saved:
                         self.selected=None;self.selected_vertex=None;self.selected_edge=None
                         self.dirty=True;self.save()
-                    self._update_status(f'Box removed {len(saved)} saved holds and {len(proposed)} pending suggestions. Ctrl+Z restores saved masks.')
-                else:self._update_status('Drag a box around the centres of the holds to delete.')
+                    self._update_status(f'Box removed {len(saved)} saved objects and {len(proposed)} pending suggestions. Ctrl+Z restores saved masks.')
+                else:self._update_status('Drag a box around the centres of the objects to delete.')
             self.box_rect=None
         elif mode in ('trace','retrace'):
             if len(self.draft)>=4:
@@ -1378,13 +1490,13 @@ class Annotator:
                 if mode=='retrace' and self.selected is not None:
                     k=self.selected
                     bad=self._valid_shape(self.draft,skip=k)
-                    if bad:self._update_status('Cannot retrace hold: '+bad)
+                    if bad:self._update_status('Cannot retrace object: '+bad)
                     else:
                         self._remember()
                         self.polys[k]=self.draft[:]
                         self.dirty=True
                         self.save()
-                        self._update_status('Replaced entire selected hold. Ctrl+Z undoes.')
+                        self._update_status('Replaced entire selected object. Ctrl+Z undoes.')
                     self.draft=[]
                     self.set_mode('edit')
                 else:self.finish()
@@ -1397,7 +1509,7 @@ class Annotator:
             point=self._image_coords(event.x,event.y)
             dist,endpoint,_,_=nearest_edge(original,point)
             if dist>24/max(self.scale,.05):
-                self._update_status('End the redraw on this hold boundary; no change was made.')
+                self._update_status('End the redraw on this object boundary; no change was made.')
             elif len(stroke)<3:
                 self._update_status('Trace a longer section from edge to edge; no change was made.')
             else:
@@ -1414,7 +1526,7 @@ class Annotator:
                         self.pending_redraw=None
                         self.dirty=True
                         self.save()
-                        self._update_status('Replaced one boundary section. Redraw another part of the SAME hold, or Ctrl+Z to undo.')
+                        self._update_status('Replaced one boundary section. Redraw another part of the SAME object, or Ctrl+Z to undo.')
                     else:
                         self._update_status('Redraw rejected: '+str(error)+' Keep the start and end on the same outline.')
                 else:
@@ -1461,27 +1573,27 @@ class Annotator:
         self.canvas.configure(cursor='fleur' if mode=='pan' else 'crosshair')
         self._draw_overlay()
         self._update_status({
-            'polygon':'Polygon: click around a new hold; Enter finishes.',
-            'trace':'Freehand: drag around a NEW hold and release. Smooth outline auto-saved.',
-            'retrace':'Retrace: drag all around the SELECTED hold to replace its complete outline.',
-            'edit':'Edit: click hold to enlarge; move points, or press R to redraw an edge.',
-            'redraw':'Redraw: drag from one point of the selected hold boundary to another; release to replace that section. Repeat as needed; Ctrl+Z undoes.',
-            'delete_box':'Box delete: drag rectangle over hold centres to remove multiple holds; Ctrl+Z to undo.',
+            'polygon':'Polygon: click around a new object; Enter finishes.',
+            'trace':'Freehand: drag around a NEW object and release. Smooth outline auto-saved.',
+            'retrace':'Retrace: drag all around the SELECTED object to replace its complete outline.',
+            'edit':'Edit: click object to enlarge; move points, or press R to redraw an edge.',
+            'redraw':'Redraw: drag from one point of the selected object boundary to another; release to replace that section. Repeat as needed; Ctrl+Z undoes.',
+            'delete_box':'Box delete: drag rectangle over object centres to remove multiple objects; Ctrl+Z to undo.',
             'pan':'Pan: drag image. Mouse wheel zooms.'
         }[mode])
 
 
     def finish(self):
         if len(self.draft) < 3:
-            if self.draft: self._update_status("Need at least three points to finish a hold.")
+            if self.draft: self._update_status("Need at least three points to finish a object.")
             return
         pts = self.draft[:]
         if len(pts) >= 4 and math.dist(pts[0], pts[-1]) < max(2., 4/self.scale):
             pts.pop()
         if len(pts) < 3 or polygon_area(pts) < 25:
-            self._update_status("Hold outline is too small. Retry.")
+            self._update_status("Object outline is too small. Retry.")
             return
-        # Keep new outlines distinct and non-self-crossing. Adjacent holds are fine.
+        # Keep new outlines distinct and non-self-crossing. Adjacent objects are fine.
         bad=self._valid_shape(pts)
         if bad:
             self._update_status(bad+" Use Edit to correct an existing mask instead of drawing on top.")
@@ -1490,6 +1602,7 @@ class Annotator:
             return
         self._remember()
         self.polys.append(pts)
+        self.cls.append(self.current_class)
         self.selected = len(self.polys) - 1
         self.selected_vertex=None
         self.selected_edge=None
@@ -1497,7 +1610,8 @@ class Annotator:
         self.dirty = True
         self._draw_overlay()
         self.save()
-        self._update_status(f"Saved hold {len(self.polys)}. Continue tracing every target hold in this photo.")
+        self._update_status(f"Saved outline {len(self.polys)} as '{class_name(self.current_class)}'. "
+                            "Wrong class? Press E, click it, then 1-9.")
 
     def undo_point(self):
         if self.draft:
@@ -1521,33 +1635,35 @@ class Annotator:
 
     def delete_selected(self):
         if self.selected is None or self.selected >= len(self.polys):
-            self._update_status("Select a hold in Edit mode first.")
+            self._update_status("Select a object in Edit mode first.")
             return
         k = self.selected
         self._remember()
         del self.polys[k]
+        del self.cls[k]
         self.selected = None
         self.selected_vertex=None
         self.selected_edge=None
         self.dirty = True
         self.save()
         self._draw_overlay()
-        self._update_status(f"Deleted hold {k+1}.")
+        self._update_status(f"Deleted object {k+1}.")
 
     def save(self):
         if self.index < 0: return
         w, h = self.image_size
         lines = []
-        for poly in self.polys:
-            if len(poly) < 3 or polygon_area(poly) < 25 or has_self_intersection(poly): continue
-            line = ["0"]
+        for poly, c in zip(self.polys, self.cls):
+            # Self-touching outlines (shown in red) are still saved so old labels are never lost.
+            if len(poly) < 3 or polygon_area(poly) < 25: continue
+            line = [str(c)]
             for x, y in poly:
                 line.extend((f"{max(0.,min(1.,x/w)):.6f}", f"{max(0.,min(1.,y/h)):.6f}"))
             lines.append(" ".join(line))
         self._label_file().write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         self.dirty = False
         self._refresh_list()
-        self._update_status(f"Saved {len(lines)} handholds to data/labels/{self._label_file().name}")
+        self._update_status(f"Saved {len(lines)} outlines to {self._label_file()}")
 
     def next_unlabelled(self):
         for i in list(range(self.index+1, len(self.files))) + list(range(0, self.index+1)):
@@ -1575,8 +1691,8 @@ class Annotator:
                 self.request_suggestions()
 
     def set_assisted(self, enabled):
-        if enabled and not WEIGHTS.is_file():
-            messagebox.showwarning("Model not found", "Copy your existing YOLO weights to data/best.pt for rough boxes. SAM 2 supplies the mask boundaries.\nManual labelling works without weights.", parent=self.root)
+        if enabled and not (WEIGHTS and WEIGHTS.is_file()):
+            messagebox.showwarning("Model not found", f"No YOLO weights found ({WEIGHTS or RUNS / '*/weights/best.pt'}).\nRestart with --weights path/to/best.pt.\nManual labelling works without weights.", parent=self.root)
             self.assist_var.set("manual")
             self.assisted = False
             self._update_assist_buttons()
@@ -1594,8 +1710,8 @@ class Annotator:
     def request_suggestions(self):
         if not self.assisted or self.index < 0 or self.model_busy:
             return
-        if not WEIGHTS.is_file():
-            messagebox.showerror("Missing weights", f"Place your YOLO model at {WEIGHTS}", parent=self.root)
+        if not (WEIGHTS and WEIGHTS.is_file()):
+            messagebox.showerror("Missing weights", f"YOLO weights not found: {WEIGHTS}. Use --weights.", parent=self.root)
             return
         index=self.index
         job=self.model_job_counter
@@ -1610,10 +1726,15 @@ class Annotator:
                 from ultralytics import YOLO
                 if self.model is None:
                     self.model=YOLO(str(WEIGHTS))
+                    names=dict(self.model.names)
+                    unknown=[n for n in names.values() if n.strip().lower() not in {c.lower() for c in CLASSES}]
+                    if unknown:
+                        self.model_events.put(('note',job,index,
+                            f"Model classes not in classes.txt are ignored: {', '.join(unknown)}"))
                 if method=='sam' and self.sam is None:
                     from ultralytics import SAM
-                    self.sam=SAM(str(SAM_WEIGHTS) if SAM_WEIGHTS.is_file() else 'sam2_t.pt')
-                    downloaded=Path.cwd()/'sam2_t.pt'
+                    self.sam=SAM(str(SAM_WEIGHTS) if SAM_WEIGHTS.is_file() else SAM_WEIGHTS.name)
+                    downloaded=Path.cwd()/SAM_WEIGHTS.name
                     if not SAM_WEIGHTS.is_file() and downloaded.is_file():
                         SAM_WEIGHTS.parent.mkdir(parents=True,exist_ok=True)
                         shutil.move(str(downloaded),str(SAM_WEIGHTS))
@@ -1629,9 +1750,13 @@ class Annotator:
         try:
             while True:
                 kind, job, index, payload = self.model_events.get_nowait()
+                if kind=='note':
+                    print(payload)
+                    self._update_status(payload)
+                    continue
                 if kind=='progress':
                     if job==self.model_job_counter and index==self.index:
-                        self._update_status(f'{"YOLO segmentation" if payload[2]=="yolo" else "YOLO boxes → SAM"}: {payload[0]}/{payload[1]} holds processed.')
+                        self._update_status(f'{"YOLO segmentation" if payload[2]=="yolo" else "YOLO boxes → SAM"}: {payload[0]}/{payload[1]} objects processed.')
                     continue
                 self.model_busy = False
                 if kind == "error":
@@ -1642,17 +1767,19 @@ class Annotator:
                     # Keep only unlabelled proposals, not layered duplicates.
                     raw_proposals, completed_method=payload
                     proposals=[]
-                    for poly in raw_proposals:
+                    for c,poly in raw_proposals:
                         fixed=poly[:]
                         if len(fixed)<3 or polygon_area(fixed)<25 or has_self_intersection(fixed):
                             continue
-                        if conflicts_with_existing(fixed,self.polys) or conflicts_with_existing(fixed,proposals):
+                        if (conflicts_with_existing(fixed,self._same_class(c)) or
+                                conflicts_with_existing(fixed,[p for k,p in proposals if k==c])):
                             continue
-                        proposals.append(fixed)
+                        proposals.append((c,fixed))
                     self.suggestions=proposals
                     self._draw_overlay()
                     name='YOLO segmentation' if completed_method=='yolo' else 'YOLO boxes + SAM'
-                    self._update_status(f"{len(proposals)} {name} outlines (orange). Click to accept/edit, or use all.")
+                    self._update_status(f"{len(proposals)} {name} suggestions (dashed, '?'). Click one to accept/edit, or use all. "
+                                        "Fix a wrong class with E + click + 1-9.")
                 self._update_assist_buttons()
                 if self.assisted and self.index >= 0 and job != self.model_job_counter:
                     self.request_suggestions()
@@ -1663,13 +1790,16 @@ class Annotator:
 
     def use_one_suggestion(self,index):
         if not (0<=index<len(self.suggestions)):return
-        poly=self.suggestions.pop(index)
-        if conflicts_with_existing(poly,self.polys):
-            self._update_status("That suggestion already overlaps a saved mask; it was skipped.")
+        c,poly=self.suggestions.pop(index)
+        if conflicts_with_existing(poly,self._same_class(c)):
+            self._update_status(f"That suggestion already overlaps a saved {class_name(c)}; it was skipped.")
             self._draw_overlay()
             return
         self._remember()
         self.polys.append(poly)
+        self.cls.append(c)
+        self.current_class=c
+        self.class_var.set(self._class_label(c))
         self.selected=len(self.polys)-1
         self.selected_vertex=None
         self.selected_edge=None
@@ -1680,16 +1810,17 @@ class Annotator:
         self.save()
         self._update_assist_buttons()
         self.focus_selected()
-        self._update_status("Suggestion accepted. You can now edit the enlarged hold immediately.")
+        self._update_status(f"Accepted '{class_name(c)}'. Edit the outline now, or press 1-9 to change its class.")
 
     def accept_suggestions(self):
         if not self.suggestions:return
         accepted=0
         self._remember()
-        for poly in self.suggestions:
-            if conflicts_with_existing(poly,self.polys):
+        for c,poly in self.suggestions:
+            if conflicts_with_existing(poly,self._same_class(c)):
                 continue
             self.polys.append(poly)
+            self.cls.append(c)
             accepted+=1
         self.suggestions=[]
         if accepted:
@@ -1699,7 +1830,7 @@ class Annotator:
             self.history.pop()
         self._draw_overlay()
         self._update_assist_buttons()
-        self._update_status(f"Used {accepted} new masks; existing labels were left unchanged. Click any hold to zoom and refine it.")
+        self._update_status(f"Used {accepted} new masks; existing labels were left unchanged. Click any object to zoom and refine it.")
 
     def discard_suggestions(self):
         self.suggestions=[]
@@ -1714,6 +1845,17 @@ class Annotator:
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Multi-class YOLO segmentation labelling GUI.")
+    ap.add_argument("--data", default=str(REPO / "yolo_dataset"),
+                    help="dataset folder with images/, labels/, classes.txt and roi.json (default: yolo_dataset)")
+    ap.add_argument("--weights", default=None, help="YOLO -seg checkpoint (default: newest runs/segment/*/weights/best.pt)")
+    ap.add_argument("--sam", default=None, help="SAM checkpoint, e.g. sam2_t.pt or sam_b.pt (default: labeling_gui/sam2_t.pt)")
+    ap.add_argument("--conf", type=float, default=0.25, help="YOLO confidence for suggestions (default 0.25)")
+    ap.add_argument("--no-roi", action="store_true", help="run the model on the whole image instead of the roi.json crop")
+    configure(ap.parse_args())
+    print(f"Data:    {DATA}\nClasses: {', '.join(f'{i+1}={n}' for i, n in enumerate(CLASSES))}")
+    print(f"Weights: {WEIGHTS or 'none found (manual labelling only)'}")
+    print(f"ROI:     {ROI if ROI else 'whole image'}")
     IMAGES.mkdir(parents=True, exist_ok=True)
     LABELS.mkdir(parents=True, exist_ok=True)
     photos = source_files(IMAGES)

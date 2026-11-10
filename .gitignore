@@ -78,3 +78,7 @@ experiments/*
 experiments/unified_pipeline.py
 experiments/test_ik.py
 
+!labeling_gui/
+labeling_gui/*
+!labeling_gui/*.py
+!labeling_gui/README.md
