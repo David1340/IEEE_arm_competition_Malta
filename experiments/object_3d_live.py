@@ -24,7 +24,13 @@ terminal prints how far it is from the nearest detected object. To check the cal
 real object by hand (torque is off); the numbers are then the planner's error there, e.g. "12 mm farther out" means
 the arm stops 12 mm short of objects at that place.
 
-Keys in the camera window: s = save the view with its labels to outputs/screenshots/ (PNG), q / Esc = quit.
+To fix a constant offset (the arm's base position in arms.json): put the jaws on an object (top-down, the tip on
+the centre of its top, or around it), press c; repeat at 3+ different places; press w. The mean offset is added to
+the arm's base x, y in arms.json (a copy is kept as arms.json.bak) - if the samples agree within 8 mm; if not,
+the error is not the base (see the message).
+
+Keys in the camera window: c = record the jaw offset here, w = write the base correction, s = save the view with
+its labels to outputs/screenshots/ (PNG), q / Esc = quit.
 """
 
 import argparse
@@ -221,6 +227,33 @@ class PyBulletTwin:
             self.p.disconnect(physicsClientId=self.client)
 
 
+def jaw_offset(jaw, objects):
+    """(name, offset x y) from the grasp point to the nearest detected object (not a bin), TABLE frame [m], or
+    None."""
+    found = [(n, c) for n, _, c, _ in objects if c is not None and n.casefold() != "bin"]
+    if not found:
+        return None
+    name, centre = min(found, key=lambda item: np.linalg.norm(np.asarray(item[1][:2]) - jaw[:2]))
+    return name, np.asarray(centre[:2], float) - jaw[:2]
+
+
+def base_correction(arm, samples, max_spread=0.008):
+    """The base shift that removes the measured offsets: their mean (the model's grasp point plus the offset is
+    where the real jaws were, so the model's base is off by the same). None, with the reason, when the samples
+    disagree by more than max_spread: then the error changes from place to place and is not the base (joint
+    offsets, or the arm's yaw)."""
+    if len(samples) < 3:
+        return None, f"{arm}: {len(samples)} sample(s); take at least 3, at different places (c)"
+    pts = np.asarray(samples, float)
+    mean = pts.mean(axis=0)
+    spread = float(np.max(np.linalg.norm(pts - mean, axis=1)))
+    if spread > max_spread:
+        return None, (f"{arm}: the samples disagree by up to {1000 * spread:.0f} mm around their mean "
+                      f"({1000 * mean[0]:+.0f}, {1000 * mean[1]:+.0f} mm): the error changes from place to place, so "
+                      f"it is not (only) the base: check the fine joint offsets (calibrate.py offsets --arm {arm})")
+    return mean, f"{arm}: {len(samples)} samples agree within {1000 * spread:.0f} mm"
+
+
 def jaw_report(arm, jaw, base, objects):
     """How far the arm's grasp point (the model, at the arm's live joint angles) is from the nearest detected
     object: along the arm's reach (+ = the object is farther out than the jaws) and across it (+ = to the left,
@@ -266,6 +299,7 @@ def main():
     fps, frames, fps_time = 0.0, 0, time.time()
     robots = {}
     twin = None
+    samples = {}                     # arm -> [jaw -> object offsets] recorded with c
 
     try:
         from control.IK_control import ARM_JOINTS, connect_robot, read_joints_rad
@@ -329,6 +363,38 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
+            if key == ord("c"):      # record the jaw -> object offset of every live arm (real jaws on the object)
+                for name in robots:
+                    found = jaw_offset(twin.grasp_point(name), objects)
+                    if found is None:
+                        print(f"{name}: no object detected, nothing recorded")
+                        continue
+                    samples.setdefault(name, []).append(found[1])
+                    print(f"{name}: sample {len(samples[name])} recorded: the {found[0]} is "
+                          f"{1000 * found[1][0]:+.0f} mm in x, {1000 * found[1][1]:+.0f} mm in y from the model's jaws")
+            if key == ord("w"):      # write the base correction into arms.json
+                from control import arm_config
+
+                data = arm_config.load()
+                changed = False
+                for name, taken in samples.items():
+                    shift, why = base_correction(name, taken)
+                    print(why)
+                    if shift is None:
+                        continue
+                    b = data["followers"][name].setdefault("base", {})
+                    old = (float(b.get("x", 0.0)), float(b.get("y", 0.0)))
+                    b["x"], b["y"] = round(old[0] + float(shift[0]), 4), round(old[1] + float(shift[1]), 4)
+                    print(f"{name}: base x {old[0]:.4f} -> {b['x']:.4f}, y {old[1]:.4f} -> {b['y']:.4f} m "
+                          f"(moved {1000 * np.linalg.norm(shift):.0f} mm)")
+                    changed = True
+                if changed:
+                    backup = arm_config.FILE.with_suffix(".json.bak")
+                    backup.write_text(arm_config.FILE.read_text())
+                    arm_config.save(data)
+                    print(f"Saved {arm_config.FILE.name} (old one: {backup.name}). Restart this to check: the "
+                          f"offsets should now be near 0.")
+                    samples.clear()
             if key == ord("s"):      # the camera view with every label, as a PNG to share (full resolution)
                 shot = ROOT / "outputs" / "screenshots" / f"object_3d_live_{datetime.now():%Y%m%d_%H%M%S}.png"
                 shot.parent.mkdir(parents=True, exist_ok=True)
