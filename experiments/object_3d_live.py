@@ -19,6 +19,11 @@ Usage:
     python experiments/object_3d_live.py --weights runs/segment/train/weights/best.pt
     python experiments/object_3d_live.py --serial 27500226
 
+The red ball on each arm is the planner's grasp point (between the jaws, the repo's robot model). Once a second the
+terminal prints how far it is from the nearest detected object. To check the calibration: put the real jaws around a
+real object by hand (torque is off); the numbers are then the planner's error there, e.g. "12 mm farther out" means
+the arm stops 12 mm short of objects at that place.
+
 Keys in the camera window: s = save the view with its labels to outputs/screenshots/ (PNG), q / Esc = quit.
 """
 
@@ -44,8 +49,8 @@ class PyBulletTwin:
         """bases: {arm name: (x, y, yaw_deg)} in the TABLE frame; one robot model per arm."""
         import pybullet as p
         import pybullet_data
-        from control.IK_control import EE_LINK, URDF
-        from control.modified_frpso_ik import load_robot_for_collision
+        from control.IK_control import EE_LINK
+        from experiments.sim_plan import URDF_FILE as URDF       # the planner's model (with its grasp point)
 
         self.p = p
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -89,6 +94,11 @@ class PyBulletTwin:
                 self.joint_indices[info[1].decode()] = index
                 self.link_indices[info[12].decode()] = index
             self.ee_link_index = self.link_indices[EE_LINK]
+            # the point between the jaws the planner aims at the object (grasp_center_link), a red ball per arm
+            self.grasp_link_index = self.link_indices.get("grasp_center_link", self.ee_link_index)
+            ball = p.createVisualShape(p.GEOM_SPHERE, radius=0.006, rgbaColor=[1, 0, 0, 1], physicsClientId=self.client)
+            self.grasp_balls = {name: p.createMultiBody(0, -1, ball, physicsClientId=self.client)
+                                for name in self.robot_ids}
             self.mesh_shapes = {}
             self.object_bodies = {}
             self.object_markers = {}
@@ -196,10 +206,38 @@ class PyBulletTwin:
         normalized = np.clip(float(gripper_position) / 100.0, 0.0, 1.0)
         gripper_angle = info[8] + normalized * (info[9] - info[8])
         self.p.resetJointState(robot_id, gripper_index, float(gripper_angle), physicsClientId=self.client)
+        name = arm if arm is not None else next(iter(self.robot_ids))
+        self.p.resetBasePositionAndOrientation(self.grasp_balls[name], self.grasp_point(name).tolist(), [0, 0, 0, 1],
+                                               physicsClientId=self.client)
+
+    def grasp_point(self, arm):
+        """The planner's grasp point (between the jaws) of that arm's model, TABLE frame."""
+        state = self.p.getLinkState(self.robot_ids[arm], self.grasp_link_index, computeForwardKinematics=True,
+                                    physicsClientId=self.client)
+        return np.asarray(state[4], float)
 
     def close(self):
         if self.p.isConnected(self.client):
             self.p.disconnect(physicsClientId=self.client)
+
+
+def jaw_report(arm, jaw, base, objects):
+    """How far the arm's grasp point (the model, at the arm's live joint angles) is from the nearest detected
+    object: along the arm's reach (+ = the object is farther out than the jaws) and across it (+ = to the left,
+    looking out from the base), and above its top. Put the real jaws around a real object by hand: these numbers
+    are then the planner's error there (calibration), as the planner aims this point at the object's centre."""
+    found = [(n, c) for n, _, c, _ in objects if c is not None and n.casefold() != "bin"]
+    if not found:
+        return f"{arm}: no object detected"
+    name, centre = min(found, key=lambda item: np.linalg.norm(np.asarray(item[1][:2]) - jaw[:2]))
+    out = np.asarray(centre[:2], float) - np.asarray(base[:2], float)
+    out = out / max(np.linalg.norm(out), 1e-9)
+    left = np.array([-out[1], out[0]])
+    d = np.asarray(centre[:2], float) - jaw[:2]
+    along, across = 1000 * d @ out, 1000 * d @ left
+    return (f"{arm}: jaws -> nearest {name}: {abs(along):.0f} mm {'farther out' if along > 0 else 'closer in'}, "
+            f"{abs(across):.0f} mm to the {'left' if across > 0 else 'right'}; jaws {100 * jaw[2]:.1f} cm high, "
+            f"its top {100 * centre[2]:.1f} cm")
 
 
 def main():
@@ -277,6 +315,9 @@ def main():
             now = time.time()
             if now - last_report >= 1.0:
                 print(f"\n{datetime.now():%H:%M:%S} | {len(objects)} objects")
+                for name in names:
+                    if name in robots:
+                        print("  " + jaw_report(name, twin.grasp_point(name), bases[name], objects))
                 for index, (class_name, confidence, center, count) in enumerate(objects, 1):
                     if center is None:
                         print(f"  {index}. {class_name} conf={confidence:.2f}: depth unavailable ({count} points)")
