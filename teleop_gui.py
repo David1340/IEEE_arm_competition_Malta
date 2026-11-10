@@ -279,6 +279,13 @@ def main():
     pairs = arm_config.teleop_pairs(args.pair)
     if not pairs:
         raise SystemExit(f"No teleop pair matches {args.pair}; pairs in arms.json: {arm_config.teleop_pairs()}")
+    missing = [(name, arm_config.port(name)) for pair in pairs for name in pair
+               if not Path(arm_config.port(name)).exists()]
+    if missing:
+        for name, port in missing:
+            print(f"{name}: {port} not found (USB unplugged, no power, or the port names not set up on this PC?)")
+        raise SystemExit("Check with:  python ports/setup_usb_ports.py --check   (names missing but the boards "
+                         "found: python ports/setup_usb_ports.py --install-saved)")
     run(pairs, args)
 
 
