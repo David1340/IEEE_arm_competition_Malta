@@ -259,17 +259,19 @@ def main():
                     help="a level (horizontal) grasp goes at least this far below the object's top [m]; higher, the "
                          "jaws close over it, so a shorter object is grasped top-down")
     ap.add_argument("--grasp-depth", type=float, default=0.015, help="--grasp-at top: this far below the top [m]")
-    ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
+    ap.add_argument("--min-grasp-z", type=float, default=0.02,
+                    help="lowest grasp point for a level grasp [m] (the table clearance check still applies)")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the object's top [m]")
-    ap.add_argument("--close-radius", type=float, default=0.22,
-                    help="closer than this to an arm's base, the gripper picks top-down instead of level [m]")
+    ap.add_argument("--close-radius", type=float, default=0.15,
+                    help="closer than this to an arm's base, the gripper picks top-down first instead of level [m]")
     ap.add_argument("--box-height", type=float, default=0.08, help="height of the bins [m]")
     ap.add_argument("--box-size", type=float, default=0.15, help="width of the bins, for the planner [m]")
     ap.add_argument("--box-margin", type=float, default=0.03, help="the arm keeps this much above a bin's rim [m]")
     ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over a bin's rim at release [m]")
     ap.add_argument("--drop-inset", type=float, default=0.04,
                     help="the object is released this far inside the bin's rim nearest the arm [m]")
-    ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
+    ap.add_argument("--clearance", type=float, default=0.01,
+                    help="the gripper keeps this far above the table in the plans [m]")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--grip-margin", type=float, default=0.02,

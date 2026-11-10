@@ -144,18 +144,29 @@ def grasp_height(top, args):
 
 
 def grasp_heights(top, posture, args):
-    """The heights to try for the point between the jaws, lowest first (5 mm steps). Top-down the jaw tips hang
-    ~2 cm below that point, so it may go up to 1.5 cm over the object's top and still close on its upper part. Level
-    (horizontal) the jaws are at that height: above --level-below-top under the top they close over the object (a
-    miss), so a level grasp is only tried low enough; too short an object gets none (top-down instead)."""
-    low = grasp_height(top, args)
-    high = top + 0.015 if posture == "down" else top - args.level_below_top
-    return np.arange(low, high + 1e-6, 0.005) if high >= low else np.array([])
+    """The heights to try for the grasp point, lowest first (5 mm steps); the planner's table clearance check
+    decides which are possible.
+      level (horizontal): the jaws are at that height, so from half the object's height (--grasp-at) up to
+          --level-below-top under its top (higher, they close over it); not below --min-grasp-z.
+      down: the fingertips hang tip_below_grasp() (from the URDF) below the grasp point, so it never goes lower than
+          that + 1.2 cm (the tips 1.2 cm over the table), and at most so high that the tips still reach 1.2 cm
+          below the object's top."""
+    from control.gripper import tip_below_grasp
+
+    if posture == "down":
+        low = max(grasp_height(top, args), tip_below_grasp() + 0.012)
+        high = top + tip_below_grasp() - 0.012
+    else:
+        low, high = grasp_height(top, args), top - args.level_below_top
+    if high < low - 1e-6:
+        return np.array([])
+    return np.arange(low, max(high, low) + 1e-6, 0.005)
 
 
 def postures_for(xy_arm, args):
-    """The gripper postures to try for a pick at this point (arm frame): top-down first within --close-radius of
-    the base (a level gripper cannot get that close), level first further out."""
+    """The gripper postures to try for a pick at this point (arm frame): level (straight in) first, unless it is
+    within --close-radius of the base (a level gripper cannot get that close): top-down first there. The other one
+    when the first has no pose."""
     close = np.hypot(xy_arm[0], xy_arm[1]) < args.close_radius
     return ["down", "horizontal"] if close else ["horizontal", "down"]
 
@@ -469,12 +480,14 @@ def main():
                     help="a level (horizontal) grasp goes at least this far below the shape's top [m]; higher, the "
                          "jaws close over it, so a shorter shape is grasped top-down")
     ap.add_argument("--grasp-depth", type=float, default=0.015, help="--grasp-at top: this far below the top [m]")
-    ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
+    ap.add_argument("--min-grasp-z", type=float, default=0.02,
+                    help="lowest grasp point for a level grasp [m] (the table clearance check still applies)")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the shape's top [m]")
-    ap.add_argument("--close-radius", type=float, default=0.22,
-                    help="closer than this to an arm's base, the gripper picks top-down instead of level [m]")
+    ap.add_argument("--close-radius", type=float, default=0.15,
+                    help="closer than this to an arm's base, the gripper picks top-down first instead of level [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per task")
-    ap.add_argument("--clearance", type=float, default=TABLE_CLEARANCE)
+    ap.add_argument("--clearance", type=float, default=0.01,
+                    help="the gripper keeps this far above the table in the plans [m]")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--serial", type=int, help="the ZED's serial number (default: the first camera)")

@@ -105,6 +105,19 @@ def jaw_table():
     return commands, np.array(widths), {"grasp_x": grasp[0], "fixed_face_x": fixed_face}
 
 
+@lru_cache(maxsize=1)
+def tip_below_grasp():
+    """How far the fingertips are below the grasp point when the gripper points down [m] (from the URDF)."""
+    root = ET.parse(URDF).getroot()
+    links = {link.get("name"): link for link in root.findall("link")}
+    joints = {joint.get("name"): joint for joint in root.findall("joint")}
+    R1, t1 = _origin(joints["gripper_frame_joint"])
+    _, t2 = _origin(joints["grasp_center_joint"])
+    grasp = R1 @ t2 + t1
+    tip = min(h[:, 2].min() for h in _collision_hulls(links["gripper_link"], FIXED_JAW_MESH))
+    return float(grasp[2] - tip)
+
+
 def opening_width(command):
     """Widest object [m] that fits between the jaws at this command, centred on the grasp point."""
     commands, widths, _ = jaw_table()
