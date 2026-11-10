@@ -265,7 +265,11 @@ class Coordinator:
         """Block until a task for this arm can start (then reserve its regions), or None when nothing is left."""
         with self.cond:
             while not self.stop.is_set():
-                mine = [t for t in self.tasks if t.arm == arm and t.state == "waiting"]
+                # closest object to the arm first; a task that cannot start now (e.g. the other arm works in the
+                # drop-off strip it needs) is skipped for the next closest one that can (its own side)
+                base = self.regions.bases.get(arm)
+                mine = sorted((t for t in self.tasks if t.arm == arm and t.state == "waiting"),
+                              key=lambda t: 0.0 if base is None else reach(t.shape["xyz"], base))
                 coming = any(t.kind == TO_HANDOFF and t.then_arm == arm and t.state in ("waiting", "running")
                              for t in self.tasks)            # a handoff whose second half will be this arm's
                 if not mine and not coming:
@@ -325,6 +329,13 @@ class Coordinator:
                 else:
                     self.slots.pop(task.slot, None)
             self.cond.notify_all()
+
+    def relocate(self, task):
+        """The task's object was seen somewhere else (re-detected after a miss): the regions it needs again."""
+        with self.cond:
+            points = [task.shape["xyz"]] + ([] if task.kind == TO_HANDOFF else [task.box["xyz"]])
+            task.regions = self.regions.needed(task.arm, points) | ({"middle"} if task.kind == TO_HANDOFF and
+                                                                     self.regions.pair else set())
 
     def requeue(self, task):
         """Try a task again later (a missed grasp)."""

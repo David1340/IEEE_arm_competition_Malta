@@ -232,8 +232,11 @@ def execute(task, robot, plans, args, send_joints):
 
 
 # ---------------------------------------------------------------------------------------------- an arm's worker
-def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points):
-    """The arm's state machine: waiting -> planning -> picking/carrying/placing -> homing, task after task."""
+def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points, redetect=None):
+    """The arm's state machine: waiting -> planning -> picking/carrying/placing -> homing, task after task.
+    redetect(task, since): after a missed grasp (the object has probably been pushed), where the camera sees that
+    object now that the arm is home, (xyz, pixel) in the TABLE frame, or None when it is gone; without it the retry
+    goes to the old position."""
     send_joints, read_joints_rad = io
     say = lambda text: coordinator.set_state(arm, text)
     task = None
@@ -270,7 +273,28 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points)
                 say("homing")
                 go_home(robot, send_joints, read_joints_rad)
                 last_q[arm] = read_joints_rad(robot)
+                home_at = time.monotonic()                   # out of the camera's view from now on
             if result == "missed":
+                if task.attempts + 1 < args.attempts and redetect is not None:
+                    say("looking for it again")
+                    seen = redetect(task, home_at)
+                    if seen is None:
+                        print(f"  {arm}: {task.shape.get('label', 'the object')} not seen again after the miss: left")
+                        origin["state"] = "failed"
+                        coordinator.finish(task, "failed")
+                        continue
+                    xyz, pixel = seen
+                    moved = 100 * np.linalg.norm(np.asarray(xyz[:2]) - np.asarray(task.shape["xyz"][:2]))
+                    base = arm_config.base(arm)
+                    if np.hypot(xyz[0] - base["x"], xyz[1] - base["y"]) > args.max_reach:
+                        print(f"  {arm}: it moved {moved:.0f} cm, out of reach: left")
+                        origin["state"] = "failed"
+                        coordinator.finish(task, "failed")
+                        continue
+                    print(f"  {arm}: seen again {moved:.0f} cm from where it was")
+                    for shape in {id(task.shape): task.shape, id(origin): origin}.values():
+                        shape["xyz"], shape["pixel"] = np.asarray(xyz, float), pixel
+                    coordinator.relocate(task)
                 if task.attempts + 1 < args.attempts:
                     print(f"  {arm}: trying again ({task.attempts + 2}/{args.attempts})")
                     coordinator.requeue(task)

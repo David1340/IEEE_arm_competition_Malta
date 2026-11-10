@@ -241,6 +241,11 @@ def main():
     ap.add_argument("--min-reach", type=float, default=0.12, help="near limit of an arm, from its base [m]")
     ap.add_argument("--drop-step", type=float, default=0.04, help="spacing of the drop-off area's points [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per object")
+    ap.add_argument("--redetect-wait", type=float, default=1.0,
+                    help="after a miss, use detections from this long after the arm is home [s] (the centres are a "
+                         "median over --smooth-frames frames, ~0.5 s at 15 fps)")
+    ap.add_argument("--redetect-radius", type=float, default=0.12,
+                    help="after a miss, the object is looked for this far from where it was [m]")
     ap.add_argument("--approach", type=float, default=0.06, help="height above the object's top to come down from [m]")
     ap.add_argument("--grasp-depth", type=float, default=0.015, help="jaws this far below the object's top [m]")
     ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
@@ -317,6 +322,30 @@ def main():
         handoff_points = []                   # this round's free drop-off points (filled on Enter)
         can_grasp, close_checker = cpp.handoff_checker(handoff_points, args)
         marks, view = [], None
+        seen = {"objects": [], "time": 0.0, "lock": threading.Lock()}   # the live view's latest detections
+
+        def redetect(task, since):
+            """After a miss: the same object (shape and colour) nearest to where it was, in a detection made
+            --redetect-wait s after the arm got home (the centres are a median over the last frames, so the old
+            ones must have left it), within --redetect-radius. (xyz, pixel) or None."""
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                with seen["lock"]:
+                    fresh, objects = seen["time"] >= since + args.redetect_wait, list(seen["objects"])
+                if fresh:
+                    break
+                time.sleep(0.05)
+            else:
+                return None
+            old = np.asarray(task.shape["xyz"][:2], float)
+            same = [o for o in objects if o["name"] == task.shape.get("name")
+                    and o["colour"] == task.shape.get("object_colour")]
+            if not same:
+                return None
+            best = min(same, key=lambda o: np.linalg.norm(o["xyz"][:2] - old))
+            if np.linalg.norm(best["xyz"][:2] - old) > args.redetect_radius:
+                return None
+            return best["xyz"], best["pixel"]
         print(f"Arms: {', '.join(bases)} | drop-off area: {len(area)} points"
               + ("" if len(bases) > 1 else " (one arm: no drop-off)")
               + ("" if len(bases) < 2 else
@@ -344,6 +373,7 @@ def main():
                 opening = (args.grip_open if args.grip_open is not None
                            else jaw.open_command(jaw.object_width(OBJECT_STL_FILES[o["name"]]), args.grip_margin))
                 shapes.append({"kind": "shape", "colour": wanted, "label": f"{o['colour'] or '?'} {o['name']}",
+                               "name": o["name"], "object_colour": o["colour"],
                                "xyz": o["xyz"], "pixel": o["pixel"], "state": "todo", "open_cmd": opening,
                                "source": id(o)})
             return shapes, boxes, notes
@@ -390,7 +420,7 @@ def main():
             for name, robot in robots.items():
                 worker = threading.Thread(target=cpp.arm_worker, daemon=True, name=name,
                                           args=(name, robot, coordinator, marks, last_q, args,
-                                                (send_joints, read_joints_rad), handoff_points))
+                                                (send_joints, read_joints_rad), handoff_points, redetect))
                 workers.append(worker)
                 worker.start()
 
@@ -425,6 +455,8 @@ def main():
         sized = False
         while True:
             canvas, objects, bins = detect(vision, colors, table_from_default)
+            with seen["lock"]:
+                seen["objects"], seen["time"] = objects, time.monotonic()
             if view is None:
                 view = TableView(vision.cam, bases, regions, args.max_reach, args.min_reach, canvas.shape)
             busy = any(w.is_alive() for w in workers)
