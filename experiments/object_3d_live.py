@@ -21,11 +21,14 @@ Usage:
 
 The red ball on each arm is the planner's grasp point (between the jaws, the repo's robot model). Once a second the
 terminal prints how far it is from the nearest detected object. To check the calibration: put the real jaws around a
-real object by hand (torque is off); the numbers are then the planner's error there, e.g. "12 mm farther out" means
-the arm stops 12 mm short of objects at that place.
+real object by hand (torque is off) and close them on it; the numbers (object centre vs the middle of the model's
+jaws) are then the planner's error there, e.g. "12 mm farther out" means the arm stops 12 mm short of objects at
+that place.
 
-To fix a constant offset (the arm's base position in arms.json): put the jaws on an object (top-down, the tip on
-the centre of its top, or around it), press c; repeat at 3+ different places; press w. The mean offset is added to
+To fix a constant offset (the arm's base position in arms.json): by hand, close the real gripper on an object as
+in a real grasp (the jaws around it, roughly halfway up), press c; repeat at 3+ different places; press w. The
+object's centre is compared with the point halfway between the model's jaws at their live opening (where a held
+object's centre is), so the measurement does not depend on where the fingertip is. The mean offset is added to
 the arm's base x, y in arms.json (a copy is kept as arms.json.bak) - if the samples agree within 8 mm; if not,
 the error is not the base (see the message).
 
@@ -102,6 +105,8 @@ class PyBulletTwin:
             self.ee_link_index = self.link_indices[EE_LINK]
             # the point between the jaws the planner aims at the object (grasp_center_link), a red ball per arm
             self.grasp_link_index = self.link_indices.get("grasp_center_link", self.ee_link_index)
+            self.gripper_link_index = self.link_indices["gripper_link"]
+            self.gripper_command = {}                   # the arm's live gripper reading (0-100)
             ball = p.createVisualShape(p.GEOM_SPHERE, radius=0.006, rgbaColor=[1, 0, 0, 1], physicsClientId=self.client)
             self.grasp_balls = {name: p.createMultiBody(0, -1, ball, physicsClientId=self.client)
                                 for name in self.robot_ids}
@@ -213,8 +218,20 @@ class PyBulletTwin:
         gripper_angle = info[8] + normalized * (info[9] - info[8])
         self.p.resetJointState(robot_id, gripper_index, float(gripper_angle), physicsClientId=self.client)
         name = arm if arm is not None else next(iter(self.robot_ids))
+        self.gripper_command[name] = float(gripper_position)
         self.p.resetBasePositionAndOrientation(self.grasp_balls[name], self.grasp_point(name).tolist(), [0, 0, 0, 1],
                                                physicsClientId=self.client)
+
+    def held_point(self, arm):
+        """Where an object held by that arm's jaws has its centre (halfway between the jaws at their live opening,
+        control/gripper.held_point), TABLE frame. With the real gripper closed on an object, compare the object's
+        detected centre with this."""
+        from control.gripper import held_point
+
+        state = self.p.getLinkState(self.robot_ids[arm], self.gripper_link_index, computeForwardKinematics=True,
+                                    physicsClientId=self.client)
+        rotation = np.array(self.p.getMatrixFromQuaternion(state[5])).reshape(3, 3)
+        return np.asarray(state[4], float) + rotation @ held_point(self.gripper_command.get(arm, 50.0))
 
     def grasp_point(self, arm):
         """The planner's grasp point (between the jaws) of that arm's model, TABLE frame."""
@@ -351,7 +368,7 @@ def main():
                 print(f"\n{datetime.now():%H:%M:%S} | {len(objects)} objects")
                 for name in names:
                     if name in robots:
-                        print("  " + jaw_report(name, twin.grasp_point(name), bases[name], objects))
+                        print("  " + jaw_report(name, twin.held_point(name), bases[name], objects))
                 for index, (class_name, confidence, center, count) in enumerate(objects, 1):
                     if center is None:
                         print(f"  {index}. {class_name} conf={confidence:.2f}: depth unavailable ({count} points)")
@@ -363,9 +380,9 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
-            if key == ord("c"):      # record the jaw -> object offset of every live arm (real jaws on the object)
+            if key == ord("c"):      # record the jaw -> object offset of every live arm (real gripper closed on it)
                 for name in robots:
-                    found = jaw_offset(twin.grasp_point(name), objects)
+                    found = jaw_offset(twin.held_point(name), objects)
                     if found is None:
                         print(f"{name}: no object detected, nothing recorded")
                         continue
