@@ -304,13 +304,26 @@ class Coordinator:
                 self.cond.wait(timeout=0.5)
             return None
 
+    def _release(self, arm):
+        """Free every region the arm holds (its task's object may have moved: not only task.regions)."""
+        for region in [r for r, holder in self.held.items() if holder == arm]:
+            self.held.pop(region)
+
+    def claim(self, task) -> bool:
+        """Reserve the task's regions again (after relocate: its object moved). False when one of them is held by
+        the other arm (the task then goes back to the queue)."""
+        with self.cond:
+            if any(self.held.get(r, task.arm) != task.arm for r in task.regions):
+                return False
+            for region in task.regions:
+                self.held[region] = task.arm
+            return True
+
     def finish(self, task, result: str, handoff_xyz=None):
-        """result: 'done' or 'failed'; frees the task's regions (the arm is home again)."""
+        """result: 'done' or 'failed'; frees the arm's regions (the arm is home again)."""
         with self.cond:
             task.state = result
-            for region in task.regions:
-                if self.held.get(region) == task.arm:
-                    self.held.pop(region)
+            self._release(task.arm)
             self.running.discard(task.arm)
             if task.kind == FROM_HANDOFF and task.slot is not None:
                 if result == "done":
@@ -337,14 +350,12 @@ class Coordinator:
             task.regions = self.regions.needed(task.arm, points) | ({"middle"} if task.kind == TO_HANDOFF and
                                                                      self.regions.pair else set())
 
-    def requeue(self, task):
-        """Try a task again later (a missed grasp)."""
+    def requeue(self, task, count=True):
+        """Try a task again later (a missed grasp or drop; count=False: not an attempt, e.g. its region was taken)."""
         with self.cond:
             task.state = "waiting"
-            task.attempts += 1
-            for region in task.regions:
-                if self.held.get(region) == task.arm:
-                    self.held.pop(region)
+            task.attempts += 1 if count else 0
+            self._release(task.arm)
             self.running.discard(task.arm)
             if task.kind == TO_HANDOFF and task.slot is not None:
                 self.slots.pop(task.slot, None)
