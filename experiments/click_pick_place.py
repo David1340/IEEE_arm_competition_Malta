@@ -116,7 +116,7 @@ def handoff_checker(handoff_points, args):
                 grasp_z = grasp_height(top, args)
                 ok = False
                 for posture in postures_for(h, args):
-                    for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):
+                    for z in grasp_heights(top, posture, args):
                         world.start_q = list(HOME_Q)
                         result = world.find_pose([h[0], h[1], z], args.seed, posture=posture)
                         if result is not None and result.success:
@@ -141,6 +141,16 @@ def grasp_height(top, args):
     there is no pose there, the planner tries 5 mm higher each time."""
     z = top / 2 if getattr(args, "grasp_at", "middle") == "middle" else top - args.grasp_depth
     return max(z, args.min_grasp_z)
+
+
+def grasp_heights(top, posture, args):
+    """The heights to try for the point between the jaws, lowest first (5 mm steps). Top-down the jaw tips hang
+    ~2 cm below that point, so it may go up to 1.5 cm over the object's top and still close on its upper part. Level
+    (horizontal) the jaws are at that height: above --level-below-top under the top they close over the object (a
+    miss), so a level grasp is only tried low enough; too short an object gets none (top-down instead)."""
+    low = grasp_height(top, args)
+    high = top + 0.015 if posture == "down" else top - args.level_below_top
+    return np.arange(low, high + 1e-6, 0.005) if high >= low else np.array([])
 
 
 def postures_for(xy_arm, args):
@@ -185,11 +195,13 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             drop_z = max(args.box_height + args.drop_above, top + args.lift)
             rest = lambda z: [("over box", [b[0], b[1], drop_z])]
             place_postures = ["horizontal", "down"]
-        grasp_z = grasp_height(top, args)
         error = None
         # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails
         for posture in postures_for(o, args):
-            for z in np.arange(grasp_z, max(top + 0.015, grasp_z) + 1e-6, 0.005):   # as in pick_and_place.py
+            heights = grasp_heights(top, posture, args)
+            if not len(heights):
+                print(f"  {arm}: a {100 * top:.1f} cm object is too short for a level grasp: top-down")
+            for z in heights:
                 try:
                     plans = plan_sequence(world, start_q, [
                         ("above shape", [o[0], o[1], top + args.approach]),
@@ -453,6 +465,9 @@ def main():
     ap.add_argument("--approach", type=float, default=0.06, help="height above the shape's top to come down from [m]")
     ap.add_argument("--grasp-at", choices=["middle", "top"], default="middle",
                     help="grasp at half the shape's height, or --grasp-depth below its top")
+    ap.add_argument("--level-below-top", type=float, default=0.01,
+                    help="a level (horizontal) grasp goes at least this far below the shape's top [m]; higher, the "
+                         "jaws close over it, so a shorter shape is grasped top-down")
     ap.add_argument("--grasp-depth", type=float, default=0.015, help="--grasp-at top: this far below the top [m]")
     ap.add_argument("--min-grasp-z", type=float, default=0.04, help="lowest point between the jaws [m]")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the shape's top [m]")
