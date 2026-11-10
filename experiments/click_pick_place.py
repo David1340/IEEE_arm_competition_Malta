@@ -344,7 +344,7 @@ def main():
     handoff_points = arm_config.handoff_points()
 
     import pyzed.sl as sl
-    from control.IK_control import connect_robot, park_and_disconnect, read_joints_rad, send_joints
+    from control.IK_control import connect_robot, on_every_arm, park_and_disconnect, read_joints_rad, send_joints
 
     robots = {}
     for name in names:
@@ -379,15 +379,13 @@ def main():
             CURRENT["coordinator"].stop.set()
         for worker in workers:
             worker.join()
-        for robot in robots.values():
-            if robot:
-                park_and_disconnect(robot)
+        on_every_arm(robots, lambda name, robot: park_and_disconnect(robot))    # both arms at the same time
 
     def home_all():
-        for name, robot in robots.items():
-            if robot:
-                go_home(robot, send_joints, read_joints_rad)
-                last_q[name] = read_joints_rad(robot)
+        def home(name, robot):
+            go_home(robot, send_joints, read_joints_rad)
+            last_q[name] = read_joints_rad(robot)
+        on_every_arm(robots, home)                     # both arms at the same time
 
     def running():
         return any(w.is_alive() for w in workers)

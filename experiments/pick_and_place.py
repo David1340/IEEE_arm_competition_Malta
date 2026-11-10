@@ -281,7 +281,7 @@ def main():
     colors = load_colors()
     print("Sorting " + task_config.describe(args.round))
 
-    from control.IK_control import connect_robot, park_and_disconnect, read_joints_rad, send_joints
+    from control.IK_control import connect_robot, on_every_arm, park_and_disconnect, read_joints_rad, send_joints
 
     robots, workers, vision = {}, [], None
     run = {"coordinator": None, "start": 0.0, "reported": True, "status": "Enter: sort what is in view"}
@@ -304,10 +304,10 @@ def main():
         last_q = {n: list(HOME_Q) for n in robots}
 
         def home_all():
-            for name, robot in robots.items():
-                if robot is not None:
-                    go_home(robot, send_joints, read_joints_rad)
-                    last_q[name] = read_joints_rad(robot)
+            def home(name, robot):
+                go_home(robot, send_joints, read_joints_rad)
+                last_q[name] = read_joints_rad(robot)
+            on_every_arm(robots, home)                 # both arms at the same time
 
         print("Arms going home ...")
         home_all()
@@ -465,9 +465,7 @@ def main():
             vision.close()
         cv2.destroyAllWindows()
         close_checker()
-        for robot in robots.values():
-            if robot is not None:
-                park_and_disconnect(robot)
+        on_every_arm(robots, lambda name, robot: park_and_disconnect(robot))    # both arms at the same time
 
 
 if __name__ == "__main__":

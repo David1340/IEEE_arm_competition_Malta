@@ -199,6 +199,29 @@ def park_pose(robot) -> list[float]:
     return list(HOME_Q)
 
 
+def on_every_arm(robots, action):
+    """Run action(name, robot) for every connected arm AT THE SAME TIME (one thread each: every arm has its own
+    serial bus) and wait for all of them; an error in one arm is raised after the others have finished."""
+    import threading
+
+    errors = []
+
+    def run(name, robot):
+        try:
+            action(name, robot)
+        except BaseException as error:          # noqa: BLE001 - re-raised below
+            errors.append(error)
+
+    threads = [threading.Thread(target=run, args=(name, robot), name=f"{name}-move")
+               for name, robot in robots.items() if robot is not None]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise errors[0]
+
+
 def park_and_disconnect(robot, park=None, release=None):
     """End of a script: move the arm smoothly to its park pose (see park_pose; the home pose, gripper at
     HOME_GRIPPER), then disconnect. The motors
