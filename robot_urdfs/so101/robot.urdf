@@ -349,12 +349,12 @@
   </joint>
 
   <!-- Point between the jaws where a grasped object is centred; the planner puts the object's centre here. Deep in the
-       gripper: 42 mm up from the fingertips and 25 mm from the fixed finger's inner face (towards the moving jaw), so
-       the fingers close around the object and an object up to 50 mm wide clears the fixed finger on the way down.
+       gripper: 42 mm up from the fingertips and 30 mm from the fixed finger's inner face (towards the moving jaw), so
+       the fingers close around the object and an object up to 60 mm wide clears the fixed finger on the way down.
        (Was -0.02 0 -0.02: 27 mm from the tips, 20 mm from the fixed finger.) -->
   <link name="grasp_center_link"/>
   <joint name="grasp_center_joint" type="fixed">
-    <origin xyz="-0.025 0.0 -0.035" rpy="0 0 0"/>
+    <origin xyz="-0.03 0.0 -0.035" rpy="0 0 0"/>
     <parent link="gripper_frame_link"/>
     <child link="grasp_center_link"/>
   </joint>
