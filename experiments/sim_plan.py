@@ -166,6 +166,8 @@ class World:
 
     level_tolerance_deg = 30.0      # how far a "horizontal" pose may tilt from level (click_pick_place --level-tolerance)
 
+    stall_iterations = None         # M-FRPSO gives up after this many iterations without progress (None: never)
+
     def find_pose(self, target, seed=0, tolerance=0.012, posture="horizontal", orientation_tolerance_deg=None,
                   orientation_weight=0.05):
         """M-FRPSO: one collision-free joint pose with the point between the jaws at target (x, y, z), within
@@ -196,7 +198,7 @@ class World:
             target, target_orientation=orientation, start_q=self.start_q,
             num_particles=160, elite_count=5, max_iterations=160, orientation_weight=orientation_weight,
             position_tolerance_m=tolerance, orientation_tolerance_rad=math.radians(orientation_tolerance_deg),
-            seed=seed,
+            seed=seed, stall_iterations=self.stall_iterations,
         )
 
     def find_path(self, goal_q, seed=0):

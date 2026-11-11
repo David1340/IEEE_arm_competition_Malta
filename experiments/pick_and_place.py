@@ -127,10 +127,12 @@ ROUGH = 0.03           # m: the in-between points (above, lift, over the box) on
 SEED_TRIES = 3         # a failed point is tried again from other random starts
 
 
-def plan_sequence(world, start_q, waypoints, seed, postures=None):
+def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=None):
     """Plan start -> each waypoint in turn. waypoints: [(label, xyz in the arm frame)] or
     [(label, xyz, tolerance m)]; without a tolerance the grasp is PRECISE and every other point ROUGH.
     postures: {label: [gripper postures to try, in order]} ("horizontal", "down", "free"; sim_plan.World.find_pose),
+    seed_tries: random starts per point (default SEED_TRIES); a failed start costs ~1.5 s, a pose that exists
+    is found in ~10 ms.
     default horizontal. Returns [(label, path)] or raises RuntimeError naming the step that failed."""
     q = np.array(start_q, float)
     q[4] = world.start_q[4]          # wrist roll is fixed at its value when the world was built
@@ -146,7 +148,7 @@ def plan_sequence(world, start_q, waypoints, seed, postures=None):
         print(f"    planning '{label}' ...", flush=True)
         for posture in (postures or {}).get(label, ["horizontal"]):
             for tolerance in tolerances:
-                for attempt in range(SEED_TRIES):
+                for attempt in range(SEED_TRIES if seed_tries is None else seed_tries):
                     result = world.find_pose(xyz, seed + attempt, tolerance=tolerance, posture=posture)
                     if result is not None and result.success:
                         break
@@ -283,6 +285,9 @@ def main():
                          "objects too close to the base for that are left); auto: top-down near the base or as a fallback")
     ap.add_argument("--level-tolerance", type=float, default=15.0,
                     help="how far a level gripper may tilt from level [deg] (was 30)")
+    ap.add_argument("--ik-stall", type=int, default=30,
+                    help="the IK search gives up on a pose after this many iterations without progress (0 = run all "
+                         "160); unreachable grasp heights then cost ~0.6 s instead of ~1.5 s")
     ap.add_argument("--level-min-contact", type=float, default=0.015,
                     help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
                          "the fingers cover at least this much of it [m]")

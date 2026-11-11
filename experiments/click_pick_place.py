@@ -49,7 +49,7 @@ from control.coordinator import BOX_SLACK, DIRECT, TO_HANDOFF, Coordinator, Regi
 from experiments.click_to_go import click_to_camera_xyz  # noqa: E402
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_CURRENT_MA, GRIP_SQUEEZE_UNITS,  # noqa: E402
                                        GRIPPER_OPEN, HOME_Q, close_gripper_with_current_feedback)
-from experiments.pick_and_place import follow, go_home, plan_sequence  # noqa: E402
+from experiments.pick_and_place import SEED_TRIES, follow, go_home, plan_sequence  # noqa: E402
 from experiments.sim_plan import JOINTS, TABLE_CLEARANCE, URDF_FILE, World  # noqa: E402
 
 WINDOW = "click pick and place"
@@ -112,6 +112,7 @@ def handoff_checker(handoff_points, args):
                     worlds[arm] = World([], list(HOME_Q), gui=False, clearance=args.clearance, arm=arm,
                                         calibration_path=arm_config.follower_calibration(arm))
                     worlds[arm].level_tolerance_deg = getattr(args, "level_tolerance", 30.0)
+                    worlds[arm].stall_iterations = getattr(args, "ik_stall", 30) or None
                 world = worlds[arm]
                 h = (arm_from_table(arm) @ np.array([*handoff_points[i][:2], 0.0, 1.0]))[:3]
                 grasp_z = grasp_height(top, args)
@@ -204,6 +205,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     world = World([], start_q, gui=args.gui, clearance=args.clearance, arm=arm,
                   calibration_path=arm_config.follower_calibration(arm), gripper_open=opening / 100)
     world.level_tolerance_deg = getattr(args, "level_tolerance", 30.0)
+    world.stall_iterations = getattr(args, "ik_stall", 30) or None
     try:
         for other in obstacles["shapes"]:
             if other is task.shape or other is task.shape.get("origin"):
@@ -228,31 +230,38 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             rest = lambda z: [("over box", [b[0], b[1], drop_z])]
             place_postures = ["horizontal", "down"]
         error = None
-        # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails
-        for posture in postures_for(o, args):
-            heights = grasp_heights(top, posture, args)
-            if not len(heights):
-                print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
-            for z in heights:
-                try:
-                    plans = plan_sequence(world, start_q, [
-                        ("above shape", [o[0], o[1], top + args.approach]),
-                        ("grasp", [o[0], o[1], z]),
-                        ("lift", [o[0], o[1], top + args.lift]),
-                        *rest(z),
-                    ], args.seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
-                                            "over handoff": place_postures, "place": place_postures,
-                                            "leave handoff": place_postures, "over box": ["horizontal", "down"]})
-                    print(f"  {arm}: {posture} grasp ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
-                    if args.gui:
-                        for _, path in plans:
-                            world.start_q = list(path[0])
-                            world.play(path)
-                    return plans, z
-                except RuntimeError as exc:
-                    error = exc
-                    if "grasp" not in str(exc) and "place" not in str(exc):
-                        break
+        # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails.
+        # A pose that exists is found in ~10 ms, but each failed search takes ~1.5 s, and a grasp height that is out
+        # of reach fails for every random start. So scan every height with ONE start first and only then give the
+        # same heights the other starts (before: 3 starts per height, ~20 s for an object whose lowest heights are
+        # out of reach).
+        passes = [(args.seed, 1), (args.seed + 1, SEED_TRIES - 1)] if SEED_TRIES > 1 else [(args.seed, 1)]
+        for seed, tries in passes:
+            for posture in postures_for(o, args):
+                heights = grasp_heights(top, posture, args)
+                if not len(heights) and seed == args.seed:
+                    print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
+                for z in heights:
+                    try:
+                        plans = plan_sequence(world, start_q, [
+                            ("above shape", [o[0], o[1], top + args.approach]),
+                            ("grasp", [o[0], o[1], z]),
+                            ("lift", [o[0], o[1], top + args.lift]),
+                            *rest(z),
+                        ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
+                                           "over handoff": place_postures, "place": place_postures,
+                                           "leave handoff": place_postures, "over box": ["horizontal", "down"]},
+                            seed_tries=tries)
+                        print(f"  {arm}: {posture} grasp ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
+                        if args.gui:
+                            for _, path in plans:
+                                world.start_q = list(path[0])
+                                world.play(path)
+                        return plans, z
+                    except RuntimeError as exc:
+                        error = exc
+                        if "grasp" not in str(exc) and "place" not in str(exc):
+                            break
         raise RuntimeError(str(error))
     finally:
         world.close()
@@ -511,6 +520,9 @@ def main():
                          "objects too close to the base for that are left); auto: top-down near the base or as a fallback")
     ap.add_argument("--level-tolerance", type=float, default=15.0,
                     help="how far a level gripper may tilt from level [deg] (was 30)")
+    ap.add_argument("--ik-stall", type=int, default=30,
+                    help="the IK search gives up on a pose after this many iterations without progress (0 = run all "
+                         "160); unreachable grasp heights then cost ~0.6 s instead of ~1.5 s")
     ap.add_argument("--level-min-contact", type=float, default=0.015,
                     help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
                          "the fingers cover at least this much of it [m]")

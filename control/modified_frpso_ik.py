@@ -372,11 +372,15 @@ class ModifiedFRPSOIK:
         orientation_tolerance_rad: float = math.radians(5.0),
         seed: int = 0,
         fast_first: bool = True,
+        stall_iterations: int | None = None,
     ) -> IKResult | None:
         """Find a collision-free joint configuration for a target end-effector pose.
 
         Returns the best collision-free result found, or None if no collision-free
         sample was found. The PyBullet body is left at the returned joint solution.
+        stall_iterations: give up once the best cost has not improved by 1% for this many iterations (default
+        None: always run max_iterations). A pose that exists is usually found early; a target that is out of
+        reach (or blocked) otherwise costs the full max_iterations.
         """
         if num_particles < 2 or not 1 <= elite_count < num_particles:
             raise ValueError("Require num_particles >= 2 and 1 <= elite_count < num_particles")
@@ -422,6 +426,8 @@ class ModifiedFRPSOIK:
         elite_archive: list[tuple[float, np.ndarray, float, float | None]] = []
         best_result = None
         uniform_count = num_particles // (elite_count + 1)
+        last_improvement, improved_cost = 0, math.inf
+        self.stall_trace = []                    # (iteration, best cost) at each improvement, for tuning
 
         for iteration in range(1, max_iterations + 1):
             # The pose error first (cheap forward kinematics), then the collision check (expensive) only for
@@ -467,10 +473,16 @@ class ModifiedFRPSOIK:
                 )
                 if best_result is None or candidate_result.cost < best_result.cost:
                     best_result = candidate_result
+                if candidate_result.cost < 0.99 * improved_cost:
+                    improved_cost, last_improvement = candidate_result.cost, iteration
+                    self.stall_trace.append((iteration, candidate_result.cost))
                 if candidate_result.success:
                     self._set_joint_state(candidate_result.joint_positions)
                     self.obstacle_body_ids = original_obstacles
                     return candidate_result
+
+            if stall_iterations is not None and iteration - last_improvement >= stall_iterations:
+                break                            # no progress for a while: this target is very likely unreachable
 
             if not elite_archive:
                 population = self._apply_fixed_joint_values(
