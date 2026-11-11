@@ -3,10 +3,10 @@
   "unit": "degrees",
   "description": "Software offsets added to live arm joint readings and subtracted from motor targets.",
   "joint_offsets_deg": {
-    "shoulder_pan": 0.0,
-    "shoulder_lift": -7.157894611358643,
-    "elbow_flex": -6.736842155456543,
-    "wrist_flex": 0.0,
-    "wrist_roll": 0.0
+    "shoulder_pan": -3.684210777282715,
+    "shoulder_lift": -4.842105388641357,
+    "elbow_flex": -5.3684210777282715,
+    "wrist_flex": 1.2631587982177734,
+    "wrist_roll": -2.1052627563476562
   }
 }
