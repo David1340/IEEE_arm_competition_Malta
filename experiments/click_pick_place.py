@@ -111,6 +111,7 @@ def handoff_checker(handoff_points, args):
                 if arm not in worlds:
                     worlds[arm] = World([], list(HOME_Q), gui=False, clearance=args.clearance, arm=arm,
                                         calibration_path=arm_config.follower_calibration(arm))
+                    worlds[arm].level_tolerance_deg = getattr(args, "level_tolerance", 30.0)
                 world = worlds[arm]
                 h = (arm_from_table(arm) @ np.array([*handoff_points[i][:2], 0.0, 1.0]))[:3]
                 grasp_z = grasp_height(top, args)
@@ -143,11 +144,17 @@ def grasp_height(top, args):
     return max(z, args.min_grasp_z)
 
 
+# How far the fingers reach below the grasp point when the gripper is level (PyBullet, robot_urdfs/so101: plates from
+# 3.3 cm below to 2.9 cm above it). A level grasp point cannot go lower than about 3.5 cm (table clearance).
+LEVEL_JAW_BELOW = 0.033
+
+
 def grasp_heights(top, posture, args):
     """The heights to try for the grasp point, lowest first (5 mm steps); the planner's table clearance check
     decides which are possible.
       level (horizontal): the jaws are at that height, so from half the object's height (--grasp-at) up to
-          --level-below-top under its top (higher, they close over it); not below --min-grasp-z.
+          --level-below-top under its top (higher, they close over it); not below --min-grasp-z. With
+          --pick-posture level, up to where the fingers still cover --level-min-contact of the object.
       down: the fingertips hang tip_below_grasp() (from the URDF) below the grasp point, so it never goes lower than
           that + 1.2 cm (the tips 1.2 cm over the table), and at most so high that the tips still reach 1.2 cm
           below the object's top."""
@@ -158,15 +165,24 @@ def grasp_heights(top, posture, args):
         high = top + tip_below_grasp() - 0.012
     else:
         low, high = grasp_height(top, args), top - args.level_below_top
+        if getattr(args, "pick_posture", "level") == "level":
+            # The level fingers are tall plates reaching LEVEL_JAW_BELOW under the grasp point, so a short object is
+            # still between them with the grasp point above its top: allow that while they cover
+            # --level-min-contact of it (the table clearance check decides the lowest possible height).
+            high = max(high, top + LEVEL_JAW_BELOW - getattr(args, "level_min_contact", 0.015))
     if high < low - 1e-6:
         return np.array([])
     return np.arange(low, max(high, low) + 1e-6, 0.005)
 
 
 def postures_for(xy_arm, args):
-    """The gripper postures to try for a pick at this point (arm frame): level (straight in) first, unless it is
-    within --close-radius of the base (a level gripper cannot get that close): top-down first there. The other one
-    when the first has no pose."""
+    """The gripper postures to try for a pick at this point (arm frame).
+    --pick-posture level (default): only level (fingers parallel to the table, within --level-tolerance); an object
+        too close to the base for a level gripper (about 20 cm) then has no plan instead of a top-down grasp.
+    --pick-posture auto: level (straight in) first, unless it is within --close-radius of the base (a level gripper
+        cannot get that close): top-down first there. The other one when the first has no pose."""
+    if getattr(args, "pick_posture", "level") == "level":
+        return ["horizontal"]
     close = np.hypot(xy_arm[0], xy_arm[1]) < args.close_radius
     return ["down", "horizontal"] if close else ["horizontal", "down"]
 
@@ -183,6 +199,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     opening = task.shape.get("open_cmd", GRIPPER_OPEN)        # the jaws open only as wide as this shape needs
     world = World([], start_q, gui=args.gui, clearance=args.clearance, arm=arm,
                   calibration_path=arm_config.follower_calibration(arm), gripper_open=opening / 100)
+    world.level_tolerance_deg = getattr(args, "level_tolerance", 30.0)
     try:
         for other in obstacles["shapes"]:
             if other is task.shape or other is task.shape.get("origin"):
@@ -211,7 +228,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         for posture in postures_for(o, args):
             heights = grasp_heights(top, posture, args)
             if not len(heights):
-                print(f"  {arm}: a {100 * top:.1f} cm object is too short for a level grasp: top-down")
+                print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
             for z in heights:
                 try:
                     plans = plan_sequence(world, start_q, [
@@ -484,7 +501,15 @@ def main():
                     help="lowest grasp point for a level grasp [m] (the table clearance check still applies)")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the shape's top [m]")
     ap.add_argument("--close-radius", type=float, default=0.15,
-                    help="closer than this to an arm's base, the gripper picks top-down first instead of level [m]")
+                    help="--pick-posture auto: closer than this to an arm's base, the gripper picks top-down first [m]")
+    ap.add_argument("--pick-posture", choices=["level", "auto"], default="level",
+                    help="level (default): the fingers always parallel to the table when picking (never top-down; "
+                         "objects too close to the base for that are left); auto: top-down near the base or as a fallback")
+    ap.add_argument("--level-tolerance", type=float, default=15.0,
+                    help="how far a level gripper may tilt from level [deg] (was 30)")
+    ap.add_argument("--level-min-contact", type=float, default=0.015,
+                    help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
+                         "the fingers cover at least this much of it [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per task")
     ap.add_argument("--clearance", type=float, default=0.01,
                     help="the gripper keeps this far above the table in the plans [m]")

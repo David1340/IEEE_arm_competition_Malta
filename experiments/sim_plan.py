@@ -164,11 +164,18 @@ class World:
         self.checker._set_joint_state(q)
         p.resetBasePositionAndOrientation(self.tcp_ball, self.tcp().tolist(), [0, 0, 0, 1], physicsClientId=self.client)
 
-    def find_pose(self, target, seed=0, tolerance=0.012, posture="horizontal"):
+    level_tolerance_deg = 30.0      # how far a "horizontal" pose may tilt from level (click_pick_place --level-tolerance)
+
+    def find_pose(self, target, seed=0, tolerance=0.012, posture="horizontal", orientation_tolerance_deg=None,
+                  orientation_weight=0.05):
         """M-FRPSO: one collision-free joint pose with the point between the jaws at target (x, y, z), within
-        `tolerance` metres. posture: "horizontal" (the gripper roughly level, pointing away from the base, within
-        30 deg), "down" (pointing straight down, within 30 deg: for objects close to the base, where a level
-        gripper would need the wrist folded back) or "free" (any orientation)."""
+        `tolerance` metres. posture: "horizontal" (the gripper level, pointing away from the base), "down"
+        (pointing straight down: for objects close to the base, where a level gripper would need the wrist folded
+        back) or "free" (any orientation). The gripper may be up to orientation_tolerance_deg off that posture
+        (default: level_tolerance_deg for "horizontal", 30 for "down"); orientation_weight is how much the search
+        favours being closer to it (default 0.05; higher costs position accuracy)."""
+        if orientation_tolerance_deg is None:
+            orientation_tolerance_deg = self.level_tolerance_deg if posture == "horizontal" else 30.0
         target = np.asarray(target, dtype=float)
         p.resetBasePositionAndOrientation(self.target_ball, target.tolist(), [0, 0, 0, 1], physicsClientId=self.client)
         # Horizontal attitude of the gripper, panned toward the target, used as the orientation goal.
@@ -187,8 +194,9 @@ class World:
             orientation = None
         return self.checker.solve(
             target, target_orientation=orientation, start_q=self.start_q,
-            num_particles=160, elite_count=5, max_iterations=160, orientation_weight=0.05,
-            position_tolerance_m=tolerance, orientation_tolerance_rad=math.radians(30.0), seed=seed,
+            num_particles=160, elite_count=5, max_iterations=160, orientation_weight=orientation_weight,
+            position_tolerance_m=tolerance, orientation_tolerance_rad=math.radians(orientation_tolerance_deg),
+            seed=seed,
         )
 
     def find_path(self, goal_q, seed=0):

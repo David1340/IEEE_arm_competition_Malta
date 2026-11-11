@@ -263,7 +263,15 @@ def main():
                     help="lowest grasp point for a level grasp [m] (the table clearance check still applies)")
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the object's top [m]")
     ap.add_argument("--close-radius", type=float, default=0.15,
-                    help="closer than this to an arm's base, the gripper picks top-down first instead of level [m]")
+                    help="--pick-posture auto: closer than this to an arm's base, the gripper picks top-down first [m]")
+    ap.add_argument("--pick-posture", choices=["level", "auto"], default="level",
+                    help="level (default): the fingers always parallel to the table when picking (never top-down; "
+                         "objects too close to the base for that are left); auto: top-down near the base or as a fallback")
+    ap.add_argument("--level-tolerance", type=float, default=15.0,
+                    help="how far a level gripper may tilt from level [deg] (was 30)")
+    ap.add_argument("--level-min-contact", type=float, default=0.015,
+                    help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
+                         "the fingers cover at least this much of it [m]")
     ap.add_argument("--box-height", type=float, default=0.08, help="height of the bins [m]")
     ap.add_argument("--box-size", type=float, default=0.15, help="width of the bins, for the planner [m]")
     ap.add_argument("--box-margin", type=float, default=0.03, help="the arm keeps this much above a bin's rim [m]")
