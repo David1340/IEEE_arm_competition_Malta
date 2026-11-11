@@ -74,5 +74,12 @@
     ],
     "middle_half_width": 0.1,
     "min_spacing": 0.1
+  },
+  "network": {
+    "_about": "teleop_net.py: the leaders on one computer (python teleop_net.py send), the followers on another (python teleop_net.py receive). receiver_ip: the follower computer's address (hostname -I there); sender_ip: the leader computer's address (receive only accepts messages from it; \"\" = any); port: the UDP port the receiver opens; key: a word both computers must have the same.",
+    "receiver_ip": "",
+    "sender_ip": "",
+    "port": 5555,
+    "key": ""
   }
 }

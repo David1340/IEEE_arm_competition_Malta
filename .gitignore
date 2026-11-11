@@ -56,6 +56,7 @@ robot_urdfs/so101/assets/collision/*
 !teleoperate.sh
 !teleop.py
 !teleop_gui.py
+!teleop_net.py
 !arms.json
 !pick_and_place.json
 !ports/
