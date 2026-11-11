@@ -754,7 +754,10 @@ def offsets(args):
         print("All saved fine offsets reset to 0 degrees.")
         return
     import pybullet as p
-    from control.IK_control import URDF, connect_robot
+    from control.IK_control import connect_robot
+    # The repo's model (robot_urdfs/so101/robot.urdf), the one pick and place plans with: its world_to_base z and
+    # any other edit show here (the LeRobot copy that IK_control.py loads is not used).
+    URDF = ROOT / "robot_urdfs" / "so101" / "robot.urdf"
 
     rgba = {"follower_pink": [1.0, 0.41, 0.71, 1], "follower_blue": [0.0, 0.55, 1.0, 1]}
     arms_state, objects = [], None
