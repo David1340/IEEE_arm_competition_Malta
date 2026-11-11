@@ -55,7 +55,7 @@ from experiments.Full_pipeline import (GRIP_CURRENT_MA, GRIPPER_OPEN, HOME_GRIPP
 from experiments.Full_pipeline import (GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS,  # noqa: E402,F401
                                        close_gripper_with_current_feedback)
 from experiments.sim_plan import TABLE_CLEARANCE  # noqa: E402
-from vision.detection import OBJECT_STL_FILES  # noqa: E402
+from vision.detection import OBJECT_SIZES, OBJECT_STL_FILES  # noqa: E402
 from vision.live import Vision, add_vision_args  # noqa: E402
 
 BIN_CLASS = "bin"
@@ -80,18 +80,32 @@ def colour_of(frame, polygon, colors):
     return name, confidence
 
 
+def object_stl(name, size=""):
+    """The STL of an object of that size ("small" / "large", as vision/live.py measured it); the large one when the
+    size is unknown (--centre rect / fit do not measure it)."""
+    return OBJECT_SIZES.get(name, {}).get(size) or OBJECT_STL_FILES[name]
+
+
+def same_size(seen, shape):
+    """Whether a detection can be that object by size: the same size, or either size unknown."""
+    return not seen.get("size") or not shape.get("size") or seen["size"] == shape["size"]
+
+
 def detect(vision, colors, table_from_default):
-    """One live frame -> (canvas, objects, bins). Each is a dict: name, colour, xyz (TABLE frame; an object's top
-    centre), pixel. The centres are the median over the last frames (vision/live.py --smooth-frames)."""
+    """One live frame -> (canvas, objects, bins). Each is a dict: name, colour, size ("small" / "large", or "" when the
+    vision did not measure it), xyz (TABLE frame; an object's top centre, at its size's height), pixel. The centres
+    are the median over the last frames (vision/live.py --smooth-frames)."""
     frame, cloud = vision.grab()
     canvas, detections = vision.detect(frame, cloud)
     objects, bins = [], []
-    for (name, conf, centre, _), polygon in zip(detections, vision.last_polygons):
+    sizes = getattr(vision, "last_sizes", None) or [""] * len(detections)
+    for (name, conf, centre, _), polygon, size in zip(detections, vision.last_polygons, sizes):
         if centre is None:
             continue
         colour, _ = colour_of(frame, polygon, colors)
         xyz = (table_from_default @ np.append(np.asarray(centre, float), 1.0))[:3]
         item = {"name": name.casefold(), "conf": conf, "colour": colour, "xyz": xyz,
+                "size": size if size in ("small", "large") else "",   # rect mode puts its rectangle here
                 "pixel": np.asarray(polygon).reshape(-1, 2).mean(axis=0)}
         if item["name"] == BIN_CLASS:
             bins.append(item)
@@ -366,7 +380,7 @@ def main():
                 objects, _ = self._fresh(since)
                 old = np.asarray(shape["xyz"][:2], float)
                 same = [o for o in objects or [] if o["name"] == shape.get("name")
-                        and o["colour"] == shape.get("object_colour")]
+                        and o["colour"] == shape.get("object_colour") and same_size(o, shape)]
                 if not same:
                     return None
                 best = min(same, key=lambda o: np.linalg.norm(o["xyz"][:2] - old))
@@ -392,7 +406,8 @@ def main():
                           and m is not shape and m is not shape.get("origin")
                           and m.get("name") == shape.get("name")]
                 for o in objects or []:
-                    if o["name"] != shape.get("name") or o["colour"] != shape.get("object_colour"):
+                    if (o["name"] != shape.get("name") or o["colour"] != shape.get("object_colour")
+                            or not same_size(o, shape)):
                         continue
                     if any(np.linalg.norm(o["xyz"][:2] - np.asarray(t, float)[:2]) < 0.03 for t in others):
                         continue
@@ -426,9 +441,11 @@ def main():
                     notes[id(o)] = f"no {wanted} bin"
                     continue
                 opening = (args.grip_open if args.grip_open is not None
-                           else jaw.open_command(jaw.object_width(OBJECT_STL_FILES[o["name"]]), args.grip_margin))
-                shapes.append({"kind": "shape", "colour": wanted, "label": f"{o['colour'] or '?'} {o['name']}",
-                               "name": o["name"], "object_colour": o["colour"],
+                           else jaw.open_command(jaw.object_width(object_stl(o["name"], o["size"])),
+                                                 args.grip_margin))   # only as wide as an object of ITS size needs
+                label = " ".join(part for part in (o["colour"] or "?", o["size"], o["name"]) if part)
+                shapes.append({"kind": "shape", "colour": wanted, "label": label,
+                               "name": o["name"], "object_colour": o["colour"], "size": o["size"],
                                "xyz": o["xyz"], "pixel": o["pixel"], "state": "todo", "open_cmd": opening,
                                "source": id(o)})
             return shapes, boxes, notes
