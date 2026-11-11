@@ -165,6 +165,10 @@ def grasp_heights(top, posture, args):
         high = top + tip_below_grasp() - 0.012
     else:
         low, high = grasp_height(top, args), top - args.level_below_top
+        # Never below where the level fingers still clear the table (--clearance): a lower target is unreachable, and
+        # the IK would then stop at the nearest reachable pose up to PRECISE (12 mm) away, partly sideways, so the
+        # jaws ended off-centre on small objects. Starting at the real lowest height keeps the error near zero.
+        low = max(low, getattr(args, "clearance", 0.01) + LEVEL_JAW_BELOW + 0.002)
         if getattr(args, "pick_posture", "level") == "level":
             # The level fingers are tall plates reaching LEVEL_JAW_BELOW under the grasp point, so a short object is
             # still between them with the grasp point above its top: allow that while they cover
