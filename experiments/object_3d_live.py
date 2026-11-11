@@ -110,6 +110,7 @@ class PyBulletTwin:
             ball = p.createVisualShape(p.GEOM_SPHERE, radius=0.006, rgbaColor=[1, 0, 0, 1], physicsClientId=self.client)
             self.grasp_balls = {name: p.createMultiBody(0, -1, ball, physicsClientId=self.client)
                                 for name in self.robot_ids}
+            self._origin_markers(bases)
             self.mesh_shapes = {}
             self.object_bodies = {}
             self.object_markers = {}
@@ -122,6 +123,27 @@ class PyBulletTwin:
         except Exception:
             p.disconnect(physicsClientId=self.client)
             raise
+
+    ORIGIN_RGBA = {"follower_pink": [1.0, 0.41, 0.71, 1], "follower_blue": [0.0, 0.55, 1.0, 1]}
+
+    def _origin_markers(self, bases):
+        """A ball at each arm's base-frame origin (on the table under its shoulder pan axis: inside the base, so a
+        vertical line through it shows where it is) and a white one at the TABLE origin, halfway between the arms
+        (the frame of the detections and of go_to_point.py's points), each with a label. Visual only."""
+        p, c = self.p, self.client
+        marks = [(f"{name} origin", [x, y], self.ORIGIN_RGBA.get(name, [1, 0.8, 0, 1]))
+                 for name, (x, y, _) in bases.items()]
+        marks.append(("TABLE origin (0, 0)", [0.0, 0.0], [1, 1, 1, 1]))
+        for label, (x, y), rgba in marks:
+            shape = p.createVisualShape(p.GEOM_SPHERE, radius=0.012, rgbaColor=rgba, physicsClientId=c)
+            p.createMultiBody(0, -1, shape, basePosition=[x, y, 0.0], physicsClientId=c)
+            if not label.startswith("TABLE"):        # a flat disc on the table, wider than the base, shows around it
+                disc = p.createVisualShape(p.GEOM_CYLINDER, radius=0.075, length=0.001,
+                                           rgbaColor=[*rgba[:3], 0.55], physicsClientId=c)
+                p.createMultiBody(0, -1, disc, basePosition=[x, y, 0.0006], physicsClientId=c)
+            p.addUserDebugLine([x, y, 0.0], [x, y, 0.30], rgba[:3], lineWidth=2, physicsClientId=c)
+            p.addUserDebugText(f"{label}  x {x:+.2f} y {y:+.2f}", [x, y, 0.32], rgba[:3], textSize=1.1,
+                               physicsClientId=c)
 
     def _object_shape(self, class_name):
         class_name = class_name.strip().casefold()
