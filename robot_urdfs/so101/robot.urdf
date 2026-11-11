@@ -11,6 +11,16 @@
     <color rgba="0.1 0.1 0.1 1.0"/>
   </material>
 
+  <!-- Root: the arm's base frame (arms.json "base"), on the table. The base_link (housing and the whole arm) is
+       mounted on it at world_to_base: change its z to raise (+) or lower (-) the arm against the table, e.g.
+       0.003 when the real arm stands on a 3 mm plate. Keep the LeRobot copy (control/IK_control.py URDF) the same. -->
+  <link name="world"/>
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
   <!-- Link base -->
   <link name="base_link">
     <inertial>

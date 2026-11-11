@@ -134,7 +134,8 @@ class World:
             physics_client_id=c,
             check_self_collision=False,
             fixed_joint_values={joint["wrist_roll"]: self.start_q[4]},
-            allowed_robot_obstacle_link_pairs=[(self.table, -1, -1)],   # the base sits on the table
+            # the base sits on the table (base_link: link -1 in a URDF without the "world" root, else a link)
+            allowed_robot_obstacle_link_pairs=[(self.table, link.get("base_link", -1), -1)],
             minimum_link_heights={link[n]: clearance for n in GRIPPER_LINKS},
             **({} if calibration_path is None else {"calibration_path": calibration_path}),
             arm=arm,
