@@ -13,7 +13,8 @@
                                                        # the arm is moved by hand
     python calibration/calibrate.py offsets                  # the fine joint offsets: PyBullet sliders over the live arm
     python calibration/calibrate.py offsets --arm follower_blue   # the same for one of the two arms (its own file,
-                                                       # calibration/robots/so_follower/fine_joint_offsets_<arm>.json)
+                                                       # calibration/robots/so_follower/fine_joint_offsets_<arm>.json;
+                                                       # plus sliders for its base origin x, y, yaw in arms.json)
     python calibration/calibrate.py show                     # print what calibration.json holds
 
 The TABLE frame, shared by both arms: origin on the table halfway between the two arms' shoulder pan axes;
@@ -567,11 +568,65 @@ def check(args):
 
 
 # ---------------------------------------------------------------------------------------------- offsets
+def reference_marks(p, client, arm_id=None):
+    """Visual references in the TABLE frame for the sliders: a white ball at the TABLE origin, a ball at each
+    other follower's base origin (arms.json) and a flat square at each ArUco marker of calibration.json."""
+    sys.path.insert(0, str(ROOT))
+    from control import arm_config
+
+    def ball(xyz, rgba, radius=0.012):
+        shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=rgba, physicsClientId=client)
+        p.createMultiBody(0, -1, shape, basePosition=list(xyz), physicsClientId=client)
+
+    ball([0, 0, 0], [1, 1, 1, 1])
+    p.addUserDebugText("TABLE origin", [0, 0, 0.05], [1, 1, 1], textSize=1.0, physicsClientId=client)
+    for name in arm_config.followers():
+        if name != arm_id:
+            b = arm_config.base(name)
+            ball([b["x"], b["y"], 0], [0.6, 0.6, 0.6, 1])
+            p.addUserDebugText(f"{name} origin", [b["x"], b["y"], 0.05], [0.3, 0.3, 0.3], textSize=1.0,
+                               physicsClientId=client)
+    for marker, xy in load().get("aruco", {}).get("markers", {}).items():
+        square = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.02, 0.02, 0.0008], rgbaColor=[0.1, 0.1, 0.1, 1],
+                                     physicsClientId=client)
+        p.createMultiBody(0, -1, square, basePosition=[float(xy[0]), float(xy[1]), 0.0008], physicsClientId=client)
+        ball([float(xy[0]), float(xy[1]), 0.002], [1, 1, 1, 1], radius=0.004)
+        p.addUserDebugText(f"marker {marker}", [float(xy[0]), float(xy[1]), 0.03], [0.1, 0.1, 0.1], textSize=1.0,
+                           physicsClientId=client)
+
+
+def store_base(arm_id, base):
+    """Write an arm's base origin (TABLE frame) into arms.json (the old file kept as arms.json.bak), and rewrite
+    camera_transform.npy (camera -> the default arm's base) when the camera is calibrated."""
+    sys.path.insert(0, str(ROOT))
+    from control import arm_config
+
+    data = arm_config.load()
+    entry = data["followers"][arm_id].setdefault("base", {})
+    old = {k: float(entry.get(k, 0.0)) for k in ("x", "y", "yaw_deg")}
+    entry.update(x=round(base["x"], 4), y=round(base["y"], 4), yaw_deg=round(base["yaw_deg"], 2))
+    backup = arm_config.FILE.with_suffix(".json.bak")
+    backup.write_text(arm_config.FILE.read_text())
+    arm_config.save(data)
+    calibration = load()
+    if calibration.get("camera_to_table") is not None:
+        save(calibration)                     # camera_transform.npy follows the default arm's new base
+    print(f"{arm_id}: base x {old['x']:+.4f} -> {entry['x']:+.4f}, y {old['y']:+.4f} -> {entry['y']:+.4f} m, "
+          f"yaw {old['yaw_deg']:+.2f} -> {entry['yaw_deg']:+.2f} deg; saved {arm_config.FILE.name} "
+          f"(old one: {backup.name})")
+
+
 def offsets(args):
     """The fine joint offsets, by eye: the arm's torque off, PyBullet shows the URDF at the measured angles plus each
     joint's slider; move the arm by hand and set the sliders until the model matches it. s saves (into
     calibration.json), q or Esc leaves (unsaved changes dropped). --no-robot: sliders on the zero pose only;
-    --reset: all offsets to 0."""
+    --reset: all offsets to 0.
+
+    With --arm, three more sliders set where that arm's base frame origin is in the TABLE frame (arms.json "base":
+    x, y [m], yaw [deg]; the model is drawn there, with the TABLE origin, the other arm's origin and the ArUco
+    markers of calibration.json). To check them: put the real gripper tip on a marker (or another known point) by
+    hand and move the base sliders until the model's tip (the yellow ball) is on it. s saves them into arms.json too
+    (the old one is kept as arms.json.bak)."""
     sys.path.insert(0, str(ROOT))
     from control.fine_joint_offsets import ARM_JOINTS, load_fine_joint_offsets, own_offsets_file, save_fine_joint_offsets
 
@@ -608,22 +663,51 @@ def offsets(args):
         p.setAdditionalSearchPath(str(URDF.parent), physicsClientId=client)
         p.setGravity(0, 0, 0, physicsClientId=client)
         p.setRealTimeSimulation(0, physicsClientId=client)
-        robot_id = p.loadURDF(str(URDF), useFixedBase=True, physicsClientId=client)
+        # The model stands at the arm's base in the TABLE frame (arms.json), so it can be compared with the TABLE
+        # origin, the other arm and the markers; without --arm, at the TABLE origin as before.
+        from control import arm_config
+
+        base_now = arm_config.base(arm_id) if arm_id else {"x": 0.0, "y": 0.0, "yaw_deg": 0.0}
+        robot_id = p.loadURDF(str(URDF), basePosition=[base_now["x"], base_now["y"], 0.0],
+                              baseOrientation=p.getQuaternionFromEuler([0, 0, math.radians(base_now["yaw_deg"])]),
+                              useFixedBase=True, physicsClientId=client)
         sliders = {}
         for name in ARM_JOINTS:
             span = max(args.offset_range_deg, abs(offsets_now[name]) + 0.5)
             sliders[name] = p.addUserDebugParameter(f"{name} fine offset (deg)", -span, span, offsets_now[name],
                                                     physicsClientId=client)
+        base_sliders = {}
+        if arm_id:
+            r, ry = args.base_range, args.base_yaw_range
+            base_sliders = {
+                "x": p.addUserDebugParameter("base x in TABLE (m)", base_now["x"] - r, base_now["x"] + r,
+                                             base_now["x"], physicsClientId=client),
+                "y": p.addUserDebugParameter("base y in TABLE (m)", base_now["y"] - r, base_now["y"] + r,
+                                             base_now["y"], physicsClientId=client),
+                "yaw_deg": p.addUserDebugParameter("base yaw (deg)", base_now["yaw_deg"] - ry,
+                                                   base_now["yaw_deg"] + ry, base_now["yaw_deg"],
+                                                   physicsClientId=client),
+            }
         table = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.75, 0.9, 0.02], rgbaColor=[0.55, 0.57, 0.60, 1],
                                     physicsClientId=client)
-        p.createMultiBody(baseMass=0, baseVisualShapeIndex=table, basePosition=[0, 0.25, -0.02], physicsClientId=client)
-        p.resetDebugVisualizerCamera(1.65, 45, -45, [0.15, 0.25, 0.20], physicsClientId=client)
+        p.createMultiBody(baseMass=0, baseVisualShapeIndex=table,
+                          basePosition=[0.25, 0.0, -0.02] if arm_id else [0, 0.25, -0.02], physicsClientId=client)
+        reference_marks(p, client, arm_id)
+        tip_ball = p.createMultiBody(0, -1, p.createVisualShape(p.GEOM_SPHERE, radius=0.007, rgbaColor=[1, 0.9, 0, 1],
+                                                                physicsClientId=client), physicsClientId=client)
+        origin_ball = p.createMultiBody(0, -1, p.createVisualShape(
+            p.GEOM_SPHERE, radius=0.012, rgbaColor=[1.0, 0.41, 0.71, 1] if arm_id == "follower_pink" else
+            [0.0, 0.55, 1.0, 1] if arm_id == "follower_blue" else [1, 0.8, 0, 1], physicsClientId=client),
+            physicsClientId=client)
+        p.resetDebugVisualizerCamera(1.65, 45, -45, [base_now["x"] + 0.15, base_now["y"], 0.20],
+                                     physicsClientId=client)
         index = {p.getJointInfo(robot_id, i, physicsClientId=client)[1].decode(): i
                  for i in range(p.getNumJoints(robot_id, physicsClientId=client))}
         tip_link = next(i for i in range(p.getNumJoints(robot_id, physicsClientId=client))
                         if p.getJointInfo(robot_id, i, physicsClientId=client)[12].decode() == "gripper_frame_link")
         grip = p.getJointInfo(robot_id, index["gripper"], physicsClientId=client)
         status_id, saved = -1, offsets_now.copy()
+        base_saved = dict(base_now)
         print("Adjust the sliders: s saves, q or Esc leaves (unsaved changes dropped).")
         while p.isConnected(client):
             if robot is None:
@@ -632,16 +716,30 @@ def offsets(args):
                 obs = robot.get_observation()
                 raw, grip_pos = {name: float(obs[f"{name}.pos"]) for name in ARM_JOINTS}, float(obs["gripper.pos"])
             now = {name: float(p.readUserDebugParameter(sliders[name], physicsClientId=client)) for name in ARM_JOINTS}
+            base = ({k: float(p.readUserDebugParameter(v, physicsClientId=client)) for k, v in base_sliders.items()}
+                    if base_sliders else dict(base_now))
+            p.resetBasePositionAndOrientation(
+                robot_id, [base["x"], base["y"], 0.0], p.getQuaternionFromEuler([0, 0, math.radians(base["yaw_deg"])]),
+                physicsClientId=client)
+            p.resetBasePositionAndOrientation(origin_ball, [base["x"], base["y"], 0.0], [0, 0, 0, 1],
+                                              physicsClientId=client)
             for name in ARM_JOINTS:
                 p.resetJointState(robot_id, index[name], math.radians(raw[name] + now[name]), physicsClientId=client)
             p.resetJointState(robot_id, index["gripper"],
                               float(grip[8] + np.clip(grip_pos / 100.0, 0.0, 1.0) * (grip[9] - grip[8])),
                               physicsClientId=client)
             tip = p.getLinkState(robot_id, tip_link, computeForwardKinematics=True, physicsClientId=client)[4]
-            unsaved = not np.allclose([now[n] for n in ARM_JOINTS], [saved[n] for n in ARM_JOINTS], atol=0.01)
+            p.resetBasePositionAndOrientation(tip_ball, tip, [0, 0, 0, 1], physicsClientId=client)
+            base_unsaved = bool(base_sliders) and not np.allclose(
+                [base[k] for k in ("x", "y", "yaw_deg")], [base_saved[k] for k in ("x", "y", "yaw_deg")], atol=1e-4)
+            unsaved = base_unsaved or not np.allclose([now[n] for n in ARM_JOINTS], [saved[n] for n in ARM_JOINTS],
+                                                      atol=0.01)
+            where = "TABLE" if arm_id else "base"
             status_id = p.addUserDebugText(
                 "Fine offsets (deg): " + ", ".join(f"{n}={now[n]:+.2f}" for n in ARM_JOINTS)
-                + f" | tip={np.round(tip, 3)} m | " + ("UNSAVED" if unsaved else "SAVED") + f" | {target_file.name}",
+                + (f" | base x {base['x']:+.4f} y {base['y']:+.4f} yaw {base['yaw_deg']:+.2f}" if base_sliders else "")
+                + f" | tip ({where})={np.round(tip, 3)} m | " + ("UNSAVED" if unsaved else "SAVED")
+                + f" | {target_file.name}",
                 [0.0, 0.0, 0.75], textColorRGB=[0.05, 0.05, 0.05], textSize=1.1, lifeTime=0,
                 replaceItemUniqueId=status_id, physicsClientId=client)
             p.stepSimulation(physicsClientId=client)
@@ -650,6 +748,9 @@ def offsets(args):
                 store(now)
                 saved = now.copy()
                 print("Saved fine offsets (deg):", {n: round(now[n], 2) for n in ARM_JOINTS})
+                if base_unsaved:
+                    store_base(arm_id, base)
+                    base_saved = dict(base)
             if any(k in keys and keys[k] & p.KEY_WAS_TRIGGERED for k in (ord("q"), 27)):
                 if unsaved:
                     print("Left; the unsaved slider changes were dropped.")
@@ -680,6 +781,10 @@ def main():
     ap.add_argument("--arm", default=None, help="offsets: which arm (follower_pink, follower_blue); its own file")
     ap.add_argument("--reset", action="store_true", help="offsets: set every fine offset to 0")
     ap.add_argument("--offset-range-deg", type=float, default=10.0, help="offsets: the sliders' +- range")
+    ap.add_argument("--base-range", type=float, default=0.05,
+                    help="offsets --arm: the base x / y sliders' +- range around arms.json [m]")
+    ap.add_argument("--base-yaw-range", type=float, default=10.0,
+                    help="offsets --arm: the base yaw slider's +- range around arms.json [deg]")
     args = ap.parse_args()
     if args.show_ids:
         args.what = "ids"
