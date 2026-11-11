@@ -235,33 +235,50 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         # of reach fails for every random start. So scan every height with ONE start first and only then give the
         # same heights the other starts (before: 3 starts per height, ~20 s for an object whose lowest heights are
         # out of reach).
-        passes = [(args.seed, 1), (args.seed + 1, SEED_TRIES - 1)] if SEED_TRIES > 1 else [(args.seed, 1)]
+        def attempt(posture, z, seed, tries):
+            return plan_sequence(world, start_q, [
+                ("above shape", [o[0], o[1], top + args.approach]),
+                ("grasp", [o[0], o[1], z]),
+                ("lift", [o[0], o[1], top + args.lift]),
+                *rest(z),
+            ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
+                               "over handoff": place_postures, "place": place_postures,
+                               "leave handoff": place_postures, "over box": ["horizontal", "down"]},
+                seed_tries=tries)
+
+        def done(posture, plans, z):
+            print(f"  {arm}: {posture} grasp ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
+            if args.gui:
+                for _, path in plans:
+                    world.start_q = list(path[0])
+                    world.play(path)
+            return plans, z
+
+        retry = (args.seed + 1, SEED_TRIES - 1)
+        passes = [(args.seed, 1), retry] if SEED_TRIES > 1 else [(args.seed, 1)]
         for seed, tries in passes:
             for posture in postures_for(o, args):
                 heights = grasp_heights(top, posture, args)
                 if not len(heights) and seed == args.seed:
                     print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
-                for z in heights:
+                for i, z in enumerate(heights):
                     try:
-                        plans = plan_sequence(world, start_q, [
-                            ("above shape", [o[0], o[1], top + args.approach]),
-                            ("grasp", [o[0], o[1], z]),
-                            ("lift", [o[0], o[1], top + args.lift]),
-                            *rest(z),
-                        ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
-                                           "over handoff": place_postures, "place": place_postures,
-                                           "leave handoff": place_postures, "over box": ["horizontal", "down"]},
-                            seed_tries=tries)
-                        print(f"  {arm}: {posture} grasp ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
-                        if args.gui:
-                            for _, path in plans:
-                                world.start_q = list(path[0])
-                                world.play(path)
-                        return plans, z
+                        plans = attempt(posture, z, seed, tries)
                     except RuntimeError as exc:
                         error = exc
                         if "grasp" not in str(exc) and "place" not in str(exc):
                             break
+                        continue
+                    if seed == args.seed and i > 0 and SEED_TRIES > 1:
+                        # Found, but not at the lowest height: a lower one may only have missed its single quick
+                        # try (near the edge of what the arm reaches level). Give those the other starts first, so
+                        # the grasp is as low as possible (costs ~1-3 s, only for these picks).
+                        for lower in heights[:i]:
+                            try:
+                                return done(posture, attempt(posture, lower, *retry), lower)
+                            except RuntimeError:
+                                pass
+                    return done(posture, plans, z)
         raise RuntimeError(str(error))
     finally:
         world.close()
@@ -527,8 +544,9 @@ def main():
                     help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
                          "the fingers cover at least this much of it [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per task")
-    ap.add_argument("--clearance", type=float, default=0.01,
-                    help="the gripper keeps this far above the table in the plans [m]")
+    ap.add_argument("--clearance", type=float, default=0.005,
+                    help="the gripper keeps this far above the table in the plans [m] (was 0.01; a level grasp point "
+                         "then goes down to 4.0 cm instead of 4.5 cm; raise it if the fingers touch the table)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--serial", type=int, help="the ZED's serial number (default: the first camera)")

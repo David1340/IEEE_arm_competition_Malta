@@ -297,8 +297,9 @@ def main():
     ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over a bin's rim at release [m]")
     ap.add_argument("--drop-inset", type=float, default=0.04,
                     help="the object is released this far inside the bin's rim nearest the arm [m]")
-    ap.add_argument("--clearance", type=float, default=0.01,
-                    help="the gripper keeps this far above the table in the plans [m]")
+    ap.add_argument("--clearance", type=float, default=0.005,
+                    help="the gripper keeps this far above the table in the plans [m] (was 0.01; a level grasp point "
+                         "then goes down to 4.0 cm instead of 4.5 cm; raise it if the fingers touch the table)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--grip-margin", type=float, default=0.02,
