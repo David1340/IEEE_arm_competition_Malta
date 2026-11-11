@@ -15,6 +15,8 @@
     python calibration/calibrate.py offsets --arm follower_blue   # the same for one of the two arms (its own file,
                                                        # calibration/robots/so_follower/fine_joint_offsets_<arm>.json;
                                                        # plus sliders for its base origin x, y, yaw in arms.json)
+    python calibration/calibrate.py offsets --arm follower_pink --objects   # ... with the camera's objects shown too
+    python calibration/calibrate.py offsets --arm both --objects            # both arms in one window, objects too
     python calibration/calibrate.py show                     # print what calibration.json holds
 
 The TABLE frame, shared by both arms: origin on the table halfway between the two arms' shoulder pan axes;
@@ -568,7 +570,101 @@ def check(args):
 
 
 # ---------------------------------------------------------------------------------------------- offsets
-def reference_marks(p, client, arm_id=None):
+class LiveObjects:
+    """The camera's detected objects (vision/live.py, as pick and place sees them) in the PyBullet window: each object's
+    STL of its detected size standing at its centre in the TABLE frame, a ball on its top centre and a label. The
+    camera runs in a background thread; update() draws the latest detections (call it from the GUI loop)."""
+
+    def __init__(self, p, client):
+        import threading
+
+        sys.path.insert(0, str(ROOT))
+        sys.path.insert(0, str(ROOT / "yolo_dataset"))
+        from vision.live import Vision, add_vision_args
+
+        parser = argparse.ArgumentParser()
+        add_vision_args(parser)
+        self.vision = Vision(parser.parse_args([]))       # the same defaults as pick_and_place.py
+        # the vision code works in the default arm's base frame (camera_transform.npy): back to the TABLE frame
+        self.table_from_default = np.linalg.inv(arm_from_table(default_arm()))
+        self.p, self.client = p, client
+        self.latest, self.lock, self.stop = [], threading.Lock(), threading.Event()
+        self.bodies, self.shapes = {}, {}
+        self.thread = threading.Thread(target=self._run, name="camera", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while not self.stop.is_set():
+            try:
+                frame, cloud = self.vision.grab()
+                _, detections = self.vision.detect(frame, cloud)
+            except Exception as error:                  # keep the sliders alive if the camera hiccups
+                print(f"camera: {error}")
+                time.sleep(0.5)
+                continue
+            sizes = getattr(self.vision, "last_sizes", None) or [""] * len(detections)
+            found = []
+            for (name, conf, centre, _), size in zip(detections, sizes):
+                if centre is None:
+                    continue
+                xyz = (self.table_from_default @ np.append(np.asarray(centre, float), 1.0))[:3]
+                found.append((name.casefold(), size if size in ("small", "large") else "", float(conf), xyz))
+            with self.lock:
+                self.latest = found
+
+    def _stl(self, name, size):
+        from vision.detection import OBJECT_SIZES, OBJECT_STL_FILES
+
+        return OBJECT_SIZES.get(name, {}).get(size) or OBJECT_STL_FILES.get(name)
+
+    def update(self):
+        p, c = self.p, self.client
+        with self.lock:
+            found = list(self.latest)
+        seen, count = set(), {}
+        for name, size, conf, xyz in found:
+            key = (name, size, count.setdefault((name, size), 0))
+            count[(name, size)] += 1
+            seen.add(key)
+            label = f"{size + ' ' if size else ''}{name} {conf:.2f}  x {xyz[0]:+.3f} y {xyz[1]:+.3f} top {xyz[2]:.3f}"
+            if key not in self.bodies:
+                stl = self._stl(name, size) if name != "bin" else None
+                if stl is not None and Path(stl).is_file():
+                    if stl not in self.shapes:
+                        self.shapes[stl] = p.createVisualShape(p.GEOM_MESH, fileName=str(stl), meshScale=[0.001] * 3,
+                                                               rgbaColor=[0.2, 0.8, 0.3, 0.8], physicsClientId=c)
+                    body = p.createMultiBody(0, -1, self.shapes[stl], basePosition=[xyz[0], xyz[1], 0.0],
+                                             physicsClientId=c)
+                else:                                   # a bin (or no STL): a flat square where it is
+                    shape = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.075, 0.075, 0.002],
+                                                rgbaColor=[0.9, 0.5, 0.1, 0.6], physicsClientId=c)
+                    body = p.createMultiBody(0, -1, shape, basePosition=[xyz[0], xyz[1], 0.002], physicsClientId=c)
+                top = p.createMultiBody(0, -1, p.createVisualShape(p.GEOM_SPHERE, radius=0.006,
+                                                                   rgbaColor=[0.1, 0.9, 0.2, 1], physicsClientId=c),
+                                        basePosition=list(xyz), physicsClientId=c)
+                text = p.addUserDebugText(label, [xyz[0], xyz[1], xyz[2] + 0.03], [0.05, 0.4, 0.1], textSize=1.0,
+                                          physicsClientId=c)
+                self.bodies[key] = [body, top, text]
+            else:
+                body, top, text = self.bodies[key]
+                p.resetBasePositionAndOrientation(body, [xyz[0], xyz[1], 0.0 if name != "bin" else 0.002],
+                                                  [0, 0, 0, 1], physicsClientId=c)
+                p.resetBasePositionAndOrientation(top, list(xyz), [0, 0, 0, 1], physicsClientId=c)
+                self.bodies[key][2] = p.addUserDebugText(label, [xyz[0], xyz[1], xyz[2] + 0.03], [0.05, 0.4, 0.1],
+                                                         textSize=1.0, replaceItemUniqueId=text, physicsClientId=c)
+        for key in [k for k in self.bodies if k not in seen]:   # objects no longer seen
+            body, top, text = self.bodies.pop(key)
+            p.removeBody(body, physicsClientId=c)
+            p.removeBody(top, physicsClientId=c)
+            p.removeUserDebugItem(text, physicsClientId=c)
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=2.0)
+        self.vision.close()
+
+
+def reference_marks(p, client, shown=()):
     """Visual references in the TABLE frame for the sliders: a white ball at the TABLE origin, a ball at each
     other follower's base origin (arms.json) and a flat square at each ArUco marker of calibration.json."""
     sys.path.insert(0, str(ROOT))
@@ -581,7 +677,7 @@ def reference_marks(p, client, arm_id=None):
     ball([0, 0, 0], [1, 1, 1, 1])
     p.addUserDebugText("TABLE origin", [0, 0, 0.05], [1, 1, 1], textSize=1.0, physicsClientId=client)
     for name in arm_config.followers():
-        if name != arm_id:
+        if name not in shown:
             b = arm_config.base(name)
             ball([b["x"], b["y"], 0], [0.6, 0.6, 0.6, 1])
             p.addUserDebugText(f"{name} origin", [b["x"], b["y"], 0.05], [0.3, 0.3, 0.3], textSize=1.0,
@@ -626,139 +722,185 @@ def offsets(args):
     x, y [m], yaw [deg]; the model is drawn there, with the TABLE origin, the other arm's origin and the ArUco
     markers of calibration.json). To check them: put the real gripper tip on a marker (or another known point) by
     hand and move the base sliders until the model's tip (the yellow ball) is on it. s saves them into arms.json too
-    (the old one is kept as arms.json.bak)."""
+    (the old one is kept as arms.json.bak).
+
+    --arm both: both followers in one window, each with its own model, offset and base sliders (prefixed with its
+    name); s saves every arm. An arm that cannot be connected is shown at its zero pose with a warning.
+
+    --objects: the camera's detected objects are shown too (their STL at the detected size, a green ball on the top
+    centre, a label with x y and top), in the TABLE frame as pick and place sees them. With the real jaws closed on an
+    object by hand, the model's jaws should then be around the shown object."""
     sys.path.insert(0, str(ROOT))
+    from control import arm_config
     from control.fine_joint_offsets import ARM_JOINTS, load_fine_joint_offsets, own_offsets_file, save_fine_joint_offsets
 
-    arm_id = args.arm
-    target_file = own_offsets_file(arm_id)
-    offsets_now = load_fine_joint_offsets(arm=arm_id)
-    print(f"Fine offsets of {arm_id or 'the arm'}: saved to {target_file.relative_to(ROOT)}")
+    if args.arm in ("both", "all"):
+        arm_ids = list(arm_config.followers())
+    else:
+        arm_ids = [args.arm]                       # None: the older single-arm files, no base sliders
 
-    def store(values):
-        save_fine_joint_offsets(values, target_file)
+    def store(arm_id, values):
+        save_fine_joint_offsets(values, own_offsets_file(arm_id))
         if arm_id is None:
             update(arm={"joint_offsets_deg": {n: float(values[n]) for n in ARM_JOINTS}})
+
     if args.reset:
-        if input("Type RESET to set every fine offset to 0 degrees: ").strip().upper() != "RESET":
+        names = ", ".join(a or "the arm" for a in arm_ids)
+        if input(f"Type RESET to set every fine offset of {names} to 0 degrees: ").strip().upper() != "RESET":
             print("Cancelled; saved fine offsets were not changed.")
             return
-        store({name: 0.0 for name in ARM_JOINTS})
+        for arm_id in arm_ids:
+            store(arm_id, {name: 0.0 for name in ARM_JOINTS})
         print("All saved fine offsets reset to 0 degrees.")
         return
     import pybullet as p
     from control.IK_control import URDF, connect_robot
 
-    robot = None
+    rgba = {"follower_pink": [1.0, 0.41, 0.71, 1], "follower_blue": [0.0, 0.55, 1.0, 1]}
+    arms_state, objects = [], None
     client = p.connect(p.GUI)
     if client < 0:
         raise RuntimeError("Could not open the PyBullet calibration GUI")
     try:
-        if not args.no_robot:
-            robot = connect_robot(arm_id)
-            robot.bus.disable_torque()
-            print("SO-101 torque disabled. Move the arm by hand; no motor commands will be sent.")
-        else:
-            print("Offline preview: using zero arm pose; robot was not connected.")
         p.setAdditionalSearchPath(str(URDF.parent), physicsClientId=client)
         p.setGravity(0, 0, 0, physicsClientId=client)
         p.setRealTimeSimulation(0, physicsClientId=client)
-        # The model stands at the arm's base in the TABLE frame (arms.json), so it can be compared with the TABLE
-        # origin, the other arm and the markers; without --arm, at the TABLE origin as before.
-        from control import arm_config
+        on_table = any(arm_ids)                    # models at their bases in the TABLE frame (arms.json)
+        for arm_id in arm_ids:
+            a = {"id": arm_id, "short": (arm_id or "").replace("follower_", ""), "robot": None,
+                 "file": own_offsets_file(arm_id), "saved": load_fine_joint_offsets(arm=arm_id)}
+            print(f"Fine offsets of {arm_id or 'the arm'}: saved to {a['file'].relative_to(ROOT)}")
+            if not args.no_robot:
+                try:
+                    a["robot"] = connect_robot(arm_id)
+                    a["robot"].bus.disable_torque()
+                    print(f"{arm_id or 'SO-101'}: torque disabled. Move it by hand; no motor commands are sent.")
+                except Exception as error:         # noqa: BLE001 - one arm missing should not stop the other
+                    if len(arm_ids) == 1:
+                        raise
+                    print(f"WARNING: {arm_id} not connected ({error}); shown at its zero pose")
+            base = arm_config.base(arm_id) if arm_id else {"x": 0.0, "y": 0.0, "yaw_deg": 0.0}
+            a["base_saved"] = dict(base)
+            a["model"] = p.loadURDF(str(URDF), basePosition=[base["x"], base["y"], 0.0],
+                                    baseOrientation=p.getQuaternionFromEuler([0, 0, math.radians(base["yaw_deg"])]),
+                                    useFixedBase=True, physicsClientId=client)
+            prefix = f"{a['short']} " if len(arm_ids) > 1 else ""
+            a["sliders"] = {}
+            for name in ARM_JOINTS:
+                span = max(args.offset_range_deg, abs(a["saved"][name]) + 0.5)
+                a["sliders"][name] = p.addUserDebugParameter(f"{prefix}{name} fine offset (deg)", -span, span,
+                                                             a["saved"][name], physicsClientId=client)
+            a["base_sliders"] = {}
+            if arm_id:
+                r, ry = args.base_range, args.base_yaw_range
+                a["base_sliders"] = {
+                    "x": p.addUserDebugParameter(f"{prefix}base x in TABLE (m)", base["x"] - r, base["x"] + r,
+                                                 base["x"], physicsClientId=client),
+                    "y": p.addUserDebugParameter(f"{prefix}base y in TABLE (m)", base["y"] - r, base["y"] + r,
+                                                 base["y"], physicsClientId=client),
+                    "yaw_deg": p.addUserDebugParameter(f"{prefix}base yaw (deg)", base["yaw_deg"] - ry,
+                                                       base["yaw_deg"] + ry, base["yaw_deg"], physicsClientId=client),
+                }
+            model = a["model"]
+            a["index"] = {p.getJointInfo(model, i, physicsClientId=client)[1].decode(): i
+                          for i in range(p.getNumJoints(model, physicsClientId=client))}
+            a["tip_link"] = next(i for i in range(p.getNumJoints(model, physicsClientId=client))
+                                 if p.getJointInfo(model, i, physicsClientId=client)[12].decode() == "gripper_frame_link")
+            a["grip"] = p.getJointInfo(model, a["index"]["gripper"], physicsClientId=client)
+            a["tip_ball"] = p.createMultiBody(0, -1, p.createVisualShape(
+                p.GEOM_SPHERE, radius=0.007, rgbaColor=[1, 0.9, 0, 1], physicsClientId=client), physicsClientId=client)
+            a["origin_ball"] = p.createMultiBody(0, -1, p.createVisualShape(
+                p.GEOM_SPHERE, radius=0.012, rgbaColor=rgba.get(arm_id, [1, 0.8, 0, 1]), physicsClientId=client),
+                physicsClientId=client)
+            a["status"] = -1
+            arms_state.append(a)
+        if not args.no_robot and all(a["robot"] is None for a in arms_state):
+            print("No arm connected: zero poses only.")
+        if args.no_robot:
+            print("Offline preview: using zero arm poses; no robot connected.")
 
-        base_now = arm_config.base(arm_id) if arm_id else {"x": 0.0, "y": 0.0, "yaw_deg": 0.0}
-        robot_id = p.loadURDF(str(URDF), basePosition=[base_now["x"], base_now["y"], 0.0],
-                              baseOrientation=p.getQuaternionFromEuler([0, 0, math.radians(base_now["yaw_deg"])]),
-                              useFixedBase=True, physicsClientId=client)
-        sliders = {}
-        for name in ARM_JOINTS:
-            span = max(args.offset_range_deg, abs(offsets_now[name]) + 0.5)
-            sliders[name] = p.addUserDebugParameter(f"{name} fine offset (deg)", -span, span, offsets_now[name],
-                                                    physicsClientId=client)
-        base_sliders = {}
-        if arm_id:
-            r, ry = args.base_range, args.base_yaw_range
-            base_sliders = {
-                "x": p.addUserDebugParameter("base x in TABLE (m)", base_now["x"] - r, base_now["x"] + r,
-                                             base_now["x"], physicsClientId=client),
-                "y": p.addUserDebugParameter("base y in TABLE (m)", base_now["y"] - r, base_now["y"] + r,
-                                             base_now["y"], physicsClientId=client),
-                "yaw_deg": p.addUserDebugParameter("base yaw (deg)", base_now["yaw_deg"] - ry,
-                                                   base_now["yaw_deg"] + ry, base_now["yaw_deg"],
-                                                   physicsClientId=client),
-            }
         table = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.75, 0.9, 0.02], rgbaColor=[0.55, 0.57, 0.60, 1],
                                     physicsClientId=client)
         p.createMultiBody(baseMass=0, baseVisualShapeIndex=table,
-                          basePosition=[0.25, 0.0, -0.02] if arm_id else [0, 0.25, -0.02], physicsClientId=client)
-        reference_marks(p, client, arm_id)
-        tip_ball = p.createMultiBody(0, -1, p.createVisualShape(p.GEOM_SPHERE, radius=0.007, rgbaColor=[1, 0.9, 0, 1],
-                                                                physicsClientId=client), physicsClientId=client)
-        origin_ball = p.createMultiBody(0, -1, p.createVisualShape(
-            p.GEOM_SPHERE, radius=0.012, rgbaColor=[1.0, 0.41, 0.71, 1] if arm_id == "follower_pink" else
-            [0.0, 0.55, 1.0, 1] if arm_id == "follower_blue" else [1, 0.8, 0, 1], physicsClientId=client),
-            physicsClientId=client)
-        p.resetDebugVisualizerCamera(1.65, 45, -45, [base_now["x"] + 0.15, base_now["y"], 0.20],
+                          basePosition=[0.25, 0.0, -0.02] if on_table else [0, 0.25, -0.02], physicsClientId=client)
+        if on_table:
+            reference_marks(p, client, shown=arm_ids)
+        middle = np.mean([[a["base_saved"]["x"], a["base_saved"]["y"]] for a in arms_state], axis=0)
+        p.resetDebugVisualizerCamera(1.65 if len(arm_ids) == 1 else 1.9, 45, -45, [middle[0] + 0.15, middle[1], 0.20],
                                      physicsClientId=client)
-        index = {p.getJointInfo(robot_id, i, physicsClientId=client)[1].decode(): i
-                 for i in range(p.getNumJoints(robot_id, physicsClientId=client))}
-        tip_link = next(i for i in range(p.getNumJoints(robot_id, physicsClientId=client))
-                        if p.getJointInfo(robot_id, i, physicsClientId=client)[12].decode() == "gripper_frame_link")
-        grip = p.getJointInfo(robot_id, index["gripper"], physicsClientId=client)
-        status_id, saved = -1, offsets_now.copy()
-        base_saved = dict(base_now)
+        if args.objects:
+            print("Starting the camera: the detected objects are shown in the TABLE frame ...")
+            objects = LiveObjects(p, client)
         print("Adjust the sliders: s saves, q or Esc leaves (unsaved changes dropped).")
         while p.isConnected(client):
-            if robot is None:
-                raw, grip_pos = {name: 0.0 for name in ARM_JOINTS}, 50.0
-            else:
-                obs = robot.get_observation()
-                raw, grip_pos = {name: float(obs[f"{name}.pos"]) for name in ARM_JOINTS}, float(obs["gripper.pos"])
-            now = {name: float(p.readUserDebugParameter(sliders[name], physicsClientId=client)) for name in ARM_JOINTS}
-            base = ({k: float(p.readUserDebugParameter(v, physicsClientId=client)) for k, v in base_sliders.items()}
-                    if base_sliders else dict(base_now))
-            p.resetBasePositionAndOrientation(
-                robot_id, [base["x"], base["y"], 0.0], p.getQuaternionFromEuler([0, 0, math.radians(base["yaw_deg"])]),
-                physicsClientId=client)
-            p.resetBasePositionAndOrientation(origin_ball, [base["x"], base["y"], 0.0], [0, 0, 0, 1],
-                                              physicsClientId=client)
-            for name in ARM_JOINTS:
-                p.resetJointState(robot_id, index[name], math.radians(raw[name] + now[name]), physicsClientId=client)
-            p.resetJointState(robot_id, index["gripper"],
-                              float(grip[8] + np.clip(grip_pos / 100.0, 0.0, 1.0) * (grip[9] - grip[8])),
-                              physicsClientId=client)
-            tip = p.getLinkState(robot_id, tip_link, computeForwardKinematics=True, physicsClientId=client)[4]
-            p.resetBasePositionAndOrientation(tip_ball, tip, [0, 0, 0, 1], physicsClientId=client)
-            base_unsaved = bool(base_sliders) and not np.allclose(
-                [base[k] for k in ("x", "y", "yaw_deg")], [base_saved[k] for k in ("x", "y", "yaw_deg")], atol=1e-4)
-            unsaved = base_unsaved or not np.allclose([now[n] for n in ARM_JOINTS], [saved[n] for n in ARM_JOINTS],
-                                                      atol=0.01)
-            where = "TABLE" if arm_id else "base"
-            status_id = p.addUserDebugText(
-                "Fine offsets (deg): " + ", ".join(f"{n}={now[n]:+.2f}" for n in ARM_JOINTS)
-                + (f" | base x {base['x']:+.4f} y {base['y']:+.4f} yaw {base['yaw_deg']:+.2f}" if base_sliders else "")
-                + f" | tip ({where})={np.round(tip, 3)} m | " + ("UNSAVED" if unsaved else "SAVED")
-                + f" | {target_file.name}",
-                [0.0, 0.0, 0.75], textColorRGB=[0.05, 0.05, 0.05], textSize=1.1, lifeTime=0,
-                replaceItemUniqueId=status_id, physicsClientId=client)
+            any_unsaved = False
+            for row, a in enumerate(arms_state):
+                model, robot = a["model"], a["robot"]
+                if robot is None:
+                    raw, grip_pos = {name: 0.0 for name in ARM_JOINTS}, 50.0
+                else:
+                    obs = robot.get_observation()
+                    raw = {name: float(obs[f"{name}.pos"]) for name in ARM_JOINTS}
+                    grip_pos = float(obs["gripper.pos"])
+                a["now"] = now = {name: float(p.readUserDebugParameter(a["sliders"][name], physicsClientId=client))
+                                  for name in ARM_JOINTS}
+                a["base"] = base = ({k: float(p.readUserDebugParameter(v, physicsClientId=client))
+                                     for k, v in a["base_sliders"].items()} if a["base_sliders"]
+                                    else dict(a["base_saved"]))
+                p.resetBasePositionAndOrientation(model, [base["x"], base["y"], 0.0],
+                                                  p.getQuaternionFromEuler([0, 0, math.radians(base["yaw_deg"])]),
+                                                  physicsClientId=client)
+                p.resetBasePositionAndOrientation(a["origin_ball"], [base["x"], base["y"], 0.0], [0, 0, 0, 1],
+                                                  physicsClientId=client)
+                for name in ARM_JOINTS:
+                    p.resetJointState(model, a["index"][name], math.radians(raw[name] + now[name]),
+                                      physicsClientId=client)
+                grip = a["grip"]
+                p.resetJointState(model, a["index"]["gripper"],
+                                  float(grip[8] + np.clip(grip_pos / 100.0, 0.0, 1.0) * (grip[9] - grip[8])),
+                                  physicsClientId=client)
+                tip = p.getLinkState(model, a["tip_link"], computeForwardKinematics=True, physicsClientId=client)[4]
+                p.resetBasePositionAndOrientation(a["tip_ball"], tip, [0, 0, 0, 1], physicsClientId=client)
+                a["base_unsaved"] = bool(a["base_sliders"]) and not np.allclose(
+                    [base[k] for k in ("x", "y", "yaw_deg")], [a["base_saved"][k] for k in ("x", "y", "yaw_deg")],
+                    atol=1e-4)
+                a["unsaved"] = a["base_unsaved"] or not np.allclose(
+                    [now[n] for n in ARM_JOINTS], [a["saved"][n] for n in ARM_JOINTS], atol=0.01)
+                any_unsaved |= a["unsaved"]
+                where = "TABLE" if on_table else "base"
+                a["status"] = p.addUserDebugText(
+                    (f"{a['id']}: " if a["id"] else "") + "offsets (deg) "
+                    + ", ".join(f"{n}={now[n]:+.2f}" for n in ARM_JOINTS)
+                    + (f" | base x {base['x']:+.4f} y {base['y']:+.4f} yaw {base['yaw_deg']:+.2f}"
+                       if a["base_sliders"] else "")
+                    + f" | tip ({where})={np.round(tip, 3)} m | " + ("UNSAVED" if a["unsaved"] else "SAVED")
+                    + ("" if robot is not None or args.no_robot else " | NOT CONNECTED"),
+                    [middle[0], middle[1], 0.75 - 0.06 * row], textColorRGB=[0.05, 0.05, 0.05], textSize=1.1,
+                    lifeTime=0, replaceItemUniqueId=a["status"], physicsClientId=client)
+            if objects is not None:
+                objects.update()
             p.stepSimulation(physicsClientId=client)
             keys = p.getKeyboardEvents(physicsClientId=client)
             if ord("s") in keys and keys[ord("s")] & p.KEY_WAS_TRIGGERED:
-                store(now)
-                saved = now.copy()
-                print("Saved fine offsets (deg):", {n: round(now[n], 2) for n in ARM_JOINTS})
-                if base_unsaved:
-                    store_base(arm_id, base)
-                    base_saved = dict(base)
+                for a in arms_state:
+                    store(a["id"], a["now"])
+                    a["saved"] = dict(a["now"])
+                    print(f"Saved fine offsets of {a['id'] or 'the arm'} (deg):",
+                          {n: round(a["now"][n], 2) for n in ARM_JOINTS})
+                    if a["base_unsaved"]:
+                        store_base(a["id"], a["base"])
+                        a["base_saved"] = dict(a["base"])
             if any(k in keys and keys[k] & p.KEY_WAS_TRIGGERED for k in (ord("q"), 27)):
-                if unsaved:
+                if any_unsaved:
                     print("Left; the unsaved slider changes were dropped.")
                 break
             time.sleep(0.02)
     finally:
-        if robot is not None:
-            robot.disconnect()
+        if objects is not None:
+            objects.close()
+        for a in arms_state:
+            if a["robot"] is not None:
+                a["robot"].disconnect()
         if p.isConnected(client):
             p.disconnect(physicsClientId=client)
 
@@ -778,9 +920,12 @@ def main():
     ap.add_argument("--port", help="check: the arm's port (default: found by so101ik); 'sim' for no arm")
     ap.add_argument("--no-offsets", action="store_true", help="check: without the fine joint offsets")
     ap.add_argument("--no-robot", action="store_true", help="offsets: sliders on the zero pose, no arm")
-    ap.add_argument("--arm", default=None, help="offsets: which arm (follower_pink, follower_blue); its own file")
+    ap.add_argument("--arm", default=None,
+                    help="offsets: which arm (follower_pink, follower_blue, or both: the two in one window); its own file")
     ap.add_argument("--reset", action="store_true", help="offsets: set every fine offset to 0")
     ap.add_argument("--offset-range-deg", type=float, default=10.0, help="offsets: the sliders' +- range")
+    ap.add_argument("--objects", action="store_true",
+                    help="offsets: also show the camera's detected objects (ZED + YOLO, as pick_and_place sees them)")
     ap.add_argument("--base-range", type=float, default=0.05,
                     help="offsets --arm: the base x / y sliders' +- range around arms.json [m]")
     ap.add_argument("--base-yaw-range", type=float, default=10.0,
