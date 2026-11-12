@@ -590,6 +590,12 @@ class LiveObjects:
         self.p, self.client = p, client
         self.latest, self.lock, self.stop = [], threading.Lock(), threading.Event()
         self.bodies, self.shapes = {}, {}
+        # the ArUco markers as the camera sees them now (point cloud -> calibration.json's camera_to_table), to compare
+        # with their hand-measured positions (calibration.json aruco markers, the dark squares)
+        self.camera_to_table = camera_to_table()
+        self.dictionary = load().get("aruco", {}).get("dictionary")
+        self.hand_markers = {k: np.asarray(v, float) for k, v in load().get("aruco", {}).get("markers", {}).items()}
+        self.seen_markers, self.marker_items, self.last_report = {}, {}, 0.0
         self.thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self.thread.start()
 
@@ -602,6 +608,16 @@ class LiveObjects:
                 print(f"camera: {error}")
                 time.sleep(0.5)
                 continue
+            if self.camera_to_table is not None:
+                try:
+                    corners, _ = find_markers(frame, self.dictionary)
+                    seen = {mid: (self.camera_to_table @ np.append(xyz, 1.0))[:3]
+                            for mid, xyz in marker_centres(cloud, corners).items()}
+                except Exception as error:          # noqa: BLE001 - markers are only a check
+                    print(f"markers: {error}")
+                    seen = {}
+                with self.lock:
+                    self.seen_markers = seen
             sizes = getattr(self.vision, "last_sizes", None) or [""] * len(detections)
             found = []
             for (name, conf, centre, _), size in zip(detections, sizes):
@@ -652,11 +668,37 @@ class LiveObjects:
                 p.resetBasePositionAndOrientation(top, list(xyz), [0, 0, 0, 1], physicsClientId=c)
                 self.bodies[key][2] = p.addUserDebugText(label, [xyz[0], xyz[1], xyz[2] + 0.03], [0.05, 0.4, 0.1],
                                                          textSize=1.0, replaceItemUniqueId=text, physicsClientId=c)
+        self._draw_markers()
         for key in [k for k in self.bodies if k not in seen]:   # objects no longer seen
             body, top, text = self.bodies.pop(key)
             p.removeBody(body, physicsClientId=c)
             p.removeBody(top, physicsClientId=c)
             p.removeUserDebugItem(text, physicsClientId=c)
+
+    def _draw_markers(self):
+        """A red ball where the camera sees each ArUco marker, labelled with its distance from the hand-measured
+        position; the differences are printed every 3 s."""
+        p, c = self.p, self.client
+        with self.lock:
+            seen = dict(self.seen_markers)
+        lines = []
+        for mid, xyz in seen.items():
+            hand = self.hand_markers.get(mid)
+            off = "" if hand is None else (f" | {1000 * (xyz[0] - hand[0]):+.0f}, {1000 * (xyz[1] - hand[1]):+.0f} mm "
+                                           f"from hand")
+            label = f"marker {mid} seen x {100 * xyz[0]:.1f} y {100 * xyz[1]:+.1f} cm{off}"
+            lines.append(label)
+            if mid not in self.marker_items:
+                ball = p.createMultiBody(0, -1, p.createVisualShape(p.GEOM_SPHERE, radius=0.008, rgbaColor=[0.9, 0.1, 0.1, 1],
+                                                                    physicsClientId=c), physicsClientId=c)
+                self.marker_items[mid] = [ball, -1]
+            ball, text = self.marker_items[mid]
+            p.resetBasePositionAndOrientation(ball, [xyz[0], xyz[1], 0.005], [0, 0, 0, 1], physicsClientId=c)
+            self.marker_items[mid][1] = p.addUserDebugText(label, [xyz[0], xyz[1], 0.05], [0.8, 0.05, 0.05],
+                                                           textSize=1.0, replaceItemUniqueId=text, physicsClientId=c)
+        if lines and time.time() - self.last_report > 3.0:
+            self.last_report = time.time()
+            print("ArUco markers (camera vs hand-measured): " + "; ".join(sorted(lines)))
 
     def close(self):
         self.stop.set()
@@ -689,6 +731,35 @@ def reference_marks(p, client, shown=()):
         ball([float(xy[0]), float(xy[1]), 0.002], [1, 1, 1, 1], radius=0.004)
         p.addUserDebugText(f"marker {marker}", [float(xy[0]), float(xy[1]), 0.03], [0.1, 0.1, 0.1], textSize=1.0,
                            physicsClientId=client)
+
+
+def working_area(p, client, args):
+    """The black-taped working area on the table, in the TABLE frame, from its measured size: --area-size W D
+    (across, along y / forward, along x, m), --area-near (x of its near edge: how far in front of the TABLE origin it
+    starts), --area-tape (tape width, m) and --area-tape-side (out: W x D is inside the tape, the tape outside it;
+    in: W x D is to the tape's outer edge). Centred on y = 0, between the arms. Returns its 4 inside corners."""
+    width, depth = args.area_size
+    tape = args.area_tape
+    inside = (width, depth) if args.area_tape_side == "out" else (width - 2 * tape, depth - 2 * tape)
+    near = args.area_near if args.area_tape_side == "out" else args.area_near + tape
+    x0, x1, y0, y1 = near, near + inside[1], -inside[0] / 2, inside[0] / 2
+
+    def strip(xa, xb, ya, yb):                      # a flat black rectangle on the table
+        shape = p.createVisualShape(p.GEOM_BOX, halfExtents=[(xb - xa) / 2, (yb - ya) / 2, 0.0004],
+                                    rgbaColor=[0.02, 0.02, 0.02, 1], physicsClientId=client)
+        p.createMultiBody(0, -1, shape, basePosition=[(xa + xb) / 2, (ya + yb) / 2, 0.0005], physicsClientId=client)
+
+    strip(x0 - tape, x1 + tape, y0 - tape, y0)      # right side (y < 0)
+    strip(x0 - tape, x1 + tape, y1, y1 + tape)      # left side (y > 0)
+    strip(x0 - tape, x0, y0, y1)                    # near side
+    strip(x1, x1 + tape, y0, y1)                    # far side
+    corners = [(x0, y0), (x0, y1), (x1, y1), (x1, y0)]
+    for x, y in corners:
+        p.addUserDebugText(f"({100 * x:.1f}, {100 * y:+.1f}) cm", [x, y, 0.02], [0.05, 0.05, 0.05], textSize=0.9,
+                           physicsClientId=client)
+    print(f"Working area (inside the tape), TABLE frame: x {100 * x0:.1f} .. {100 * x1:.1f} cm, "
+          f"y {100 * y0:+.1f} .. {100 * y1:+.1f} cm; tape {100 * tape:.1f} cm wide, outside it")
+    return corners
 
 
 def store_base(arm_id, base):
@@ -828,6 +899,8 @@ def offsets(args):
                           basePosition=[0.25, 0.0, -0.02] if on_table else [0, 0.25, -0.02], physicsClientId=client)
         if on_table:
             reference_marks(p, client, shown=arm_ids)
+            if not args.no_area:
+                working_area(p, client, args)
         middle = np.mean([[a["base_saved"]["x"], a["base_saved"]["y"]] for a in arms_state], axis=0)
         p.resetDebugVisualizerCamera(1.65 if len(arm_ids) == 1 else 1.9, 45, -45, [middle[0] + 0.15, middle[1], 0.20],
                                      physicsClientId=client)
@@ -929,6 +1002,16 @@ def main():
     ap.add_argument("--offset-range-deg", type=float, default=10.0, help="offsets: the sliders' +- range")
     ap.add_argument("--objects", action="store_true",
                     help="offsets: also show the camera's detected objects (ZED + YOLO, as pick_and_place sees them)")
+    ap.add_argument("--area-size", type=float, nargs=2, default=[0.80, 0.50], metavar=("ACROSS", "FORWARD"),
+                    help="offsets: the taped working area: across (along y, between the arms) and forward (along x) [m]")
+    ap.add_argument("--area-near", type=float, default=0.065,
+                    help="offsets: x of the working area's near edge, in front of the TABLE origin (halfway between the "
+                         "arms) [m]")
+    ap.add_argument("--area-tape", type=float, default=0.018, help="offsets: the black tape's width [m]")
+    ap.add_argument("--area-tape-side", choices=["out", "in"], default="out",
+                    help="offsets: out = --area-size and --area-near are to the tape's inner edge (the tape outside the "
+                         "area); in = to its outer edge")
+    ap.add_argument("--no-area", action="store_true", help="offsets: do not draw the working area")
     ap.add_argument("--base-range", type=float, default=0.05,
                     help="offsets --arm: the base x / y sliders' +- range around arms.json [m]")
     ap.add_argument("--base-yaw-range", type=float, default=10.0,
