@@ -566,7 +566,7 @@ def _rigid_2d(src, dst):
     return yaw, dc - R @ sc
 
 
-def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, table_z=0.0, log=print):
+def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, table_z=0.0, log=print, thin_width=0.018):
     """camera -> TABLE (4 x 4) from the black tape around the working area.
 
     The table plane fixes the camera's tilt and height. The tape pixels are the dark pixels lying ON that plane (within
@@ -593,14 +593,37 @@ def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, tabl
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     if count <= 1:
         raise RuntimeError(f"no dark pixels on the table (threshold {threshold:.0f}): is the tape in view?")
-    big = stats[1:, cv2.CC_STAT_AREA].max()
-    keep = [i for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= 0.05 * big]
+    # only specks are dropped here (the thin-line test below leaves out wide dark patches); a rule relative to the
+    # biggest patch dropped the tape's pieces whenever a big shadow or dark surface was in view
+    keep = [i for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= 30]
     mask = np.isin(labels, keep).astype(np.uint8)
     flat = (xyz @ R1.T)[:, :2]                             # the plane's 2-D frame (z dropped)
-    pts = flat[mask.reshape(-1).astype(bool)]
+    dark_index = np.flatnonzero(mask.reshape(-1))
+    pts = flat[dark_index]
+    # Keep only THIN dark lines, measured on the table (top-down, 4 mm cells): the tape is a 1.8 cm band, while
+    # shadows, dark surfaces past the tape and dark things lying flat are wide patches. A patch that survives an
+    # opening with a square wider than 2 x the tape is wide, and is left out.
+    cell = 0.004
+    lo = pts.min(axis=0)
+    ij = np.floor((pts - lo) / cell).astype(int)
+    grid = np.zeros((ij[:, 1].max() + 1, ij[:, 0].max() + 1), np.uint8)
+    grid[ij[:, 1], ij[:, 0]] = 1
+    grid = cv2.morphologyEx(grid, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))   # holes between sparse points
+    k = max(3, int(round(2 * thin_width / cell)) | 1)
+    wide = cv2.morphologyEx(grid, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    wide = cv2.dilate(wide, np.ones((5, 5), np.uint8))
+    thin = wide[ij[:, 1], ij[:, 0]] == 0
+    dropped = 1 - thin.mean()
+    pts = pts[thin]
+    mask = np.zeros(h * w, np.uint8)
+    mask[dark_index[thin]] = 1
+    mask = mask.reshape(h, w)
+    if len(pts) < 200:
+        raise RuntimeError("no thin dark lines on the table after leaving out wide dark patches: is the tape in view?")
     if len(pts) > 40000:
         pts = pts[np.random.default_rng(0).choice(len(pts), 40000, replace=False)]
-    log(f"tape: {len(pts)} dark points on the table (brightness < {threshold:.0f})")
+    log(f"tape: {len(pts)} dark points on the table (brightness < {threshold:.0f}); {100 * dropped:.0f} % of the dark "
+        f"points were in wide dark patches (shadows, dark surfaces) and left out")
 
     def rot(a):
         return np.array([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]])
@@ -627,6 +650,22 @@ def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, tabl
     else:
         candidates.sort(key=lambda c: -c[1][0])            # the camera (plane-frame origin) in front of the area
     yaw, t = candidates[1 if flip else 0]
+
+    # Coarse search of the shift: with a side hidden (or in shadow) the rectangle around the visible tape is off by
+    # up to half the missing side, and ICP from there can lock the near / far sides on while the position along them
+    # stays wrong. Try every shift within +-25 cm (1 cm steps; then +-1 cm in 2 mm) and keep the one that puts the
+    # most points on the tape band.
+    sample = pts[np.random.default_rng(1).choice(len(pts), min(len(pts), 3000), replace=False)]
+    for span, step in ((0.25, 0.01), (0.012, 0.002)):
+        placed = sample @ rot(yaw).T + t
+        best = (-1, 0.0, 0.0)
+        for dx in np.arange(-span, span + 1e-9, step):
+            for dy in np.arange(-span, span + 1e-9, step):
+                _, dist = _closest_on_rectangle(placed + [dx, dy], corners)
+                score = int((dist <= half + 0.004).sum())
+                if score > best[0]:
+                    best = (score, dx, dy)
+        t = t + [best[1], best[2]]
 
     gate = 0.05
     for _ in range(40):                                    # trimmed ICP onto the tape's centre line
@@ -683,7 +722,7 @@ def tape(args):
     if prior is not None:
         print("using the current calibration to tell the near side from the far side (--tape-flip turns it 180 deg)")
     T, rep = fit_tape(frame, cloud, plane, model, prior=prior, flip=args.tape_flip, dark=args.tape_dark,
-                      table_z=load().get("table_z", 0.0))
+                      table_z=load().get("table_z", 0.0), thin_width=args.area_tape)
     print(f"fit: {100 * rep['on_tape_share']:.0f} % of the dark points on the tape band; points off the band "
           f"{rep['outside_rms_mm']:.1f} mm rms; sides seen (near, left, far, right): "
           + ", ".join(f"{100 * v:.0f} %" for v in rep["sides_seen"]))
@@ -692,6 +731,7 @@ def tape(args):
         turned = np.degrees(np.arccos(np.clip((np.trace(prior[:3, :3].T @ T[:3, :3]) - 1) / 2, -1, 1)))
         print(f"compared with the current calibration: camera {moved:.0f} mm, {turned:.1f} deg apart")
     # picture: the tape pixels used, and the fitted tape (outer and inner edges) drawn back into the image
+    sys.path.insert(0, str(ROOT))
     from vision.silhouette_live import intrinsics_from_cloud
 
     intr = intrinsics_from_cloud(np.asarray(cloud[..., :3], float))
@@ -710,7 +750,17 @@ def tape(args):
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), img)
     print(f"Picture: {path}  (red = tape outer edge, magenta = inner edge as fitted; near = the arms' side)")
-    if args.yes or input("Save to calibration.json? [Y/n] ").strip().lower() in ("", "y", "yes"):
+    good = rep["on_tape_share"] >= 0.8 and rep["outside_rms_mm"] <= 4.0 and sum(v >= 0.3 for v in rep["sides_seen"]) >= 3
+    if good:
+        print("The fit looks good (most dark points on the tape band, close to it, 3+ sides seen).")
+        question = "Save to calibration.json? [Y/n] "
+    else:
+        print("WARNING: the fit looks POOR (want >= 80 % on the band, <= 4 mm off it, 3+ sides seen). Look at the "
+              "picture: the tape fully in view? Something else dark and thin on the table (cables, a black edge)? "
+              "Try --tape-dark (lower, e.g. 50), or --tape-flip if near / far are swapped. Not saving is recommended.")
+        question = "Save anyway? [y/N] "
+    answer = "y" if args.yes and good else input(question).strip().lower()
+    if answer in (("", "y", "yes") if good else ("y", "yes")):
         data = load()
         data.pop("camera_to_base", None)
         save(data)
