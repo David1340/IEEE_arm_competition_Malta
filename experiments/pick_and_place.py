@@ -298,6 +298,9 @@ def main():
     ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over a bin's rim at release [m]")
     ap.add_argument("--drop-inset", type=float, default=0.04,
                     help="the object is released this far inside the bin's rim nearest the arm [m]")
+    ap.add_argument("--bin-conf", type=float, default=0.6,
+                    help="bins detected with less confidence than this are left out (e.g. a half-visible bin at the "
+                         "edge of the view)")
     ap.add_argument("--neighbour-radius", type=float, default=0.0,
                     help="the other objects as obstacles for the planner: columns this many m either side of their "
                          "centre up to their top. 0 (default): ignored, so objects close together or touching are "
@@ -440,8 +443,9 @@ def main():
         def to_marks(objects, bins):
             """The detections as the coordinator's marks: shapes (colour = the colour of the bin they go in) and
             boxes; and {id(object): why it is left} for the ones without a rule or a bin in view."""
-            boxes = [{"kind": "box", "colour": b["colour"], "xyz": b["xyz"], "pixel": b["pixel"], "state": "todo"}
-                     for b in bins if b["colour"]]
+            boxes = [{"kind": "box", "colour": b["colour"], "xyz": b["xyz"], "pixel": b["pixel"], "state": "todo",
+                      "conf": b["conf"]}
+                     for b in bins if b["colour"] and b["conf"] >= args.bin_conf]     # weak detections left out
             shapes, notes = [], {}
             for o in objects:
                 wanted = task_config.bin_colour(o["name"], o["colour"], args.round)

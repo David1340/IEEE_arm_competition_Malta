@@ -144,7 +144,14 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_gr
         if not matching:
             skipped.append((shape, f"no {shape['colour']} box marked"))
             continue
-        box = matching[-1]
+        # Of the boxes of that colour (a stray detection can add a second one), the one an arm takes it to directly,
+        # else one reachable through a handoff, then the most confident and the nearest (it was the LAST one, which
+        # could be a half-visible bin out of reach)
+        def rank(m):
+            direct_ok = any(reach(shape["xyz"], b) <= max_reach and box_reach(m, b) <= max_reach for b in bases.values())
+            any_ok = any(box_reach(m, b) <= max_reach for b in bases.values())
+            return (0 if direct_ok else 1 if any_ok else 2, -float(m.get("conf", 1.0)), reach(shape["xyz"], m["xyz"][:2]))
+        box = min(matching, key=rank)
         by_distance = sorted(bases, key=lambda arm: reach(shape["xyz"], bases[arm]))
         direct = [arm for arm in by_distance
                   if reach(shape["xyz"], bases[arm]) <= max_reach and box_reach(box, bases[arm]) <= max_reach]
