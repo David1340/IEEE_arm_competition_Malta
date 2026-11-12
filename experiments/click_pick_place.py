@@ -170,7 +170,7 @@ def grasp_heights(top, posture, args):
         # the IK would then stop at the nearest reachable pose up to PRECISE (12 mm) away, partly sideways, so the
         # jaws ended off-centre on small objects. Starting at the real lowest height keeps the error near zero.
         low = max(low, getattr(args, "clearance", 0.01) + LEVEL_JAW_BELOW + 0.002)
-        if getattr(args, "pick_posture", "level") == "level":
+        if getattr(args, "pick_posture", "auto") == "level":
             # The level fingers are tall plates reaching LEVEL_JAW_BELOW under the grasp point, so a short object is
             # still between them with the grasp point above its top: allow that while they cover
             # --level-min-contact of it (the table clearance check decides the lowest possible height).
@@ -186,7 +186,7 @@ def postures_for(xy_arm, args):
         too close to the base for a level gripper (about 20 cm) then has no plan instead of a top-down grasp.
     --pick-posture auto: level (straight in) first, unless it is within --close-radius of the base (a level gripper
         cannot get that close): top-down first there. The other one when the first has no pose."""
-    if getattr(args, "pick_posture", "level") == "level":
+    if getattr(args, "pick_posture", "auto") == "level":
         return ["horizontal"]
     close = np.hypot(xy_arm[0], xy_arm[1]) < args.close_radius
     return ["down", "horizontal"] if close else ["horizontal", "down"]
@@ -212,7 +212,9 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                 continue
             xyz = other.get("handoff_xyz") if other["state"] == "handoff" else other["xyz"]
             xy = (to_arm @ np.append(xyz, 1.0))[:2]
-            add_obstacle(world, *xy, SHAPE_RADIUS, SHAPE_RADIUS, max(xyz[2], 0.01))
+            radius = getattr(args, "neighbour_radius", 0.0)
+            if radius > 0:                     # 0: the other objects are not obstacles (touching ones still picked)
+                add_obstacle(world, *xy, radius, radius, max(xyz[2], 0.01))
         for box in obstacles["boxes"]:
             xy = (to_arm @ np.append(box["xyz"], 1.0))[:2]
             add_obstacle(world, *xy, args.box_size / 2, args.box_size / 2, args.box_height + args.box_margin)
@@ -532,9 +534,10 @@ def main():
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the shape's top [m]")
     ap.add_argument("--close-radius", type=float, default=0.15,
                     help="--pick-posture auto: closer than this to an arm's base, the gripper picks top-down first [m]")
-    ap.add_argument("--pick-posture", choices=["level", "auto"], default="level",
-                    help="level (default): the fingers always parallel to the table when picking (never top-down; "
-                         "objects too close to the base for that are left); auto: top-down near the base or as a fallback")
+    ap.add_argument("--pick-posture", choices=["level", "auto"], default="auto",
+                    help="auto (default): level first, top-down near the base (--close-radius) or when level has no "
+                         "pose; level: the fingers always parallel to the table (never top-down; objects too close to "
+                         "the base for that are left)")
     ap.add_argument("--level-tolerance", type=float, default=15.0,
                     help="how far a level gripper may tilt from level [deg] (was 30)")
     ap.add_argument("--ik-stall", type=int, default=30,
@@ -544,6 +547,10 @@ def main():
                     help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
                          "the fingers cover at least this much of it [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per task")
+    ap.add_argument("--neighbour-radius", type=float, default=0.0,
+                    help="the other objects as obstacles for the planner: columns this many m either side of their "
+                         "centre up to their top. 0 (default): ignored, so objects close together or touching are "
+                         "still picked (the gripper may push a neighbour); 0.03 = the old 6 cm columns")
     ap.add_argument("--clearance", type=float, default=0.005,
                     help="the gripper keeps this far above the table in the plans [m] (was 0.01; a level grasp point "
                          "then goes down to 4.0 cm instead of 4.5 cm; raise it if the fingers touch the table)")

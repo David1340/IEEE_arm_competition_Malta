@@ -280,9 +280,10 @@ def main():
     ap.add_argument("--lift", type=float, default=0.10, help="lift height above the object's top [m]")
     ap.add_argument("--close-radius", type=float, default=0.15,
                     help="--pick-posture auto: closer than this to an arm's base, the gripper picks top-down first [m]")
-    ap.add_argument("--pick-posture", choices=["level", "auto"], default="level",
-                    help="level (default): the fingers always parallel to the table when picking (never top-down; "
-                         "objects too close to the base for that are left); auto: top-down near the base or as a fallback")
+    ap.add_argument("--pick-posture", choices=["level", "auto"], default="auto",
+                    help="auto (default): level first, top-down near the base (--close-radius) or when level has no "
+                         "pose; level: the fingers always parallel to the table (never top-down; objects too close to "
+                         "the base for that are left)")
     ap.add_argument("--level-tolerance", type=float, default=15.0,
                     help="how far a level gripper may tilt from level [deg] (was 30)")
     ap.add_argument("--ik-stall", type=int, default=30,
@@ -297,6 +298,10 @@ def main():
     ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over a bin's rim at release [m]")
     ap.add_argument("--drop-inset", type=float, default=0.04,
                     help="the object is released this far inside the bin's rim nearest the arm [m]")
+    ap.add_argument("--neighbour-radius", type=float, default=0.0,
+                    help="the other objects as obstacles for the planner: columns this many m either side of their "
+                         "centre up to their top. 0 (default): ignored, so objects close together or touching are "
+                         "still picked (the gripper may push a neighbour); 0.03 = the old 6 cm columns")
     ap.add_argument("--clearance", type=float, default=0.005,
                     help="the gripper keeps this far above the table in the plans [m] (was 0.01; a level grasp point "
                          "then goes down to 4.0 cm instead of 4.5 cm; raise it if the fingers touch the table)")
