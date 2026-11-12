@@ -528,6 +528,198 @@ def ids(args):
         cv2.destroyAllWindows()
 
 
+# ---------------------------------------------------------------------------------------------- black tape
+def tape_model(size, near, tape, side="in"):
+    """The taped working area in the TABLE frame: (centre-line rectangle corners (4 x 2), its half width).
+    size = (across along y, forward along x) [m]; near = x of the near edge; side "in": size and near are to the
+    tape's OUTER edge (the lab's measurements), "out": to its inner edge."""
+    across, depth = size
+    if side == "in":
+        x0, x1, half_y = near + tape / 2, near + depth - tape / 2, across / 2 - tape / 2
+    else:
+        x0, x1, half_y = near - tape / 2, near + depth + tape / 2, across / 2 + tape / 2
+    corners = np.array([[x0, -half_y], [x0, half_y], [x1, half_y], [x1, -half_y]], float)
+    return corners, tape / 2
+
+
+def _closest_on_rectangle(points, corners):
+    """For each 2-D point, the closest point on the rectangle's outline (corners in order) and the distance."""
+    best_d, best_p = np.full(len(points), np.inf), np.zeros_like(points)
+    for a, b in zip(corners, np.roll(corners, -1, axis=0)):
+        ab = b - a
+        t = np.clip(((points - a) @ ab) / (ab @ ab), 0.0, 1.0)
+        q = a + t[:, None] * ab
+        d = np.linalg.norm(points - q, axis=1)
+        closer = d < best_d
+        best_d[closer], best_p[closer] = d[closer], q[closer]
+    return best_p, best_d
+
+
+def _rigid_2d(src, dst):
+    """yaw, t with dst ~ R(yaw) src + t (least squares)."""
+    sc, dc = src.mean(axis=0), dst.mean(axis=0)
+    a, b = src - sc, dst - dc
+    yaw = math.atan2((a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).sum(), (a * b).sum())
+    R = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+    return yaw, dc - R @ sc
+
+
+def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, table_z=0.0, log=print):
+    """camera -> TABLE (4 x 4) from the black tape around the working area.
+
+    The table plane fixes the camera's tilt and height. The tape pixels are the dark pixels lying ON that plane (within
+    8 mm: black objects standing on the table are left out); in the plane's 2-D frame they are fitted to the tape's
+    known centre line (tape_model) by trimmed ICP, starting from their minimum-area rectangle with its long side on the
+    80 cm side. The rectangle looks the same turned 180 deg: prior (an earlier camera -> TABLE) picks the turn, else
+    the camera is taken to be in front of the area (beyond its far side), and flip turns it the other way.
+    Returns (T, report dict)."""
+    import cv2
+
+    corners, half = model
+    n, d = plane
+    R1 = rotation_to_z(n)
+    h, w = cloud.shape[:2]
+    xyz = np.asarray(cloud[..., :3], float).reshape(-1, 3)
+    ok = np.isfinite(xyz).all(axis=1)
+    height = np.full(len(xyz), np.inf)
+    height[ok] = xyz[ok] @ n - d                          # above the table, towards the camera
+    on_table = (np.abs(height) < 0.008).reshape(h, w)
+    value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[..., 2].astype(float)
+    threshold = dark if dark is not None else 0.5 * float(np.median(value[on_table])) if on_table.any() else 60.0
+    mask = (on_table & (value < threshold)).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    if count <= 1:
+        raise RuntimeError(f"no dark pixels on the table (threshold {threshold:.0f}): is the tape in view?")
+    big = stats[1:, cv2.CC_STAT_AREA].max()
+    keep = [i for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= 0.05 * big]
+    mask = np.isin(labels, keep).astype(np.uint8)
+    flat = (xyz @ R1.T)[:, :2]                             # the plane's 2-D frame (z dropped)
+    pts = flat[mask.reshape(-1).astype(bool)]
+    if len(pts) > 40000:
+        pts = pts[np.random.default_rng(0).choice(len(pts), 40000, replace=False)]
+    log(f"tape: {len(pts)} dark points on the table (brightness < {threshold:.0f})")
+
+    def rot(a):
+        return np.array([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]])
+
+    def wrap(a):
+        return (a + math.pi) % (2 * math.pi) - math.pi
+
+    if prior is not None:                                  # where an earlier calibration puts the tape
+        M = prior[:3, :3] @ R1.T
+        yaw_prior = math.atan2(M[1, 0], M[0, 0])
+        t_prior = prior[:2, 3] + M[:2, 2] * d
+        _, dist = _closest_on_rectangle(pts @ rot(yaw_prior).T + t_prior, corners)
+        if (dist < 0.12).sum() > 0.3 * len(pts):
+            pts = pts[dist < 0.12]                         # only near where the tape was: other dark things left out
+    centre_model = corners.mean(axis=0)
+    (cx, cy), (sw, sh), ang = cv2.minAreaRect(pts.astype(np.float32))
+    long_dir = math.radians(ang) if sw >= sh else math.radians(ang) + math.pi / 2
+    candidates = []
+    for k in (0, 1):                                       # the long side onto the TABLE y axis, both ways round
+        yaw = wrap(math.pi / 2 - long_dir + k * math.pi)
+        candidates.append((yaw, centre_model - rot(yaw) @ np.array([cx, cy])))
+    if prior is not None:
+        candidates.sort(key=lambda c: abs(wrap(c[0] - yaw_prior)))      # the turn closest to the prior first
+    else:
+        candidates.sort(key=lambda c: -c[1][0])            # the camera (plane-frame origin) in front of the area
+    yaw, t = candidates[1 if flip else 0]
+
+    gate = 0.05
+    for _ in range(40):                                    # trimmed ICP onto the tape's centre line
+        target, dist = _closest_on_rectangle(pts @ rot(yaw).T + t, corners)
+        use = dist < gate
+        if use.sum() < 50:
+            raise RuntimeError("the dark points do not fit the tape rectangle (check the size options and the picture)")
+        yaw, t = _rigid_2d(pts[use], target[use])
+        gate = max(half + 0.006, 0.7 * gate)
+    moved = pts @ rot(yaw).T + t
+    _, dist = _closest_on_rectangle(moved, corners)
+    inside = dist <= half + 0.003
+    outside = np.maximum(dist - half, 0.0)[dist < 0.05]
+    seen = []                                              # how much of each side has tape points
+    for a, b in zip(corners, np.roll(corners, -1, axis=0)):
+        ab = b - a
+        along = ((moved - a) @ ab) / (ab @ ab)
+        across = np.abs(ab[0] * (moved[:, 1] - a[1]) - ab[1] * (moved[:, 0] - a[0])) / np.linalg.norm(ab)
+        on = (across <= half + 0.003) & (along >= 0) & (along <= 1)
+        seen.append(len(np.unique((along[on] * 50).astype(int).clip(0, 49))) / 50)
+    Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+    T = np.eye(4)
+    T[:3, :3] = Rz @ R1
+    T[:2, 3] = t
+    T[2, 3] = table_z - d
+    report = {"points": int(len(pts)), "on_tape_share": float(inside.mean()),
+              "outside_rms_mm": float(1000 * np.sqrt(np.mean(outside ** 2))) if len(outside) else float("nan"),
+              "sides_seen": [round(v, 2) for v in seen], "threshold": threshold, "mask": mask}
+    return T, report
+
+
+def project_table_points(T, intrinsics, table_xyz):
+    """Pixels (N x 2) of TABLE-frame points for a camera -> TABLE matrix T and fx, fy, cx, cy."""
+    fx, fy, cx, cy = intrinsics
+    cam = (np.asarray(table_xyz, float) - T[:3, 3]) @ T[:3, :3]     # inverse of x_table = R x_cam + t
+    return np.column_stack((fx * cam[:, 0] / cam[:, 2] + cx, fy * cam[:, 1] / cam[:, 2] + cy))
+
+
+def tape(args):
+    """Camera calibration from the black tape around the working area (no ArUco markers needed): see fit_tape."""
+    import cv2
+
+    model = tape_model(args.area_size, args.area_near, args.area_tape, args.area_tape_side)
+    corners = model[0]
+    print(f"Tape centre line (TABLE frame): x {100 * corners[0, 0]:.1f} .. {100 * corners[2, 0]:.1f} cm, "
+          f"y {100 * corners[0, 1]:+.1f} .. {100 * corners[1, 1]:+.1f} cm, tape {100 * args.area_tape:.1f} cm wide")
+    zed = open_zed(args.serial)
+    try:
+        frame, cloud, _, _, _ = grab(zed, args.frames)
+    finally:
+        zed.close()
+    plane = plane_of(cloud)
+    prior = camera_to_table()
+    if prior is not None:
+        print("using the current calibration to tell the near side from the far side (--tape-flip turns it 180 deg)")
+    T, rep = fit_tape(frame, cloud, plane, model, prior=prior, flip=args.tape_flip, dark=args.tape_dark,
+                      table_z=load().get("table_z", 0.0))
+    print(f"fit: {100 * rep['on_tape_share']:.0f} % of the dark points on the tape band; points off the band "
+          f"{rep['outside_rms_mm']:.1f} mm rms; sides seen (near, left, far, right): "
+          + ", ".join(f"{100 * v:.0f} %" for v in rep["sides_seen"]))
+    if prior is not None:
+        moved = 1000 * np.linalg.norm(prior[:3, 3] - T[:3, 3])
+        turned = np.degrees(np.arccos(np.clip((np.trace(prior[:3, :3].T @ T[:3, :3]) - 1) / 2, -1, 1)))
+        print(f"compared with the current calibration: camera {moved:.0f} mm, {turned:.1f} deg apart")
+    # picture: the tape pixels used, and the fitted tape (outer and inner edges) drawn back into the image
+    from vision.silhouette_live import intrinsics_from_cloud
+
+    intr = intrinsics_from_cloud(np.asarray(cloud[..., :3], float))
+    img = frame.copy()
+    img[rep["mask"].astype(bool)] = (0.5 * img[rep["mask"].astype(bool)] + [0, 90, 0]).astype(np.uint8)
+    half = model[1]
+    for grow, colour in ((half, (0, 0, 255)), (-half, (255, 0, 255))):
+        c = corners + np.sign(corners - corners.mean(axis=0)) * grow
+        px = project_table_points(T, intr, np.c_[c, np.zeros(4)])
+        cv2.polylines(img, [np.rint(px).astype(np.int32)], True, colour, 2)
+    labels = ("near-right", "near-left", "far-left", "far-right")
+    for (x, y), label in zip(corners, labels):
+        px = project_table_points(T, intr, [[x, y, 0.0]])[0]
+        cv2.putText(img, label, tuple(np.rint(px).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    path = ROOT / "outputs" / "calibrate" / "tape.jpg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), img)
+    print(f"Picture: {path}  (red = tape outer edge, magenta = inner edge as fitted; near = the arms' side)")
+    if args.yes or input("Save to calibration.json? [Y/n] ").strip().lower() in ("", "y", "yes"):
+        data = load()
+        data.pop("camera_to_base", None)
+        save(data)
+        update(camera_to_table=T.tolist(),
+               camera={"updated": stamp(), "method": "tape (black tape around the working area + table plane)",
+                       "residual_mm": rep["outside_rms_mm"], "serial": args.serial},
+               tape={"size": list(args.area_size), "near": args.area_near, "width": args.area_tape,
+                     "side": args.area_tape_side})
+        print(f"Saved {FILE} (and {LEGACY_CAMERA.name}, for {default_arm()}).")
+
+
 def show(args):
     data = load()
     if not data:
@@ -1042,7 +1234,7 @@ def offsets(args):
 # ---------------------------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", nargs="?", default="aruco", choices=["aruco", "ids", "arm", "check", "offsets", "show"])
+    ap.add_argument("what", nargs="?", default="aruco", choices=["aruco", "ids", "arm", "check", "offsets", "show", "tape"])
     ap.add_argument("--marker-xy", nargs="+", metavar="ID:X,Y",
                     help="aruco: each marker's centre in the TABLE frame (m), e.g. 3:0.45,-0.30 (the first time)")
     ap.add_argument("--marker-ids", help="aruco: TOP_RIGHT,BOTTOM_RIGHT,BOTTOM_LEFT,TOP_LEFT IDs (the first time)")
@@ -1071,6 +1263,10 @@ def main():
                     help="offsets: out = --area-size and --area-near are to the tape's inner edge (the tape outside the "
                          "area); in = to its outer edge")
     ap.add_argument("--no-area", action="store_true", help="offsets: do not draw the working area")
+    ap.add_argument("--tape-flip", action="store_true",
+                    help="tape: the fit is turned 180 deg (the near / far sides swapped); check outputs/calibrate/tape.jpg")
+    ap.add_argument("--tape-dark", type=float, default=None,
+                    help="tape: brightness (0-255) below which a table pixel is tape (default: half the table's)")
     ap.add_argument("--base-range", type=float, default=0.05,
                     help="offsets --arm: the base x / y sliders' +- range around arms.json [m]")
     ap.add_argument("--base-yaw-range", type=float, default=10.0,
@@ -1078,7 +1274,8 @@ def main():
     args = ap.parse_args()
     if args.show_ids:
         args.what = "ids"
-    {"aruco": aruco, "ids": ids, "arm": arm, "check": check, "offsets": offsets, "show": show}[args.what](args)
+    {"aruco": aruco, "ids": ids, "arm": arm, "check": check, "offsets": offsets, "show": show,
+     "tape": tape}[args.what](args)
 
 
 if __name__ == "__main__":
