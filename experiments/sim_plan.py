@@ -127,6 +127,7 @@ class World:
         low, high = infos[joint["gripper"]][8:10]
         opening = GRIPPER_OPEN if gripper_open is None else gripper_open
         p.resetJointState(self.robot, joint["gripper"], low + opening * (high - low), physicsClientId=c)
+        
 
         self.checker = ModifiedFRPSOIK(
             self.robot, link["grasp_center_link"], arm,
