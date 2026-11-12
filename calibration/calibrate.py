@@ -17,6 +17,8 @@
                                                        # plus sliders for its base origin x, y, yaw in arms.json)
     python calibration/calibrate.py offsets --arm follower_pink --objects   # ... with the camera's objects shown too
     python calibration/calibrate.py offsets --arm both --objects            # both arms in one window, objects too
+    python calibration/calibrate.py tape                     # the camera from the black tape (no markers needed)
+    python calibration/calibrate.py touch --arm both         # each arm's base x, y, yaw from its fingertip on the tape
     python calibration/calibrate.py show                     # print what calibration.json holds
 
 The TABLE frame, shared by both arms: origin on the table halfway between the two arms' shoulder pan axes;
@@ -720,6 +722,141 @@ def tape(args):
         print(f"Saved {FILE} (and {LEGACY_CAMERA.name}, for {default_arm()}).")
 
 
+# ---------------------------------------------------------------------------------------------- touch (arm bases)
+def fingertip_in_gripper_link():
+    """The fixed finger's tip in gripper_link's frame [m]: the end of its collision mesh along the finger (lowest z
+    there, the same end control/gripper.py tip_below_grasp uses), averaged over the vertices within 1 mm of it."""
+    sys.path.insert(0, str(ROOT))
+    import xml.etree.ElementTree as ET
+    from control import gripper as jaw
+
+    root = ET.parse(jaw.URDF).getroot()
+    link = next(l for l in root.findall("link") if l.get("name") == "gripper_link")
+    v = np.vstack(jaw._collision_hulls(link, jaw.FIXED_JAW_MESH))
+    end = v[v[:, 2] <= v[:, 2].min() + 0.001]
+    return end.mean(axis=0)
+
+
+class FingertipModel:
+    """Forward kinematics of the repo URDF (robot_urdfs/so101/robot.urdf, world_to_base included): the fixed
+    fingertip in the arm's base frame for corrected joint angles (radians, ARM_JOINTS order)."""
+
+    def __init__(self):
+        import pybullet as p
+
+        self.p = p
+        self.client = p.connect(p.DIRECT)
+        self.robot = p.loadURDF(str(ROOT / "robot_urdfs" / "so101" / "robot.urdf"), useFixedBase=True,
+                                physicsClientId=self.client)
+        info = [p.getJointInfo(self.robot, i, physicsClientId=self.client)
+                for i in range(p.getNumJoints(self.robot, physicsClientId=self.client))]
+        self.joint = {i[1].decode(): i[0] for i in info}
+        self.link = {i[12].decode(): i[0] for i in info}
+        self.tip_local = fingertip_in_gripper_link()
+
+    def tip(self, q):
+        p = self.p
+        for name, value in zip(("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"), q):
+            p.resetJointState(self.robot, self.joint[name], float(value), physicsClientId=self.client)
+        pos, orn = p.getLinkState(self.robot, self.link["gripper_link"], computeForwardKinematics=True,
+                                  physicsClientId=self.client)[4:6]
+        R = np.array(p.getMatrixFromQuaternion(orn)).reshape(3, 3)
+        return np.asarray(pos) + R @ self.tip_local
+
+    def close(self):
+        self.p.disconnect(physicsClientId=self.client)
+
+
+def fit_base(tips_base, table_points):
+    """An arm's base in the TABLE frame from its fingertip (base frame, from the joints) at known TABLE points:
+    ({x, y, yaw_deg}, per-point residuals [mm] after the fit, mean height error [mm] = TABLE z - model z)."""
+    tips, table = np.asarray(tips_base, float), np.asarray(table_points, float)
+    yaw, t = _rigid_2d(tips[:, :2], table[:, :2])          # table = R(yaw) tip + base
+    R = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+    residual = 1000 * np.linalg.norm(tips[:, :2] @ R.T + t - table[:, :2], axis=1)
+    dz = 1000 * float(np.mean(table[:, 2] - tips[:, 2]))
+    return {"x": float(t[0]), "y": float(t[1]), "yaw_deg": math.degrees(yaw)}, residual, dz
+
+
+def touch_points(arm, args):
+    """The TABLE points to touch for an arm: --points, else the tape's inside corners and side midpoints within
+    --touch-reach of the arm's base (on the table, z = 0)."""
+    if args.points:
+        out = []
+        for item in args.points:
+            try:
+                x, y, z = (float(v) for v in item.split(","))
+            except ValueError:
+                raise SystemExit(f"--points: {item!r} is not x,y,z (TABLE frame, m)")
+            out.append((f"point {len(out) + 1}", np.array([x, y, z])))
+        return out
+    sys.path.insert(0, str(ROOT))
+    from control import arm_config
+
+    corners, half = tape_model(args.area_size, args.area_near, args.area_tape, args.area_tape_side)
+    inner = corners + np.sign(corners.mean(axis=0) - corners) * half       # the tape's inside edge
+    names = ("near-right inside corner", "near-left inside corner", "far-left inside corner", "far-right inside corner")
+    candidates = [(n, c) for n, c in zip(names, inner)]
+    sides = ("near side, middle", "left side, middle", "far side, middle", "right side, middle")
+    candidates += [(n, (a + b) / 2) for n, a, b in zip(sides, inner, np.roll(inner, -1, axis=0))]
+    b = arm_config.base(arm)
+    near = [(n, np.array([*xy, 0.0])) for n, xy in candidates if math.hypot(xy[0] - b["x"], xy[1] - b["y"]) <= args.touch_reach]
+    if len(near) < 3:
+        raise SystemExit(f"{arm}: only {len(near)} tape points within {args.touch_reach} m; give --points x,y,z ...")
+    return near
+
+
+def touch(args):
+    """Each arm's base pose (arms.json) from its fixed fingertip held on known TABLE points (torque off)."""
+    sys.path.insert(0, str(ROOT))
+    from control import arm_config
+    from control.IK_control import connect_robot, read_joints_rad
+
+    arms_to_do = list(arm_config.followers()) if args.arm in (None, "both", "all") else [args.arm]
+    model = FingertipModel()
+    try:
+        for arm in arms_to_do:
+            points = touch_points(arm, args)
+            print(f"\n{arm}: put the TIP OF THE FIXED FINGER on each point below (torque off; hold the arm). "
+                  "Enter records it, s skips it.")
+            robot = connect_robot(arm)
+            robot.bus.disable_torque()
+            tips, table = [], []
+            try:
+                for name, xyz in points:
+                    answer = input(f"  {name}: TABLE x {100 * xyz[0]:.1f} y {100 * xyz[1]:+.1f} z {100 * xyz[2]:.1f} cm "
+                                   "-> Enter / s ... ").strip().lower()
+                    if answer == "s":
+                        continue
+                    q = read_joints_rad(robot)
+                    tip = model.tip(q)
+                    tips.append(tip)
+                    table.append(xyz)
+                    print(f"     model fingertip (arm frame): x {100 * tip[0]:.1f} y {100 * tip[1]:+.1f} "
+                          f"z {100 * tip[2]:.1f} cm")
+            finally:
+                robot.disconnect()
+            if len(tips) < 2:
+                print(f"{arm}: need 2 or more points (3+ spread out is better); nothing changed")
+                continue
+            base, residual, dz = fit_base(tips, table)
+            old = arm_config.base(arm)
+            print(f"{arm}: base x {old['x']:+.4f} -> {base['x']:+.4f}, y {old['y']:+.4f} -> {base['y']:+.4f} m, "
+                  f"yaw {old['yaw_deg']:+.2f} -> {base['yaw_deg']:+.2f} deg")
+            print("  after the fit, each point is off by: " + ", ".join(f"{r:.1f}" for r in residual) + " mm"
+                  + ("  (all small: the base was the error)" if residual.max() < 4 else
+                     "  (some > 4 mm: the joint offsets are off too, or a point was touched badly; the far points "
+                     "show joint-offset errors most)"))
+            print(f"  height: the model's fingertip is {abs(dz):.1f} mm {'below' if dz > 0 else 'above'} the "
+                  f"points on average" + (f" -> raise world_to_base z in robot_urdfs/so101/robot.urdf by {dz / 1000:.4f}"
+                                          if dz > 0 else f" -> lower world_to_base z by {-dz / 1000:.4f}")
+                  + " (shared by both arms; if the two arms disagree, it is their joint offsets)")
+            if args.yes or input(f"  Save {arm}'s base to arms.json? [Y/n] ").strip().lower() in ("", "y", "yes"):
+                store_base(arm, base)
+    finally:
+        model.close()
+
+
 def show(args):
     data = load()
     if not data:
@@ -1234,7 +1371,7 @@ def offsets(args):
 # ---------------------------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", nargs="?", default="aruco", choices=["aruco", "ids", "arm", "check", "offsets", "show", "tape"])
+    ap.add_argument("what", nargs="?", default="aruco", choices=["aruco", "ids", "arm", "check", "offsets", "show", "tape", "touch"])
     ap.add_argument("--marker-xy", nargs="+", metavar="ID:X,Y",
                     help="aruco: each marker's centre in the TABLE frame (m), e.g. 3:0.45,-0.30 (the first time)")
     ap.add_argument("--marker-ids", help="aruco: TOP_RIGHT,BOTTOM_RIGHT,BOTTOM_LEFT,TOP_LEFT IDs (the first time)")
@@ -1263,6 +1400,10 @@ def main():
                     help="offsets: out = --area-size and --area-near are to the tape's inner edge (the tape outside the "
                          "area); in = to its outer edge")
     ap.add_argument("--no-area", action="store_true", help="offsets: do not draw the working area")
+    ap.add_argument("--points", nargs="+", metavar="X,Y,Z",
+                    help="touch: the TABLE points to touch with the fixed fingertip (m), e.g. the top of a block at "
+                         "measured places (default: the tape's inside corners and side midpoints in reach)")
+    ap.add_argument("--touch-reach", type=float, default=0.42, help="touch: only tape points this close to the base [m]")
     ap.add_argument("--tape-flip", action="store_true",
                     help="tape: the fit is turned 180 deg (the near / far sides swapped); check outputs/calibrate/tape.jpg")
     ap.add_argument("--tape-dark", type=float, default=None,
@@ -1275,7 +1416,7 @@ def main():
     if args.show_ids:
         args.what = "ids"
     {"aruco": aruco, "ids": ids, "arm": arm, "check": check, "offsets": offsets, "show": show,
-     "tape": tape}[args.what](args)
+     "tape": tape, "touch": touch}[args.what](args)
 
 
 if __name__ == "__main__":
