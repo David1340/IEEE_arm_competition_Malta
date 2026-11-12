@@ -185,16 +185,16 @@ def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=Non
     return plans
 
 
-def follow(robot, path, gripper, send_joints=None):
+def follow(robot, path, gripper, send_joints=None, precise=True):
     """Move along a joint path in one smooth motion (control/IK_control.py follow_path), the gripper going to
-    `gripper` on the way. send_joints is not used any more (kept for older callers)."""
+    `gripper` on the way; precise=False: its end only roughly (faster). send_joints is not used any more."""
     from control.IK_control import follow_path
 
-    return follow_path(robot, path, gripper)
+    return follow_path(robot, path, gripper, precise=precise)
 
 
 def go_home(robot, send_joints, read_joints_rad):
-    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints)
+    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints, precise=False)
 
 
 # ---------------------------------------------------------------------------------------------- the view
@@ -277,7 +277,7 @@ def main():
     ap.add_argument("--drop-step", type=float, default=0.04, help="spacing of the drop-off area's points [m]")
     ap.add_argument("--attempts", type=int, default=3,
                     help="attempts per object (a missed grasp or a drop outside the bin uses one)")
-    ap.add_argument("--redetect-wait", type=float, default=1.0,
+    ap.add_argument("--redetect-wait", type=float, default=0.6,
                     help="after a miss, use detections from this long after the arm is home [s] (the centres are a "
                          "median over --smooth-frames frames, ~0.5 s at 15 fps)")
     ap.add_argument("--redetect-radius", type=float, default=0.12,
@@ -315,6 +315,9 @@ def main():
     ap.add_argument("--bin-conf", type=float, default=0.6,
                     help="bins detected with less confidence than this are left out (e.g. a half-visible bin at the "
                          "edge of the view)")
+    ap.add_argument("--miss-margin", type=float, default=10.0,
+                    help="a grasp is a miss once the gripper closes this many units (0-100) past where the object "
+                         "would touch the jaws with no current rise, instead of closing fully (-1 = close fully)")
     ap.add_argument("--neighbour-radius", type=float, default=0.0,
                     help="the other objects as obstacles for the planner: columns this many m either side of their "
                          "centre up to their top. 0 (default): ignored, so objects close together or touching are "

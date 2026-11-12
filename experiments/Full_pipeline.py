@@ -46,11 +46,12 @@ def read_gripper_current_ma(robot):
 
 
 def close_gripper_with_current_feedback(robot, closed_target, current_threshold_ma, confirm_readings,
-                                        squeeze_units, *, timeout=10.0):
+                                        squeeze_units, *, timeout=10.0, miss_below=None):
     """Close the gripper until the motor current shows contact, then hold a light squeeze.
 
     Returns (grasped, stop_position, hold_position, current_ma). grasped is False if the gripper
-    reached closed_target without a current rise (nothing between the jaws).
+    reached closed_target without a current rise (nothing between the jaws), or passed miss_below without one
+    (the object would have touched the jaws well before: it is not there; saves closing the rest of the way).
     """
     deadline = time.monotonic() + timeout
     position = float(robot.get_observation()["gripper.pos"])
@@ -71,6 +72,8 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
             return True, position, hold_position, current_ma
         if abs(position - closed_target) <= 1.0:
             break
+        if miss_below is not None and position < miss_below and above == 0:
+            break                                       # past where it would have been held: missed
     return False, position, position, current_ma
 
 
