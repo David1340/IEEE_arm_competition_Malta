@@ -122,7 +122,9 @@ def bin_for(obj, bins, round_name):
 
 
 # ---------------------------------------------------------------------------------------------- motion
-PRECISE = 0.012        # m: how close the grasp must be
+PRECISE = 0.012        # m: how close the grasp must be at most
+GRASP_TIGHT = 0.005    # m: the grasp is first tried this close (one start), PRECISE only when that fails: a top-down
+                       # pose far out often settles short along the reach, which a 12 mm allowance hid
 ROUGH = 0.03           # m: the in-between points (above, lift, over the box) only need to be about right
 SEED_TRIES = 3         # a failed point is tried again from other random starts
 
@@ -142,13 +144,16 @@ def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=Non
         if len(waypoint) > 2:
             tolerances = [waypoint[2]]
         else:   # aim precisely; only the in-between points fall back to ROUGH when that fails
-            tolerances = [PRECISE] if label == "grasp" else [PRECISE, ROUGH]
+            tolerances = [GRASP_TIGHT, PRECISE] if label == "grasp" else [PRECISE, ROUGH]
         world.start_q = q.tolist()
         result = None
         print(f"    planning '{label}' ...", flush=True)
         for posture in (postures or {}).get(label, ["horizontal"]):
             for tolerance in tolerances:
-                for attempt in range(SEED_TRIES if seed_tries is None else seed_tries):
+                tries = SEED_TRIES if seed_tries is None else seed_tries
+                if label == "grasp" and tolerance == GRASP_TIGHT and len(tolerances) > 1:
+                    tries = 1                   # one quick try at the tight one; a failed start costs ~1.5 s
+                for attempt in range(tries):
                     result = world.find_pose(xyz, seed + attempt, tolerance=tolerance, posture=posture)
                     if result is not None and result.success:
                         break
@@ -163,6 +168,15 @@ def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=Non
         if result is None or not result.success:
             err = "" if result is None else f" (best {1000 * result.position_error_m:.0f} mm off)"
             raise RuntimeError(f"no pose for '{label}' at {np.round(xyz, 3)}{err}")
+        if label == "grasp":                    # where the planned grasp really is, from the model
+            world.show(result.joint_positions)
+            off = world.tcp() - np.asarray(xyz, float)
+            out = np.asarray(xyz[:2], float) / max(np.linalg.norm(xyz[:2]), 1e-9)   # the arm frame: base at 0
+            along = 1000 * float(off[:2] @ out)
+            across = 1000 * float(off[:2] @ np.array([-out[1], out[0]]))
+            print(f"    planned grasp: {1000 * np.linalg.norm(off):.0f} mm from the object's centre "
+                  f"({abs(along):.0f} mm {'beyond' if along > 0 else 'short'} along the reach, {abs(across):.0f} mm "
+                  f"{'left' if across > 0 else 'right'}, {1000 * off[2]:+.0f} mm in height)")
         route = world.find_path(result.joint_positions, seed)
         if route is None:
             raise RuntimeError(f"no collision-free path to '{label}'")
