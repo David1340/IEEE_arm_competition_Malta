@@ -11,8 +11,8 @@
       "port": "/dev/so101_follower_pink",
       "leader": "leader_blue",
       "base": {
-        "x": 0.05,
-        "y": 0.23,
+        "x": -0.005,
+        "y": 0.246,
         "yaw_deg": 0.0
       },
       "usb": {
@@ -27,7 +27,7 @@
       "port": "/dev/so101_follower_blue",
       "leader": "leader_green",
       "base": {
-        "x": 0.05,
+        "x": -0.005,
         "y": -0.24,
         "yaw_deg": 0.0
       },
