@@ -37,6 +37,7 @@ its labels to outputs/screenshots/ (PNG), q / Esc = quit.
 """
 
 import argparse
+import math
 import sys
 import time
 from datetime import datetime
@@ -142,6 +143,13 @@ class PyBulletTwin:
                                            rgbaColor=[*rgba[:3], 0.55], physicsClientId=c)
                 p.createMultiBody(0, -1, disc, basePosition=[x, y, 0.0006], physicsClientId=c)
             p.addUserDebugLine([x, y, 0.0], [x, y, 0.30], rgba[:3], lineWidth=2, physicsClientId=c)
+            yaw = math.radians(next((b[2] for n, b in bases.items() if label.startswith(n)), 0.0))
+            for direction, colour, letter in (((math.cos(yaw), math.sin(yaw), 0), [1, 0, 0], "x"),
+                                              ((-math.sin(yaw), math.cos(yaw), 0), [0, 0.75, 0], "y"),
+                                              ((0, 0, 1), [0, 0, 1], "z")):   # the frame's axes: x red, y green, z blue
+                tip = [x + 0.10 * direction[0], y + 0.10 * direction[1], 0.002 + 0.10 * direction[2]]
+                p.addUserDebugLine([x, y, 0.002], tip, colour, lineWidth=4, physicsClientId=c)
+                p.addUserDebugText(letter, [tip[0], tip[1], tip[2] + 0.008], colour, textSize=1.2, physicsClientId=c)
             p.addUserDebugText(f"{label}  x {x:+.2f} y {y:+.2f}", [x, y, 0.32], rgba[:3], textSize=1.1,
                                physicsClientId=c)
 

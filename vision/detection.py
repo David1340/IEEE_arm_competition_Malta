@@ -51,6 +51,29 @@ def roi_for_frame(frame_shape, roi_data):
 
 
 def load_camera_transform(path):
+    """camera -> the default arm's base frame (4 x 4). For the repo's camera_transform.npy it is rebuilt from
+    calibration.json's camera_to_table and the CURRENT arms.json, so a base edited by hand in arms.json cannot leave
+    the vision in a stale frame (pick and place converts back to the TABLE frame with the current arms.json); the
+    .npy is rewritten when it was stale. Any other path (a saved case) is read as it is."""
+    if Path(path).resolve() == CALIBRATION_FILE.resolve():
+        try:
+            from calibration.calibrate import arm_from_table, camera_to_table, default_arm
+
+            to_table = camera_to_table()
+        except Exception as error:                     # noqa: BLE001 - fall back to the .npy
+            print(f"Note: could not read calibration.json ({error}); using {path.name}")
+            to_table = None
+        if to_table is not None:
+            fresh = arm_from_table(default_arm()) @ to_table
+            if path.exists():
+                old = np.load(path)
+                if old.shape == (4, 4) and not np.allclose(old, fresh, atol=1e-6):
+                    print(f"Note: {path.name} was made with an older arms.json base; rebuilt from calibration.json "
+                          f"({1000 * np.linalg.norm(old[:3, 3] - fresh[:3, 3]):.0f} mm apart) and saved")
+                    np.save(path, fresh)
+            else:
+                np.save(path, fresh)
+            return fresh
     if not path.exists():
         raise SystemExit(
             f"Camera calibration not found: {path}\n"

@@ -468,17 +468,26 @@ def arm(args):
         zed.close()
     if len(cam_pts) < 2:
         raise SystemExit("Need 2 or more positions")
-    T, res = fit_camera(plane, cam_pts, arm_pts, data.get("table_z", 0.0))
+    T_arm, res = fit_camera(plane, cam_pts, arm_pts, data.get("table_z", 0.0))
     for a, r in zip(arm_pts, res):
         print(f"  block at x {100 * a[0]:.1f} y {100 * a[1]:.1f}: {r:.1f} mm off after the fit")
+    # The tip was measured in the ARM's base frame, so T_arm is camera -> that arm. Everything stored is in the
+    # TABLE frame (camera_to_table and the markers), via the arm's base in arms.json: the markers saved here were
+    # otherwise in the arm's frame and the next `aruco` calibration took them as TABLE positions.
+    which = args.arm or default_arm()
+    T = np.linalg.inv(arm_from_table(which)) @ T_arm
+    print(f"(the arm is {which}: its base in arms.json {arms()[which]} turns its frame into the TABLE frame)")
     markers = {m: (xyz @ T[:3, :3].T + T[:3, 3]).tolist() for m, xyz in cam_markers.items()}
     if markers:
         old = data.get("aruco", {}).get("markers", {})
         for m, p in sorted(markers.items()):
             was = f" (stored {np.round(np.array(old[m][:2]) * 100, 1)} cm)" if m in old else ""
-            print(f"  marker {m} measured at x {100 * p[0]:.1f} y {100 * p[1]:.1f} cm{was}")
+            print(f"  marker {m} measured at x {100 * p[0]:.1f} y {100 * p[1]:.1f} cm (TABLE frame){was}")
     if args.yes or input("Save to calibration.json (camera and marker positions)? [Y/n] ").strip().lower() in ("", "y", "yes"):
-        sections = {"camera_to_base": T.tolist(),
+        data = load()
+        data.pop("camera_to_base", None)          # the older one-arm matrix; camera_to_table replaces it
+        save(data)
+        sections = {"camera_to_table": T.tolist(),
                     "camera": {"updated": stamp(), "method": f"arm ({len(cam_pts)} blocks + table plane)",
                                "residual_mm": float(np.max(res)), "serial": args.serial}}
         if markers:
@@ -706,6 +715,28 @@ class LiveObjects:
         self.vision.close()
 
 
+def draw_axes(p, client, origin, yaw_deg=0.0, length=0.10, label="", ids=None):
+    """A coordinate frame: x red, y green, z blue, from `origin` turned by yaw about z (TABLE frame), with x / y / z
+    letters and an optional label. ids: the item ids of a previous call to move it instead of adding new lines.
+    Returns the ids."""
+    yaw = math.radians(yaw_deg)
+    o = np.asarray(origin, float)
+    tips = {"x": o + length * np.array([math.cos(yaw), math.sin(yaw), 0.0]),
+            "y": o + length * np.array([-math.sin(yaw), math.cos(yaw), 0.0]),
+            "z": o + length * np.array([0.0, 0.0, 1.0])}
+    colours = {"x": [1, 0, 0], "y": [0, 0.75, 0], "z": [0, 0, 1]}
+    ids = list(ids or [-1] * 7)
+    for k, axis in enumerate("xyz"):
+        ids[k] = p.addUserDebugLine(o.tolist(), tips[axis].tolist(), colours[axis], lineWidth=4,
+                                    replaceItemUniqueId=ids[k], physicsClientId=client)
+        ids[3 + k] = p.addUserDebugText(axis, (tips[axis] + [0, 0, 0.008]).tolist(), colours[axis], textSize=1.2,
+                                        replaceItemUniqueId=ids[3 + k], physicsClientId=client)
+    if label:
+        ids[6] = p.addUserDebugText(label, (o + [0.0, 0.0, length + 0.03]).tolist(), [0.1, 0.1, 0.1], textSize=1.0,
+                                    replaceItemUniqueId=ids[6], physicsClientId=client)
+    return ids
+
+
 def reference_marks(p, client, shown=()):
     """Visual references in the TABLE frame for the sliders: a white ball at the TABLE origin, a ball at each
     other follower's base origin (arms.json) and a flat square at each ArUco marker of calibration.json."""
@@ -717,6 +748,7 @@ def reference_marks(p, client, shown=()):
         p.createMultiBody(0, -1, shape, basePosition=list(xyz), physicsClientId=client)
 
     ball([0, 0, 0], [1, 1, 1, 1])
+    draw_axes(p, client, [0, 0, 0.001], 0.0, length=0.15)
     p.addUserDebugText("TABLE origin", [0, 0, 0.05], [1, 1, 1], textSize=1.0, physicsClientId=client)
     for name in arm_config.followers():
         if name not in shown:
@@ -887,6 +919,7 @@ def offsets(args):
                 p.GEOM_SPHERE, radius=0.012, rgbaColor=rgba.get(arm_id, [1, 0.8, 0, 1]), physicsClientId=client),
                 physicsClientId=client)
             a["status"] = -1
+            a["axes"] = None
             arms_state.append(a)
         if not args.no_robot and all(a["robot"] is None for a in arms_state):
             print("No arm connected: zero poses only.")
@@ -926,6 +959,11 @@ def offsets(args):
                 p.resetBasePositionAndOrientation(model, [base["x"], base["y"], 0.0],
                                                   p.getQuaternionFromEuler([0, 0, math.radians(base["yaw_deg"])]),
                                                   physicsClientId=client)
+                if a["id"] and (a["axes"] is None or a.get("axes_at") != (base["x"], base["y"], base["yaw_deg"])):
+                    # the arm's own base frame (its x forward, y left, z up), following the base sliders
+                    a["axes"] = draw_axes(p, client, [base["x"], base["y"], 0.002], base["yaw_deg"],
+                                          label=f"{a['short']} base frame", ids=a["axes"])
+                    a["axes_at"] = (base["x"], base["y"], base["yaw_deg"])
                 p.resetBasePositionAndOrientation(a["origin_ball"], [base["x"], base["y"], 0.0], [0, 0, 0, 1],
                                                   physicsClientId=client)
                 for name in ARM_JOINTS:
