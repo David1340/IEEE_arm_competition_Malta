@@ -779,15 +779,15 @@ def fit_base(tips_base, table_points):
 
 
 def touch_points(arm, args):
-    """The TABLE points to touch for an arm: --points, else the tape's inside corners and side midpoints within
+    """The TABLE points to touch for an arm: --touch-points, else the tape's inside corners and side midpoints within
     --touch-reach of the arm's base (on the table, z = 0)."""
-    if args.points:
+    if args.touch_points:
         out = []
-        for item in args.points:
+        for item in args.touch_points:
             try:
                 x, y, z = (float(v) for v in item.split(","))
             except ValueError:
-                raise SystemExit(f"--points: {item!r} is not x,y,z (TABLE frame, m)")
+                raise SystemExit(f"--touch-points: {item!r} is not x,y,z (TABLE frame, m)")
             out.append((f"point {len(out) + 1}", np.array([x, y, z])))
         return out
     sys.path.insert(0, str(ROOT))
@@ -802,7 +802,7 @@ def touch_points(arm, args):
     b = arm_config.base(arm)
     near = [(n, np.array([*xy, 0.0])) for n, xy in candidates if math.hypot(xy[0] - b["x"], xy[1] - b["y"]) <= args.touch_reach]
     if len(near) < 3:
-        raise SystemExit(f"{arm}: only {len(near)} tape points within {args.touch_reach} m; give --points x,y,z ...")
+        raise SystemExit(f"{arm}: only {len(near)} tape points within {args.touch_reach} m; give --touch-points x,y,z ...")
     return near
 
 
@@ -1400,7 +1400,7 @@ def main():
                     help="offsets: out = --area-size and --area-near are to the tape's inner edge (the tape outside the "
                          "area); in = to its outer edge")
     ap.add_argument("--no-area", action="store_true", help="offsets: do not draw the working area")
-    ap.add_argument("--points", nargs="+", metavar="X,Y,Z",
+    ap.add_argument("--touch-points", nargs="+", metavar="X,Y,Z",
                     help="touch: the TABLE points to touch with the fixed fingertip (m), e.g. the top of a block at "
                          "measured places (default: the tape's inside corners and side midpoints in reach)")
     ap.add_argument("--touch-reach", type=float, default=0.42, help="touch: only tape points this close to the base [m]")
