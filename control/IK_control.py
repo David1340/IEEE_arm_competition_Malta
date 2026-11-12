@@ -335,7 +335,7 @@ def send_joints(
 # How follow_path() moves the arm; the scripts' --speed / --accel / --profile set these (add_motion_args).
 MOTION = {"sag_comp": True, "sag_tol": 1.0, "sag_max": 4.0, "sag_gain": 0.15,   # see send_joints
           "speed": 20.0, "accel": 40.0, "profile": "trapezoid", "rate": 50.0, "max_lag": 8.0, "settle_tol": 3.0,
-          "park": True, "release": False}
+          "park": True, "release": True}
 
 
 def add_motion_args(ap):
@@ -356,13 +356,14 @@ def add_motion_args(ap):
                     help="largest extra command a joint gets to reach its goal against gravity [deg]")
     ap.add_argument("--no-park", action="store_true",
                     help="on quitting, leave the arms where they are (default: back to the home pose)")
-    ap.add_argument("--release-on-quit", action="store_true",
-                    help="turn the motors' torque off after parking (default: keep it on so the arms hold their pose)")
+    ap.add_argument("--hold-on-quit", action="store_true",
+                    help="keep the motors' torque on after parking, so the arms hold their pose (default: torque off "
+                         "after parking, the arms go limp: hold them)")
 
 
 def apply_motion_args(args):
     MOTION.update(speed=args.speed, accel=args.accel, profile=args.profile, max_lag=args.max_lag,
-                  settle_tol=args.settle_tol, park=not args.no_park, release=args.release_on_quit,
+                  settle_tol=args.settle_tol, park=not args.no_park, release=not args.hold_on_quit,
                   sag_comp=not args.no_sag_comp, sag_max=args.sag_max)
 
 
