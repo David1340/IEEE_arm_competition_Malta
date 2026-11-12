@@ -737,6 +737,9 @@ def draw_axes(p, client, origin, yaw_deg=0.0, length=0.10, label="", ids=None):
     return ids
 
 
+MARKER_SIZE = 0.06          # the printed ArUco markers' side [m] (calibrate.py offsets --marker-size)
+
+
 def reference_marks(p, client, shown=()):
     """Visual references in the TABLE frame for the sliders: a white ball at the TABLE origin, a ball at each
     other follower's base origin (arms.json) and a flat square at each ArUco marker of calibration.json."""
@@ -757,7 +760,8 @@ def reference_marks(p, client, shown=()):
             p.addUserDebugText(f"{name} origin", [b["x"], b["y"], 0.05], [0.3, 0.3, 0.3], textSize=1.0,
                                physicsClientId=client)
     for marker, xy in load().get("aruco", {}).get("markers", {}).items():
-        square = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.02, 0.02, 0.0008], rgbaColor=[0.1, 0.1, 0.1, 1],
+        square = p.createVisualShape(p.GEOM_BOX, halfExtents=[MARKER_SIZE / 2, MARKER_SIZE / 2, 0.0008],
+                                     rgbaColor=[0.1, 0.1, 0.1, 1],
                                      physicsClientId=client)
         p.createMultiBody(0, -1, square, basePosition=[float(xy[0]), float(xy[1]), 0.0008], physicsClientId=client)
         ball([float(xy[0]), float(xy[1]), 0.002], [1, 1, 1, 1], radius=0.004)
@@ -791,6 +795,11 @@ def working_area(p, client, args):
                            physicsClientId=client)
     print(f"Working area (inside the tape), TABLE frame: x {100 * x0:.1f} .. {100 * x1:.1f} cm, "
           f"y {100 * y0:+.1f} .. {100 * y1:+.1f} cm; tape {100 * tape:.1f} cm wide, outside it")
+    h = MARKER_SIZE / 2
+    print(f"A {100 * MARKER_SIZE:.0f} cm marker pushed into each inside corner of the tape has its CENTRE at (x, y) cm: "
+          + ", ".join(f"({100 * (x + (h if x == x0 else -h)):.1f}, {100 * (y + (h if y == y0 else -h)):+.1f})"
+                      for x, y in corners)
+          + "  (calibration.json stores marker centres, x forward, y towards follower_pink)")
     return corners
 
 
@@ -847,6 +856,8 @@ def offsets(args):
         if arm_id is None:
             update(arm={"joint_offsets_deg": {n: float(values[n]) for n in ARM_JOINTS}})
 
+    global MARKER_SIZE
+    MARKER_SIZE = getattr(args, "marker_size", MARKER_SIZE)
     if args.reset:
         names = ", ".join(a or "the arm" for a in arm_ids)
         if input(f"Type RESET to set every fine offset of {names} to 0 degrees: ").strip().upper() != "RESET":
@@ -1042,11 +1053,12 @@ def main():
                     help="offsets: also show the camera's detected objects (ZED + YOLO, as pick_and_place sees them)")
     ap.add_argument("--area-size", type=float, nargs=2, default=[0.80, 0.50], metavar=("ACROSS", "FORWARD"),
                     help="offsets: the taped working area: across (along y, between the arms) and forward (along x) [m]")
-    ap.add_argument("--area-near", type=float, default=0.065,
+    ap.add_argument("--marker-size", type=float, default=MARKER_SIZE, help="offsets: the ArUco markers' side [m]")
+    ap.add_argument("--area-near", type=float, default=0.06,
                     help="offsets: x of the working area's near edge, in front of the TABLE origin (halfway between the "
                          "arms) [m]")
     ap.add_argument("--area-tape", type=float, default=0.018, help="offsets: the black tape's width [m]")
-    ap.add_argument("--area-tape-side", choices=["out", "in"], default="out",
+    ap.add_argument("--area-tape-side", choices=["out", "in"], default="in",
                     help="offsets: out = --area-size and --area-near are to the tape's inner edge (the tape outside the "
                          "area); in = to its outer edge")
     ap.add_argument("--no-area", action="store_true", help="offsets: do not draw the working area")
