@@ -11,9 +11,9 @@
       "port": "/dev/so101_follower_pink",
       "leader": "leader_blue",
       "base": {
-        "x": -0.005,
-        "y": 0.246,
-        "yaw_deg": 0.0
+        "x": 0.0062,
+        "y": 0.2579,
+        "yaw_deg": -4.16
       },
       "usb": {
         "serial": "5AE6084677",
@@ -27,9 +27,9 @@
       "port": "/dev/so101_follower_blue",
       "leader": "leader_green",
       "base": {
-        "x": -0.005,
-        "y": -0.24,
-        "yaw_deg": 0.0
+        "x": 0.0017,
+        "y": -0.2336,
+        "yaw_deg": -0.41
       },
       "usb": {
         "serial": "5AE6083782",
@@ -83,4 +83,3 @@
     "key": "swervy"
   }
 }
-
