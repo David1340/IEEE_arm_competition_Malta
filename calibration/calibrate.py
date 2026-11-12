@@ -566,7 +566,8 @@ def _rigid_2d(src, dst):
     return yaw, dc - R @ sc
 
 
-def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, table_z=0.0, log=print, thin_width=0.018):
+def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, table_z=0.0, log=print, thin_width=0.018,
+             keep_out=(), keep_out_radius=0.18):
     """camera -> TABLE (4 x 4) from the black tape around the working area.
 
     The table plane fixes the camera's tilt and height. The tape pixels are the dark pixels lying ON that plane (within
@@ -638,6 +639,15 @@ def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, tabl
         _, dist = _closest_on_rectangle(pts @ rot(yaw_prior).T + t_prior, corners)
         if (dist < 0.12).sum() > 0.3 * len(pts):
             pts = pts[dist < 0.12]                         # only near where the tape was: other dark things left out
+        if len(keep_out):
+            # around the arms (their bases in arms.json): their black cables and the thin shadows of their links look
+            # like tape; the tape has plenty of length away from them
+            where = pts @ rot(yaw_prior).T + t_prior
+            away = np.all([np.hypot(*(where - c).T) > keep_out_radius for c in keep_out], axis=0)
+            if away.sum() > 0.3 * len(pts):
+                log(f"tape: {100 * (1 - away.mean()):.0f} % of the dark points were within "
+                    f"{100 * keep_out_radius:.0f} cm of an arm's base and left out")
+                pts = pts[away]
     centre_model = corners.mean(axis=0)
     (cx, cy), (sw, sh), ang = cv2.minAreaRect(pts.astype(np.float32))
     long_dir = math.radians(ang) if sw >= sh else math.radians(ang) + math.pi / 2
@@ -679,13 +689,20 @@ def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, tabl
     _, dist = _closest_on_rectangle(moved, corners)
     inside = dist <= half + 0.003
     outside = np.maximum(dist - half, 0.0)[dist < 0.05]
-    seen = []                                              # how much of each side has tape points
+    seen, centring = [], []                                # per side: how much has tape points; how centred they are
+    middle = corners.mean(axis=0)
     for a, b in zip(corners, np.roll(corners, -1, axis=0)):
         ab = b - a
         along = ((moved - a) @ ab) / (ab @ ab)
-        across = np.abs(ab[0] * (moved[:, 1] - a[1]) - ab[1] * (moved[:, 0] - a[0])) / np.linalg.norm(ab)
-        on = (across <= half + 0.003) & (along >= 0) & (along <= 1)
+        normal = np.array([ab[1], -ab[0]]) / np.linalg.norm(ab)
+        if normal @ ((a + b) / 2 - middle) < 0:
+            normal = -normal                               # pointing out of the area
+        signed = (moved - a) @ normal                      # across the tape: 0 = its centre line, + = outwards
+        on = (np.abs(signed) <= half + 0.003) & (along >= 0) & (along <= 1)
         seen.append(len(np.unique((along[on] * 50).astype(int).clip(0, 49))) / 50)
+        band = (np.abs(signed) <= half + 0.008) & (along >= 0) & (along <= 1)
+        # with the fit right, the tape's points spread evenly across the band: their mean offset is ~0
+        centring.append(1000 * float(np.mean(signed[band])) if band.sum() >= 50 else float("nan"))
     Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
     T = np.eye(4)
     T[:3, :3] = Rz @ R1
@@ -693,7 +710,8 @@ def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, tabl
     T[2, 3] = table_z - d
     report = {"points": int(len(pts)), "on_tape_share": float(inside.mean()),
               "outside_rms_mm": float(1000 * np.sqrt(np.mean(outside ** 2))) if len(outside) else float("nan"),
-              "sides_seen": [round(v, 2) for v in seen], "threshold": threshold, "mask": mask}
+              "sides_seen": [round(v, 2) for v in seen], "threshold": threshold, "mask": mask,
+              "centring_mm": [round(v, 1) for v in centring]}
     return T, report
 
 
@@ -721,8 +739,10 @@ def tape(args):
     prior = camera_to_table()
     if prior is not None:
         print("using the current calibration to tell the near side from the far side (--tape-flip turns it 180 deg)")
+    bases = [[b["x"], b["y"]] for b in arms().values()] if args.tape_keep_out > 0 else []
     T, rep = fit_tape(frame, cloud, plane, model, prior=prior, flip=args.tape_flip, dark=args.tape_dark,
-                      table_z=load().get("table_z", 0.0), thin_width=args.area_tape)
+                      table_z=load().get("table_z", 0.0), thin_width=args.area_tape, keep_out=bases,
+                      keep_out_radius=args.tape_keep_out)
     print(f"fit: {100 * rep['on_tape_share']:.0f} % of the dark points on the tape band; points off the band "
           f"{rep['outside_rms_mm']:.1f} mm rms; sides seen (near, left, far, right): "
           + ", ".join(f"{100 * v:.0f} %" for v in rep["sides_seen"]))
@@ -750,14 +770,21 @@ def tape(args):
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), img)
     print(f"Picture: {path}  (red = tape outer edge, magenta = inner edge as fitted; near = the arms' side)")
-    good = rep["on_tape_share"] >= 0.8 and rep["outside_rms_mm"] <= 4.0 and sum(v >= 0.3 for v in rep["sides_seen"]) >= 3
+    centring = [abs(v) for v, seen in zip(rep["centring_mm"], rep["sides_seen"]) if seen >= 0.3 and np.isfinite(v)]
+    print("tape centring per side (mm; 0 = the fitted band sits exactly on the tape): "
+          + ", ".join("-" if not np.isfinite(v) else f"{v:+.1f}" for v in rep["centring_mm"]))
+    good = len(centring) >= 3 and max(centring) <= 2.5
     if good:
-        print("The fit looks good (most dark points on the tape band, close to it, 3+ sides seen).")
+        print("The fit looks good: the fitted tape sits on the real tape on 3+ sides (within 2.5 mm).")
+        if rep["on_tape_share"] < 0.8:
+            print(f"  ({100 * (1 - rep['on_tape_share']):.0f} % of the dark points are other thin dark things; they "
+                  "were left out of the fit, but check the picture.)")
         question = "Save to calibration.json? [Y/n] "
     else:
-        print("WARNING: the fit looks POOR (want >= 80 % on the band, <= 4 mm off it, 3+ sides seen). Look at the "
-              "picture: the tape fully in view? Something else dark and thin on the table (cables, a black edge)? "
-              "Try --tape-dark (lower, e.g. 50), or --tape-flip if near / far are swapped. Not saving is recommended.")
+        print("WARNING: the fit looks POOR (want 3+ sides seen and each within 2.5 mm of the tape's centre). Look at "
+              "the picture: the tape fully in view? Something else dark and thin near the tape (cables, shadows)? "
+              "Try --tape-dark (lower, e.g. 50), a bigger --tape-keep-out, or --tape-flip if near / far are swapped. "
+              "Not saving is recommended.")
         question = "Save anyway? [y/N] "
     answer = "y" if args.yes and good else input(question).strip().lower()
     if answer in (("", "y", "yes") if good else ("y", "yes")):
@@ -1456,6 +1483,9 @@ def main():
     ap.add_argument("--touch-reach", type=float, default=0.42, help="touch: only tape points this close to the base [m]")
     ap.add_argument("--tape-flip", action="store_true",
                     help="tape: the fit is turned 180 deg (the near / far sides swapped); check outputs/calibrate/tape.jpg")
+    ap.add_argument("--tape-keep-out", type=float, default=0.18,
+                    help="tape: leave out dark points this close to an arm's base [m] (its cables and shadows; 0 = off; "
+                         "needs an earlier calibration to know where the arms are)")
     ap.add_argument("--tape-dark", type=float, default=None,
                     help="tape: brightness (0-255) below which a table pixel is tape (default: half the table's)")
     ap.add_argument("--base-range", type=float, default=0.05,
