@@ -264,8 +264,10 @@ def send_joints(
     gripper_tolerance=5.0,
     timeout=None,
     feedback_callback=None,
+    sag=None,
 ):
-    """Interpolates from the current pose to q so the arm moves smoothly."""
+    """Interpolates from the current pose to q so the arm moves smoothly. sag: sag compensation on / off (default
+    MOTION["sag_comp"]; on, the move counts as done only within MOTION["sag_tol"])."""
     start = np.array(read_joints_rad(robot))
     goal = np.array(q)
     if timeout is None:
@@ -296,7 +298,7 @@ def send_joints(
     # can stay ~3 deg short: 1-2 cm at the gripper, always on the same side). A joint that stays short gets its
     # command moved past the goal by a growing amount (an integral term, at most MOTION["sag_max"] deg) until it
     # sits within MOTION["sag_tol"]; the move then counts as done only that close.
-    sag = MOTION.get("sag_comp", False)
+    sag = MOTION.get("sag_comp", False) if sag is None else sag
     if sag:
         tol_deg = min(tol_deg, MOTION["sag_tol"])
     push = {name: 0.0 for name in ARM_JOINTS}
@@ -392,7 +394,7 @@ def motion_profile(length, speed, accel, profile):
 
 
 def follow_path(robot, path, gripper=None, *, tol_deg=None, gripper_tolerance=5.0, feedback_callback=None,
-                **motion) -> bool:
+                precise=True, **motion) -> bool:
     """Move along a joint path (radians, corrected angles) in one smooth motion: targets are streamed at
     MOTION["rate"] Hz along the whole path with a speed profile (gentle start, top speed, gentle stop), and the
     arm only has to arrive at the end. When the arm falls more than max_lag degrees behind, the path waits for
@@ -437,9 +439,18 @@ def follow_path(robot, path, gripper=None, *, tol_deg=None, gripper_tolerance=5.
             t += dt                                          # on track: the path moves on
         next_tick += dt
         time.sleep(max(0.0, next_tick - time.monotonic()))
-    # the end: keep commanding the goal until the joints (and the gripper, if asked) are there
+    # the end: keep commanding the goal until the joints (and the gripper, if asked) are there. precise=False (moves
+    # whose end only has to be roughly right: lifting, going home, ...) settles within LOOSE_TOL_DEG, without the
+    # sag compensation's 1 deg and in at most 1 s (the precise settle could wait 3 s for the last degree)
+    if not precise:
+        return send_joints(robot, points[-1], gripper, steps=2, tol_deg=max(tol_deg, LOOSE_TOL_DEG),
+                           gripper_tolerance=max(gripper_tolerance, 8.0), timeout=1.0,
+                           feedback_callback=feedback_callback, sag=False)
     return send_joints(robot, points[-1], gripper, steps=2, tol_deg=tol_deg, gripper_tolerance=gripper_tolerance,
                        timeout=3.0, feedback_callback=feedback_callback)
+
+
+LOOSE_TOL_DEG = 4.0      # follow_path(precise=False): a move's end within this is close enough
 
 
 LOCKED_WRIST_ROLL = math.radians(-90.0)

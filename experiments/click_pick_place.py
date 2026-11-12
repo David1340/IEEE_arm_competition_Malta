@@ -192,6 +192,23 @@ def postures_for(xy_arm, args):
     return ["down", "horizontal"] if close else ["horizontal", "down"]
 
 
+def miss_position(shape, args):
+    """The gripper command (0-100) below which closing on this object without a current rise means a miss: where its
+    jaws touch it (its narrow side, for its detected size) minus --miss-margin. None: close fully (--miss-margin < 0 or
+    the shape is unknown)."""
+    if getattr(args, "miss_margin", 10.0) < 0:
+        return None
+    from control import gripper as jaw
+    from vision.detection import OBJECT_SIZES, OBJECT_STL_FILES
+
+    name = shape.get("name")
+    stl = OBJECT_SIZES.get(name, {}).get(shape.get("size", "")) or OBJECT_STL_FILES.get(name)
+    if stl is None:
+        return None
+    contact = jaw.open_command(jaw.object_footprint(stl)[0], margin=0.0, min_open=0.0)
+    return max(0.0, contact - args.miss_margin)
+
+
 def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     """Plan the whole task in the arm's frame. Returns ([(label, path)], grasp z) or raises RuntimeError."""
     arm = task.arm
@@ -406,9 +423,12 @@ class TaskActions:
         return True
 
     # ---- moving (each one is a no-op without a robot: plan only)
+    PRECISE_STEPS = ("grasp", "over box", "place")     # where the gripper is put somewhere; the rest only roughly
+
     def _follow(self, bb, step, gripper):
         if self.robot is not None:
-            follow(self.robot, dict(bb["plans"])[step], gripper, self.send_joints)
+            follow(self.robot, dict(bb["plans"])[step], gripper, self.send_joints,
+                   precise=step in self.PRECISE_STEPS)
 
     def grasp(self, bb):
         task = bb["task"]
@@ -419,7 +439,8 @@ class TaskActions:
         self._follow(bb, "above shape", bb["opening"])
         self._follow(bb, "grasp", bb["opening"])
         grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
-            self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS)
+            self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS,
+            miss_below=miss_position(task.shape, self.args))
         if not grasped:
             print(f"  {self.arm}: missed it (gripper closed to {stop:.0f}/100, {current_ma:.0f} mA)")
             return False
@@ -547,6 +568,9 @@ def main():
                     help="--pick-posture level: a short object may be grasped with the grasp point above its top while "
                          "the fingers cover at least this much of it [m]")
     ap.add_argument("--attempts", type=int, default=2, help="grasp attempts per task")
+    ap.add_argument("--miss-margin", type=float, default=10.0,
+                    help="a grasp is a miss once the gripper closes this many units (0-100) past where the object "
+                         "would touch the jaws with no current rise, instead of closing fully (-1 = close fully)")
     ap.add_argument("--neighbour-radius", type=float, default=0.0,
                     help="the other objects as obstacles for the planner: columns this many m either side of their "
                          "centre up to their top. 0 (default): ignored, so objects close together or touching are "
