@@ -500,7 +500,7 @@ def ids(args):
     import cv2
 
     zed = open_zed(args.serial)
-    print("Live view: each marker's ID. q or Esc quits.")
+    print("Live view: each marker's ID. s saves the picture (outputs/calibrate/ids_*.jpg), q or Esc quits.")
     try:
         while True:
             frame, _, _, corners, dictionary = grab(zed, 1)
@@ -511,8 +511,17 @@ def ids(args):
                             1.0, (0, 255, 0), 3)
             cv2.putText(img, dictionary, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
             cv2.namedWindow("marker ids", cv2.WINDOW_NORMAL)
+            cv2.putText(img, f"{len(corners)} marker(s) found: {', '.join(sorted(corners)) or '-'}", (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
             cv2.imshow("marker ids", img)
-            if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("s"):                    # screenshots of this window can come out blank: save it directly
+                path = ROOT / "outputs" / "calibrate" / f"ids_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(path), img)
+                cv2.imwrite(str(path.with_name(path.stem + "_raw.jpg")), frame)
+                print(f"Saved {path} (and the raw camera image {path.stem}_raw.jpg); markers found: {sorted(corners)}")
+            if key in (ord("q"), 27):
                 break
     finally:
         zed.close()
