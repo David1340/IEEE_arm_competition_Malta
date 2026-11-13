@@ -247,17 +247,30 @@ def read_gripper_current_ma(robot):
 
 
 def close_gripper_with_current_feedback(robot, closed_target, current_threshold_ma, confirm_readings,
-                                        squeeze_units, *, timeout=10.0, miss_below=None):
-    """Close the gripper until the motor current shows contact, then hold a light squeeze.
+                                        squeeze_units, *, timeout=10.0, miss_below=None, stall_readings=None,
+                                        empty_below=None, trace=None, info=None):
+    """Close the gripper until it is holding something, then hold a light squeeze.
 
-    Returns (grasped, stop_position, hold_position, current_ma). grasped is False if the gripper
-    reached closed_target without a current rise (nothing between the jaws), or passed miss_below without one
-    (the object would have touched the jaws well before: it is not there; saves closing the rest of the way).
+    Holding is recognised two ways, whichever comes first:
+      current: the motor current stays at or above current_threshold_ma for confirm_readings readings;
+      stall (stall_readings set): the gripper is told to close but has stopped moving (less than 0.5 units over the
+          last stall_readings readings) while still above empty_below. Something is between the jaws then, whatever
+          the current; a gripper that stops at or below empty_below has closed on nothing.
+    A miss: the gripper reaches closed_target (or stops at or below empty_below) without either, or passes miss_below
+    (a model-based shortcut; None = off) without a current rise.
+
+    Returns (grasped, stop_position, hold_position, current_ma). trace (a list): (seconds, position, current mA) of
+    every reading is appended to it; info (a dict): info["reason"] is set to how it ended ("current", "stall",
+    "closed empty", "closed fully", "passed miss_below" or "timeout").
     """
-    deadline = time.monotonic() + timeout
-    position = float(robot.get_observation()["gripper.pos"])
+    info = {} if info is None else info
+    started = time.monotonic()
+    deadline = started + timeout
+    position = start = float(robot.get_observation()["gripper.pos"])
     above = 0
     current_ma = 0.0
+    history = []
+    info["reason"] = "timeout"
     while time.monotonic() < deadline:
         observation = robot.get_observation()
         hold = {key: value for key, value in observation.items()
@@ -266,14 +279,30 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
         time.sleep(0.04)
         position = float(robot.get_observation()["gripper.pos"])
         current_ma = read_gripper_current_ma(robot)
+        history.append(position)
+        if trace is not None:
+            trace.append((round(time.monotonic() - started, 3), round(position, 2), round(current_ma, 1)))
         above = above + 1 if current_ma >= current_threshold_ma else 0
         if above >= confirm_readings:
+            info["reason"] = "current"
             hold_position = max(position - squeeze_units, closed_target)
             robot.send_action({**hold, "gripper.pos": hold_position})
             return True, position, hold_position, current_ma
+        if stall_readings and len(history) > stall_readings and (start - position >= 2.0
+                                                                 or time.monotonic() - started > 0.4):
+            if history[-1 - stall_readings] - position < 0.5:          # told to close, but not moving any more
+                if empty_below is not None and position <= empty_below:
+                    info["reason"] = "closed empty"
+                    break
+                info["reason"] = "stall"
+                hold_position = max(position - squeeze_units, closed_target)
+                robot.send_action({**hold, "gripper.pos": hold_position})
+                return True, position, hold_position, current_ma
         if abs(position - closed_target) <= 1.0:
+            info["reason"] = "closed fully"
             break
         if miss_below is not None and position < miss_below and above == 0:
+            info["reason"] = "passed miss_below"
             break                                       # past where it would have been held: missed
     return False, position, position, current_ma
 

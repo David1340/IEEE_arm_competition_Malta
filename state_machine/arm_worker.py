@@ -304,16 +304,42 @@ class TaskActions:
         self._follow(bb, "above shape", bb["opening"])
         self._follow(bb, "grasp", bb["opening"])
         reached_q = self.read_joints_rad(self.robot)            # where the arm stopped, for the grasp check
+        trace, info = [], {}
         grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
             self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS,
-            miss_below=miss_position(task.shape, self.args))
+            miss_below=miss_position(task.shape, self.args),
+            stall_readings=getattr(self.args, "grip_stall_readings", 5) or None,
+            empty_below=getattr(self.args, "grip_empty", 8.0), trace=trace, info=info)
         self._check_grasp(bb, reached_q, grasped, current_ma)
+        self._log_gripper(task, bb["opening"], trace, info.get("reason", ""), grasped)
         if not grasped:
-            print(f"  {self.arm}: missed it (gripper closed to {stop:.0f}/100, {current_ma:.0f} mA)")
+            print(f"  {self.arm}: missed it (gripper {info.get('reason', '')} at {stop:.0f}/100, {current_ma:.0f} mA, "
+                  f"peak {max((c for _, _, c in trace), default=0):.0f} mA)")
             return False
-        print(f"  {self.arm}: holding it ({current_ma:.0f} mA)")
+        print(f"  {self.arm}: holding it ({info.get('reason', '')}: stopped at {stop:.0f}/100, {current_ma:.0f} mA)")
         bb["hold"] = hold
         return True
+
+    def _log_gripper(self, task, opening, trace, reason, grasped):
+        """Every reading of this close (time, gripper position, current) as rows of outputs/gripper_trace.csv, to see
+        how the real gripper behaves on each object (where it stops, how high the current gets)."""
+        try:
+            from core.paths import OUTPUTS
+
+            path = OUTPUTS / "gripper_trace.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            new = not path.is_file()
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with path.open("a", newline="") as handle:
+                out = csv.writer(handle)
+                if new:
+                    out.writerow(["time", "arm", "object", "opened_to", "result", "grasped", "t_s", "position",
+                                  "current_ma"])
+                for t, position, current in trace:
+                    out.writerow([stamp, self.arm, task.shape.get("label", ""), round(float(opening), 1), reason,
+                                  int(bool(grasped)), t, position, current])
+        except Exception as error:                          # noqa: BLE001 - logging must never stop the arm
+            print(f"  {self.arm}: gripper trace not saved ({error})")
 
     def back_off(self, bb):
         self._follow(bb, "lift", bb["opening"])

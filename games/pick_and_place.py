@@ -236,9 +236,15 @@ def add_game_args(ap):
     ap.add_argument("--bin-conf", type=float, default=0.6,
                     help="bins detected with less confidence than this are left out (e.g. a half-visible bin at the "
                          "edge of the view)")
-    ap.add_argument("--miss-margin", type=float, default=10.0,
-                    help="a grasp is a miss once the gripper closes this many units (0-100) past where the object "
-                         "would touch the jaws with no current rise, instead of closing fully (-1 = close fully)")
+    ap.add_argument("--miss-margin", type=float, default=-1.0,
+                    help="-1 (default): the gripper closes until it holds something or is fully closed. >= 0: a grasp "
+                         "is also a miss once the gripper closes this many units (0-100) past where the robot model says "
+                         "it squeezes the object (faster misses, but the real gripper's scale may not match the model)")
+    ap.add_argument("--grip-stall-readings", type=int, default=5,
+                    help="holding = the gripper stops moving while closing (this many readings, ~40 ms each, with "
+                         "less than 0.5 units of movement) above --grip-empty; 0 = only the current tells")
+    ap.add_argument("--grip-empty", type=float, default=8.0,
+                    help="a gripper that stops at or below this (0-100) has closed on nothing: a miss")
     ap.add_argument("--neighbour-radius", type=float, default=-1.0,
                     help="the other objects as obstacles for the planner. < 0 (default): each object's own size (its "
                          "widest half width, any orientation) + --neighbour-margin; 0: ignored, the gripper may push a "

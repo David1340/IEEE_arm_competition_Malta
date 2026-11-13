@@ -39,6 +39,14 @@ object along the reach (+ beyond, - short), across it and in height, and how far
 Planned close to 0 but reached short: the motors do not reach the planned angles (sag). Both close to 0 but the
 grasp still misses: the error is outside the model (the camera's position of the object, or the calibration).
 
+## Gripper: holding or missed
+
+The gripper closes until it is holding something: either the motor current stays at `--grip-current-ma` (80 mA), or
+the gripper has stopped moving (`--grip-stall-readings`) while still above `--grip-empty` (8/100); closing to
+`--grip-empty` or fully means a miss. Every reading of every close (time, position, current) is appended to
+`outputs/gripper_trace.csv`, with the object and the result, to see how the real gripper behaves on each object.
+`--miss-margin 10` brings back the earlier model-based early miss check.
+
 ## Objects close together
 
 - **Other objects are obstacles** (default `--neighbour-radius -1`): each one a column of its own size (its widest
