@@ -58,6 +58,7 @@ python 01_setup_usb.py --list | --check | --install-saved
 python 02_calibrate.py status | motors --arm all | sync status|pull|push | offsets --arm both | camera tape|aruco|touch|show
 python 03_teleop.py [--gui | net send|receive]
 python run_game.py pick_and_place [--round colour|shape|dynamic] [--arm follower_pink] [--no-robot]
+python run_game.py pick_and_place --headless          # hands-free: sorts whatever appears, waits; Ctrl+C stops
 python -m planning.sim --direct --no-pause          # planner smoke test, no hardware or camera
 conda env create -f environment-sim.yml && conda activate so101-sim   # the simulator's environment (team uses conda)
 python 04_simulate.py run example --headless        # a full simulated round: plans, moves, collision check

@@ -31,6 +31,17 @@ re-calibrating motors anywhere: `python 02_calibrate.py sync pull` and commit `c
 **Coming from the old layout:** `python 02_calibrate.py import-old path/to/calibration.json` moves the old camera
 calibration into `config/calibration/camera.yaml`. The fine joint offsets and `arms.json` are already converted.
 
+## Hands-free: sort whatever appears
+
+    python run_game.py pick_and_place --headless      # no window; Ctrl+C stops (the arms finish their move and park)
+    python run_game.py pick_and_place --auto          # the same, with the camera window
+
+The game watches the camera and starts a round by itself when objects with their bin have been in view for
+`--auto-settle` (1 s), sorts them, sends the arms home and waits for more; the terminal says what it is doing
+(`[auto] waiting for objects`, `[auto] sorting 2 object(s)`). An object that failed is retried at most
+`--auto-retries` (1) more times where it is, and one no arm reaches is left alone, until it is moved. All game options
+work too (`--arm follower_blue`, `--round shape`, ...).
+
 ## Grasp check (real arms)
 
 After every grasp the game prints a `grasp check` line and appends a row to `outputs/grasp_log.csv`: where the grasp

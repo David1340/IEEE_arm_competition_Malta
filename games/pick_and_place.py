@@ -5,6 +5,8 @@
     python run_game.py pick_and_place --round shape            # sort by shape (config/games/pick_and_place.yaml)
     python run_game.py pick_and_place --one-at-a-time          # both arms, but one task at a time
     python run_game.py pick_and_place --no-robot               # no arms: detection and planning only
+    python run_game.py pick_and_place --headless               # no window: sorts whatever appears, then waits
+    python run_game.py pick_and_place --auto                   # the window, but rounds start by themselves
     (or: python -m games.pick_and_place ...)
 
 Built from the shared parts: perception/ (what the camera sees), planning/ (IK and paths), state_machine/ (who does
@@ -288,6 +290,18 @@ def add_game_args(ap):
     ap.add_argument("--grip-open", type=float, default=None,
                     help=f"open the jaws to this fixed command (0-100) instead (the old: {GRIPPER_OPEN:.0f})")
     ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
+    ap.add_argument("--auto", action="store_true",
+                    help="start a round by itself whenever objects with their bin are in view and the arms are home "
+                         "(instead of Enter); the arms go home after each round and wait for more")
+    ap.add_argument("--headless", action="store_true",
+                    help="no window (implies --auto): watch the camera, sort whatever appears, wait; Ctrl+C stops "
+                         "(after the moves running now; the arms park)")
+    ap.add_argument("--auto-settle", type=float, default=1.0,
+                    help="--auto: the same objects must be seen this long before a round starts [s] (not a hand "
+                         "passing through, not a detection that flickers)")
+    ap.add_argument("--auto-retries", type=int, default=1,
+                    help="--auto: an object that failed is tried again in at most this many later rounds while it "
+                         "stays where it is (it is tried afresh once it is moved)")
 
 
 # ---------------------------------------------------------------------------------------------- main
@@ -299,6 +313,7 @@ def main(argv=None):
 
     add_motion_args(ap)
     args = ap.parse_args(argv)
+    args.auto = args.auto or args.headless
     apply_motion_args(args)
     args.gui = False                       # plan in the background: no PyBullet window, no playback
 
@@ -461,8 +476,9 @@ def main(argv=None):
                 labels[shape["source"]] = "no arm reaches"
             return labels
 
-        def go(objects, bins):
+        def go(objects, bins, skip=()):
             shapes, boxes, notes = to_marks(objects, bins)
+            shapes = [sh for sh in shapes if sh["source"] not in skip]     # --auto: failed too often where it is
             for o in objects:
                 if id(o) in notes:
                     print(f"{o['colour'] or '?'} {o['name']}: left, {notes[id(o)]}")
@@ -475,6 +491,7 @@ def main(argv=None):
                                          max_usable=3)
             for shape, why in skipped:
                 print(f"{shape['label']} at x {shape['xyz'][0]:.2f} y {shape['xyz'][1]:.2f}: left, {why}")
+            run["skipped"] = [shape for shape, _ in skipped]          # --auto: not tried again until moved
             if not tasks:
                 run["status"] = "nothing the arms can do (see the terminal)"
                 return
@@ -516,20 +533,80 @@ def main(argv=None):
                     target = tuple(int(c) for c in view.pixels(np.asarray(m["handoff_xyz"], float)[None])[0])
                     cv2.arrowedLine(canvas, (u, v), target, (255, 255, 0), 2, tipLength=0.1)
                     cv2.circle(canvas, target, 12, (255, 255, 0), 2)
-            lines = [f"{args.round} round | Enter go | h home | q quit", run["status"]]
+            lines = [f"{args.round} round | " + ("auto | " if args.auto else "") + "Enter go | h home | q quit",
+                     run["status"]]
             if run["coordinator"] is not None and busy:
                 lines += [f"{short(a)}: {s}" for a, s in sorted(run["coordinator"].arm_state.items())]
             for i, text in enumerate(lines):
                 put(canvas, text, (15, 32 + 28 * i), (0, 255, 0), 0.65)
             return canvas
 
-        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        failed_here = []                       # --auto: [{name, colour, xy, count}] objects that failed, where they were
+        settle = {"key": None, "since": 0.0, "said": ""}
+
+        def given_up(o):
+            """Whether this detection is an object that already failed --auto-retries + 1 times where it still is."""
+            return any(f["name"] == o["name"] and f["colour"] == o["colour"] and f["count"] > args.auto_retries
+                       and np.linalg.norm(np.asarray(o["xyz"][:2]) - f["xy"]) < 0.03 for f in failed_here)
+
+        def remember_failures():
+            for m in marks:
+                if m["kind"] != "shape" or m["state"] != "failed":
+                    continue
+                xy = np.asarray(m["xyz"][:2], float)
+                same = next((f for f in failed_here if f["name"] == m["name"] and f["colour"] == m["object_colour"]
+                             and np.linalg.norm(xy - f["xy"]) < 0.03), None)
+                if same is None:
+                    failed_here.append({"name": m["name"], "colour": m["object_colour"], "xy": xy, "count": 1})
+                else:
+                    same["count"] += 1
+
+        def say(text):
+            """--auto status: printed when it changes (the terminal is the only view with --headless)."""
+            run["status"] = text
+            if text != settle["said"]:
+                settle["said"] = text
+                print(f"[auto] {text}", flush=True)
+
+        def auto_step(objects, bins):
+            """Start a round when the same sortable objects have been in view for --auto-settle seconds."""
+            shapes, _, _ = to_marks(objects, bins)
+            sortable = {sh["source"] for sh in shapes}
+            todo = [o for o in objects if id(o) in sortable and not given_up(o)]
+            if not todo:
+                settle["key"] = None
+                left = sum(given_up(o) for o in objects)
+                say("waiting for objects" + (f" ({left} left where they failed: move them to try again)" if left
+                                             else ""))
+                return
+            key = sorted((o["name"], o["colour"] or "", round(o["xyz"][0] / 0.02), round(o["xyz"][1] / 0.02))
+                         for o in todo)
+            now = time.monotonic()
+            if key != settle["key"]:
+                settle["key"], settle["since"] = key, now
+            if now - settle["since"] < args.auto_settle:
+                say(f"{len(todo)} object(s) in view, starting when they stay put")
+                return
+            settle["key"] = None
+            say(f"sorting {len(todo)} object(s)")
+            run["skipped"] = []
+            go(objects, bins, skip={id(o) for o in objects if given_up(o)})
+            for shape in run.get("skipped", []):        # no arm reaches it: leave it until it is moved
+                failed_here.append({"name": shape["name"], "colour": shape["object_colour"],
+                                    "xy": np.asarray(shape["xyz"][:2], float), "count": args.auto_retries + 1})
+            if run["reported"]:                       # nothing could be done: wait for the scene to change
+                settle["key"], settle["since"] = key, now + 5.0
+
+        if not args.headless:
+            cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        else:
+            print("Headless: sorting whatever appears in view; Ctrl+C stops (the arms park).", flush=True)
         sized = False
         while True:
             canvas, objects, bins = detect(vision, colors, table_from_default)
             with seen["lock"]:
                 seen["objects"], seen["bins"], seen["time"] = objects, bins, time.monotonic()
-            if view is None:
+            if view is None and not args.headless:
                 view = TableView(vision.cam, bases, regions, args.max_reach, args.min_reach, canvas.shape)
             busy = any(w.is_alive() for w in workers)
             if not busy and not run["reported"]:
@@ -537,9 +614,16 @@ def main(argv=None):
                 placed = sum(m["state"] == "placed" for m in marks if m["kind"] == "shape")
                 failed = sum(m["state"] == "failed" for m in marks if m["kind"] == "shape")
                 run.update(reported=True, status=f"done in {took:.1f} s: {placed} placed, {failed} failed; "
-                                                 f"Enter for the next round")
+                                                 + ("waiting for more" if args.auto else "Enter for the next round"))
                 print(f"\nRound done in {took:.1f} s: {placed} placed, {failed} failed"
                       + (f" ({took / placed:.1f} s per object)" if placed else ""))
+                if args.auto:
+                    remember_failures()
+                    settle["key"], settle["said"] = None, ""
+            if args.headless:
+                if not busy:
+                    auto_step(objects, bins)
+                continue
             labels = {} if busy else plan_labels(objects, bins)
             out = draw(canvas, objects, labels, busy)
             if args.width < out.shape[1]:
@@ -555,22 +639,28 @@ def main(argv=None):
                 break
             if busy:
                 continue
+            if args.auto:
+                auto_step(objects, bins)
             if key in (13, 10, 32):              # Enter or Space
                 go(objects, bins)
             elif key == ord("h"):
                 home_all()
                 run["status"] = "home"
+    except KeyboardInterrupt:
+        print("\nStopping after the moves running now ...")
     finally:
         if run["coordinator"] is not None:
             run["coordinator"].stop.set()
         for worker in workers:
             worker.join()
-        if vision is not None:
-            vision.close()
-        cv2.destroyAllWindows()
-        close_checker()
-        for planner in planners.values():
-            planner.close()
+        # whatever goes wrong closing the rest, the arms still park
+        for step in (lambda: vision is not None and vision.close(),
+                     lambda: None if args.headless else cv2.destroyAllWindows(),
+                     close_checker, *[planner.close for planner in planners.values()]):
+            try:
+                step()
+            except Exception as error:                      # noqa: BLE001
+                print(f"(while stopping: {error})")
         on_every_arm(robots, lambda name, robot: park_and_disconnect(robot))    # both arms at the same time
 
 
