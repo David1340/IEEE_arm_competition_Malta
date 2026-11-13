@@ -11,6 +11,9 @@
 #                   object has room to turn into the jaws. null: any angle (round or no parallel faces)
 # level_over_top    an object too short for a level grasp below its top may still be grasped level with the grasp
 #                   point over it, as the last resort (a level grasp reaches ~42 cm, top-down ~35 cm)
+# drop_posture      the gripper over the bin at release: level (from its side: an object picked top-down is turned
+#                   level on the way, the release point aimed so it lands in the bin), pick (as it was picked) or
+#                   down; the other one when that has no plan
 #
 # A shape not listed uses `defaults`. --pick-posture level on the command line still means level only.
 
@@ -20,6 +23,7 @@ defaults:
   squeeze: 2.0
   faces: null
   level_over_top: true
+  drop_posture: level
 
 objects:
   cylinder:

@@ -292,7 +292,7 @@ LEVEL_JAW_BELOW = 0.033
 
 
 GRASP_DEFAULTS = {"postures": "auto", "min_finger_cover": 0.012, "squeeze": 2.0, "faces": None,
-                  "level_over_top": True}
+                  "level_over_top": True, "drop_posture": "level"}
 
 
 def grasp_settings(name):
@@ -439,17 +439,30 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
 
         if task.kind == TO_HANDOFF:
             h = (to_arm @ np.array([*handoff_xyz[:2], 0.0, 1.0]))[:3]
-            rest = lambda z: [("over handoff", [h[0], h[1], top + args.lift]), ("place", [h[0], h[1], z]),
-                              ("leave handoff", [h[0], h[1], top + args.approach])]
+            rest = lambda z, *_: [("over handoff", [h[0], h[1], top + args.lift]), ("place", [h[0], h[1], z]),
+                                  ("leave handoff", [h[0], h[1], top + args.approach])]
             place_postures = postures_for(h, args)
         else:
             h = None
             # The jaws at least --drop-above over the rim, and the object's bottom (it hangs z below the grasp point:
             # it stood on the table, grasped z up) above the bin as the planner sees it (rim + --box-margin) plus
             # --drop-clearance: a high grasp is carried higher.
-            drop_z = lambda z: max(args.box_height + args.drop_above, top + args.lift,
-                                   args.box_height + args.box_margin + getattr(args, "drop_clearance", 0.01) + z)
-            rest = lambda z: [("over box", [b[0], b[1], drop_z(z)])]
+            drop_z = lambda hang: max(args.box_height + args.drop_above, top + args.lift,
+                                      args.box_height + args.box_margin + getattr(args, "drop_clearance", 0.01) + hang)
+            out = np.asarray(b[:2], float) / max(np.linalg.norm(b[:2]), 1e-9)      # away from the base, at the bin
+
+            def rest(z, pick_posture="horizontal", drop_posture="horizontal"):
+                """Over the bin, for a drop in drop_posture of an object picked in pick_posture (grasped z up from its
+                base). Turned from top-down to level, the object comes to lie along the jaws, its centre z - top/2
+                ahead of the grasp point and its side (its half width) the lowest part: the grasp point is aimed
+                that much short of the drop point, and lower. Turned the other way, the reverse."""
+                ahead, hang = 0.0, z                     # dropped as picked: the object hangs z below the grasp point
+                if pick_posture == "down" and drop_posture == "horizontal":
+                    ahead, hang = z - top / 2, held_radius
+                elif pick_posture == "horizontal" and drop_posture == "down":
+                    ahead, hang = -(z - top / 2), held_radius
+                xy = np.asarray(b[:2], float) - out * ahead
+                return [("over box", [xy[0], xy[1], drop_z(hang)])]
             place_postures = ["horizontal", "down"]
         error = None
         # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails.
@@ -511,15 +524,30 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                     world.drop_held()
                     add_column(world, h[0], h[1], held_radius, held_height)
 
-            plans = plan_sequence(world, start, [
-                ("above shape", [o[0], o[1], top + args.approach]),
-                ("grasp", [o[0], o[1], z]),
-                ("lift", [o[0], o[1], top + args.lift]),
-                *rest(z),
-            ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
-                               "over handoff": place, "place": place,
-                               "leave handoff": place, "over box": place},
-                seed_tries=tries, on_reached=on_reached)
+            # into a bin: config/grasping.yaml drop_posture: level (default: the gripper level over the bin, the
+            # object released from its side), pick (as it was picked) or down; the other one when that has no plan
+            how = settings.get("drop_posture", "level")
+            drops = (place if how == "pick" or h is not None else
+                     ["horizontal", "down"] if how == "level" else ["down", "horizontal"])
+            for i, drop in enumerate(drops if h is None else [None]):
+                if h is None:
+                    world.set_start(start)
+                    world.drop_held()
+                try:
+                    plans = plan_sequence(world, start, [
+                        ("above shape", [o[0], o[1], top + args.approach]),
+                        ("grasp", [o[0], o[1], z]),
+                        ("lift", [o[0], o[1], top + args.lift]),
+                        *rest(z, posture, drop),
+                    ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
+                                       "over handoff": place, "place": place,
+                                       "leave handoff": place, "over box": [drop] if drop else place},
+                        seed_tries=tries, on_reached=on_reached)
+                    break
+                except RuntimeError as exc:
+                    if h is not None or "over box" not in str(exc) or i == len(drops) - 1:
+                        raise
+                    print(f"    no {drop} drop over the bin: trying {drops[i + 1]}")
             if start is not start_q and abs(start[4] - float(start_q[4])) > 1e-6:
                 label, path = plans[0]                   # turn the wrist first, where the arm is
                 plans[0] = (label, [list(start_q), *path])
@@ -571,7 +599,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                                                       # there (closer in, a miss that big is a collision, e.g. a bin
                                                       # wall, which another wrist roll may avoid)
         raise RuntimeError(str(error) if error is not None else
-                           f"no grasp height possible for a {100 * top:.1f} cm object ({', '.join(p for p, _ in variants)})")
+                           f"no grasp height possible for a {100 * top:.1f} cm object ({', '.join(v[0] for v in variants)})")
     finally:
         if args.gui:
             world.close()

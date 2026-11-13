@@ -71,10 +71,23 @@ waits `--release-pause` (0.2 s) so the object falls clear before it moves away.
 - The held object is part of the plan from the grasp on (a cylinder of its widest width and its height, moving with
   the gripper): no carry path or drop pose may put it through a bin wall or into the other arm
   (`--no-hold-check` turns this off).
-- It is dropped in the posture it was picked with: an object picked top-down hangs straight down (carried level, a
-  tall one swings up sideways and sticks out past the jaws, over the rim).
-- The drop height is set by the object's bottom, not the jaws: it hangs as far below the grasp point as it was
-  grasped above the table, so a high grasp is carried higher (`--drop-clearance`, `--drop-above`).
+- It is dropped with the gripper level over the bin (`drop_posture: level` in `config/grasping.yaml`; `pick` = as it
+  was picked, `down` = top-down). An object picked top-down is turned level on the way: it then lies along the jaws,
+  its centre ahead of the grasp point, so the grasp point is aimed that much short of the drop point and the object
+  lands in the bin. When no level drop can be planned, the other posture is used.
+- The drop height is set by the lowest point of the held object (`--drop-clearance` above the bin as the planner
+  sees it), at least `--drop-above` for the jaws.
+
+## Rounds: colour, shape (geometry), dynamic
+
+Which bin each object goes in is in `config/games/pick_and_place.yaml`: one `modes` entry per round, each sorting
+`by: colour` or `by: shape` with a `bins` table. Pick the round with `--round`:
+
+    python run_game.py pick_and_place --round shape      # Round 2, geometry: cube -> red, cylinder -> blue, ...
+    python run_game.py pick_and_place --round colour     # Round 1
+    python run_game.py pick_and_place --round dynamic    # Round 3: the shape rules, bins and objects moved
+
+or set `mode: shape` in that file to make it the default. To change a rule, edit its line, e.g. `cube: red`.
 
 ## Objects close together
 
