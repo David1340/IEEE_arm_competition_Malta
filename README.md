@@ -39,6 +39,21 @@ object along the reach (+ beyond, - short), across it and in height, and how far
 Planned close to 0 but reached short: the motors do not reach the planned angles (sag). Both close to 0 but the
 grasp still misses: the error is outside the model (the camera's position of the object, or the calibration).
 
+## Objects close together
+
+- **Other objects are obstacles** (default `--neighbour-radius -1`): each one a column of its own size (its widest
+  half width, as its orientation is not known, + `--neighbour-margin` 5 mm). `--neighbour-radius 0` ignores them (the
+  gripper may push them; the old default).
+- **The wrist turns for top-down grasps** (`--down-roll auto`): the jaws close along the line where the fingers have
+  room (`planning/pick_planner.py` `down_rolls`), preferring along the reach (the fixed finger on the base's side, so an
+  arm that stops short still closes on the object); up to `--down-rolls` (3) rolls are tried. The wrist turns at the
+  start pose, before the arm moves. `--down-roll across` keeps the jaws across the reach (the old behaviour).
+- **Blocked objects wait**: an object with no plan and others close around it is tried again after another object
+  has been placed; when nothing else can move, the other arm tries it from its side if it reaches it and its bin,
+  else it is left.
+
+`--down-roll across --neighbour-radius 0` gives exactly the old plans.
+
 ## Planning speed
 
 Each arm plans in a process of its own (`--planner process`, the default): both arms plan at once, and each plans its
@@ -85,6 +100,7 @@ Already cloned: `git fetch origin`, `git checkout clean`, `git pull`.
 | `python 04_simulate.py run example --round shape --speed 2` | any game option (`run -h`), faster playback |
 | `python 04_simulate.py run example --arm follower_pink` | one arm only |
 | `python 04_simulate.py run example --headless` | no window: plan, move and check (quick tests, CI) |
+| `python 04_simulate.py test` | every regression scene in `simulation/scenes/tests/` (touching objects, clusters, against a bin), one line each |
 
 Scenes are YAML files in `simulation/scenes/` (TABLE frame, metres), so a test layout can be committed and shared.
 Joint limits: the planner uses each arm's motor calibration from `config/calibration/<arm>/motors.yaml`; until

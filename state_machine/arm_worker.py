@@ -23,6 +23,7 @@ from planning.pick_planner import HOME_Q, PLAN_LOCK, miss_position, plan_task
 from state_machine.coordinator import TO_HANDOFF
 
 CURRENT = {"coordinator": None}  # the running coordinator (for tests and the window)
+NEAR = 0.12              # another object closer than this to one with no plan may be what blocks it [m]
 
 
 def short(arm):
@@ -155,7 +156,7 @@ class TaskActions:
         return {"shape": np.array(task.shape["xyz"], float), "box": np.array(task.box["xyz"], float),
                 "opening": task.shape.get("open_cmd"), "start": np.array(start_q, float),
                 "boxes": [np.array(b["xyz"], float) for b in obstacles["boxes"]],
-                "shapes": [np.array(m["xyz"], float) for m in obstacles["shapes"]] if self.args.neighbour_radius > 0
+                "shapes": [np.array(m["xyz"], float) for m in obstacles["shapes"]] if self.args.neighbour_radius != 0
                 else [],
                 "arms": {a: np.array(q, float) for a, q in obstacles["arms"].items() if a != self.arm}}
 
@@ -384,6 +385,18 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points,
             elif why in ("missed", "drop missed") and task.attempts + 1 < args.attempts:
                 print(f"  {arm}: {why}; trying again ({task.attempts + 2}/{args.attempts})")
                 coordinator.requeue(task)
+            elif why.startswith("no plan"):
+                xyz = np.asarray(task.shape["xyz"], float)[:2]
+                near = any(m["kind"] == "shape" and m is not origin and m is not task.shape
+                           and m["state"] in ("todo", "handoff", "failed")
+                           and np.linalg.norm(np.asarray(m.get("handoff_xyz") if m["state"] == "handoff"
+                                                         else m["xyz"], float)[:2] - xyz) < NEAR
+                           for m in marks)
+                outcome = coordinator.blocked(task, near)
+                print(f"  {arm}: {why}: " + {"later": "other objects are close around it, tried again once one of "
+                                                      "them is moved",
+                                             "other arm": "the other arm tries it from its side",
+                                             "failed": "left"}[outcome])
             else:
                 print(f"  {arm}: {why}: left")
                 origin["state"] = "failed"

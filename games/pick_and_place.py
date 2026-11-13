@@ -239,10 +239,20 @@ def add_game_args(ap):
     ap.add_argument("--miss-margin", type=float, default=10.0,
                     help="a grasp is a miss once the gripper closes this many units (0-100) past where the object "
                          "would touch the jaws with no current rise, instead of closing fully (-1 = close fully)")
-    ap.add_argument("--neighbour-radius", type=float, default=0.0,
-                    help="the other objects as obstacles for the planner: columns this many m either side of their "
-                         "centre up to their top. 0 (default): ignored, so objects close together or touching are "
-                         "still picked (the gripper may push a neighbour); 0.03 = the old 6 cm columns")
+    ap.add_argument("--neighbour-radius", type=float, default=-1.0,
+                    help="the other objects as obstacles for the planner. < 0 (default): each object's own size (its "
+                         "widest half width, any orientation) + --neighbour-margin; 0: ignored, the gripper may push a "
+                         "neighbour (the old default); > 0: a column this many m either side of every object")
+    ap.add_argument("--neighbour-margin", type=float, default=0.005,
+                    help="room kept around each other object, on top of its size [m]")
+    ap.add_argument("--down-roll", choices=["auto", "across"], default="auto",
+                    help="top-down grasps: auto (default) turns the wrist so the fingers come down in free space, "
+                         "preferring jaws that close along the reach; across: the jaws always close across the reach "
+                         "(the old behaviour)")
+    ap.add_argument("--down-rolls", type=int, default=3,
+                    help="how many wrist rolls a top-down grasp tries, best first")
+    ap.add_argument("--finger-clearance", type=float, default=0.006,
+                    help="room a finger needs from a neighbour or a bin wall for a wrist roll to count as free [m]")
     ap.add_argument("--clearance", type=float, default=0.005,
                     help="the gripper keeps this far above the table in the plans [m] (was 0.01; a level grasp point "
                          "then goes down to 4.0 cm instead of 4.5 cm; raise it if the fingers touch the table)")
@@ -458,7 +468,7 @@ def main(argv=None):
                 print(f"  {task.label()}{then}")
             marks[:] = shapes + boxes
             coordinator = Coordinator(tasks, regions, handoff_points, not args.one_at_a_time,
-                                      arm_config.handoff_min_spacing())
+                                      arm_config.handoff_min_spacing(), max_reach=args.max_reach)
             workers_module.CURRENT["coordinator"] = coordinator
             run.update(coordinator=coordinator, start=time.monotonic(), reported=False, status="working ...")
             workers.clear()

@@ -7,6 +7,7 @@ move with the same code as the real game (planner, collision avoidance, two-arm 
     python 04_simulate.py run example               # play the round in the PyBullet window
     python 04_simulate.py run example --round shape --speed 2
     python 04_simulate.py run example --headless    # no window: plan, move and check only
+    python 04_simulate.py test                      # regression: every scene in simulation/scenes/tests/, one line each
     python 04_simulate.py list                      # the saved scenes
 
 `run` takes every game option (python 04_simulate.py run -h). Details: simulation/run.py, simulation/editor.py.
@@ -36,6 +37,10 @@ def main():
         run_after, path = edit(args.scene, args)
         if run_after:
             run([str(path), *run_options])
+    elif command == "test":
+        from simulation.run import test
+
+        test(rest)
     elif command == "list":
         from simulation.scene import SCENES, available
 
@@ -43,7 +48,7 @@ def main():
     else:
         print(__doc__)
         if command not in ("", "-h", "--help"):
-            raise SystemExit(f"unknown command {command!r}: edit, run or list")
+            raise SystemExit(f"unknown command {command!r}: edit, run, test or list")
 
 
 if __name__ == "__main__":

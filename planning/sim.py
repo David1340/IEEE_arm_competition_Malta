@@ -168,13 +168,18 @@ class World:
         per arm serves every plan (building one takes ~0.85 s): the start pose, the wrist roll fixed at its value,
         the joint limits widened to contain the start pose, the jaw opening (None: unchanged), and no obstacles but
         the table and the world's own objects (add_obstacle's are removed, add_other_arm's left out)."""
-        self.start_q = list(start_q)
         for body in self.extra_bodies:
             p.removeBody(body, physicsClientId=self.client)
         self.extra_bodies = []
         self.checker.obstacle_body_ids = list(self._base_obstacles)
         if gripper_open is not None:
             self.set_gripper(gripper_open)
+        self.set_start(start_q)
+
+    def set_start(self, start_q):
+        """Plan from start_q, keeping the obstacles: the wrist roll is fixed at start_q's (every pose of the plan has
+        that roll), and the joint limits are widened to contain the start pose."""
+        self.start_q = list(start_q)
         self.checker.fixed_joint_offsets[self._roll_offset] = float(self.start_q[4])
         # Artificial joint limits that also contain the current joint reading, so a start pose
         # slightly outside the URDF limits is valid for both M-FRPSO and RRT-Connect.
@@ -182,6 +187,24 @@ class World:
         self.checker.upper = np.maximum(self._base_upper, self.start_q)
         self.rrt = RRTConnectPlanner(self.checker, max_joint_step_rad=math.radians(3.0))
         self.show(self.start_q)
+
+    def roll_limits(self):
+        """The wrist roll's joint limits [rad] (calibration and URDF)."""
+        return float(self._base_lower[self._roll_offset]), float(self._base_upper[self._roll_offset])
+
+    def turn_is_free(self, q_from, q_to):
+        """Whether turning the wrist from q_from to q_to (the other joints the same) is collision-free; the roll is
+        not fixed for this check."""
+        fixed, lower, upper = dict(self.checker.fixed_joint_offsets), self.checker.lower, self.checker.upper
+        try:
+            self.checker.fixed_joint_offsets.pop(self._roll_offset, None)
+            self.checker.lower = np.minimum(np.minimum(lower, q_from), q_to)
+            self.checker.upper = np.maximum(np.maximum(upper, q_from), q_to)
+            return self.checker.edge_is_collision_free(q_from, q_to)
+        finally:
+            self.checker.fixed_joint_offsets.clear()
+            self.checker.fixed_joint_offsets.update(fixed)
+            self.checker.lower, self.checker.upper = lower, upper
 
     def _ball(self, color):
         shape = p.createVisualShape(p.GEOM_SPHERE, radius=0.01, rgbaColor=color, physicsClientId=self.client)

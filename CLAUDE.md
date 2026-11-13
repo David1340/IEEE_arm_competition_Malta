@@ -28,6 +28,8 @@ files or functions (`--check` tells whether it is current).
 | IK | `planning/ik.py` (M-FRPSO); paths `planning/rrt_connect.py` |
 | PyBullet planning world | `planning/sim.py` (`World`) |
 | planning a pick, grasp heights, postures | `planning/pick_planner.py` (`plan_task`, `plan_sequence`) |
+| wrist roll for top-down grasps, neighbours as obstacles | `planning/pick_planner.py` (`down_rolls`, `finger_points`, `neighbour_radius`, `add_column`) |
+| blocked objects: retry later, give to the other arm | `state_machine/coordinator.py` (`blocked`, `_resolve_blocked`), `state_machine/arm_worker.py` |
 | planning world reuse (one per arm, `World.reset`) | `planning/pick_planner.py` `planning_world()`, `planning/sim.py` |
 | planner process per arm, plan-ahead of the next object | `planning/planner_service.py` (`ArmPlanner`); used in `state_machine/arm_worker.py` (`_prefetch_next`, `_take_prefetch`) |
 | grasp check: planned vs reached grasp point (real arm), `outputs/grasp_log.csv` | `state_machine/arm_worker.py` `_check_grasp()`, FK in `planning/kinematics.py` |
@@ -56,6 +58,7 @@ python -m planning.sim --direct --no-pause          # planner smoke test, no har
 conda env create -f environment-sim.yml && conda activate so101-sim   # the simulator's environment (team uses conda)
 python 04_simulate.py run example --headless        # a full simulated round: plans, moves, collision check
 python 04_simulate.py edit example                   # place objects and bins (OpenCV window)
+python 04_simulate.py test                           # regression: every scene in simulation/scenes/tests/
 ```
 
 ## Rules for changes
@@ -65,7 +68,7 @@ python 04_simulate.py edit example                   # place objects and bins (O
 - New game: `games/<game>.py` with `main(argv=None)`, register it in `games/__init__.py` `GAMES`, rules in
   `config/games/<game>.yaml`. Build from the shared packages; do not import from `dev/`.
 - A reused planning world must give the same plans as a new one: after changing `World` or `plan_task`, compare
-  plan digests with a fresh world (same seeds) and run `04_simulate.py run example --headless`.
+  plan digests with a fresh world (same seeds) and run `04_simulate.py test` (no collisions, nothing in a wrong bin).
 - The planner leaves fine joint offsets out of its joint limits on purpose (`planning/sim.py`
   `fine_offsets_in_limits=False`, matching earlier behaviour).
 - Hardware (arms, ZED, LeRobot) is not available in a cloud session: test with imports, `--help`,

@@ -41,6 +41,8 @@ class Task:
     attempts: int = 0
     regions: frozenset = field(default_factory=frozenset)
     note: str = ""
+    blocked_at: int | None = None  # no plan with objects close around it: waits until progress passes this
+    reassigned: bool = False      # given to the other arm once already
 
     def label(self):
         point = "" if self.slot is None else f" H{self.slot}"
@@ -194,8 +196,12 @@ def build_tasks(shapes, boxes, bases, handoff_points, max_reach, regions, can_gr
 class Coordinator:
     """Gives tasks to the arms' workers and keeps the regions and handoff points exclusive."""
 
-    def __init__(self, tasks, regions: Regions, handoff_points, parallel: bool, min_spacing: float = 0.10):
+    def __init__(self, tasks, regions: Regions, handoff_points, parallel: bool, min_spacing: float = 0.10,
+                 max_reach: float | None = None):
         self.tasks = list(tasks)
+        self.max_reach = max_reach                   # for giving a task the other arm can't plan to this one
+        self.progress = 0                            # objects placed so far: a blocked task waits for this to grow
+        self.finished: set[str] = set()              # arms whose worker has no more tasks (never given one again)
         self.regions = regions
         self.handoff_points = [np.asarray(p, float) for p in handoff_points]
         self.min_spacing = float(min_spacing)        # a shape on a point blocks the gripper at points this close
@@ -274,12 +280,20 @@ class Coordinator:
             while not self.stop.is_set():
                 # closest object to the arm first; a task that cannot start now (e.g. the other arm works in the
                 # drop-off strip it needs) is skipped for the next closest one that can (its own side)
+                if self._stuck():
+                    self._resolve_blocked()
                 base = self.regions.bases.get(arm)
-                mine = sorted((t for t in self.tasks if t.arm == arm and t.state == "waiting"),
+                mine = sorted((t for t in self.tasks if t.arm == arm and t.state == "waiting"
+                               and t.blocked_at != self.progress),
                               key=lambda t: 0.0 if base is None else reach(t.shape["xyz"], base))
+                waiting_blocked = any(t.arm == arm and t.state == "waiting" and t.blocked_at == self.progress
+                                      for t in self.tasks)
                 coming = any(t.kind == TO_HANDOFF and t.then_arm == arm and t.state in ("waiting", "running")
                              for t in self.tasks)            # a handoff whose second half will be this arm's
-                if not mine and not coming:
+                may_take_over = any(self._can_take(t, arm) for t in self.tasks
+                                    if t.state == "waiting" and t.blocked_at is not None)
+                if not mine and not coming and not waiting_blocked and not may_take_over:
+                    self.finished.add(arm)
                     return None
                 reasons = []
                 for task in mine:
@@ -307,6 +321,8 @@ class Coordinator:
                         return task
                 if not mine and coming:
                     reasons.append("waiting for the other arm's handoff")
+                if not mine and (waiting_blocked or may_take_over):
+                    reasons.append("waiting for objects around a blocked one to be moved")
                 self.arm_state[arm] = reasons[0] if reasons else "waiting"
                 self.cond.wait(timeout=0.5)
             return None
@@ -317,10 +333,67 @@ class Coordinator:
         point is only chosen when it starts). For planning it ahead of time; it may still turn out to be another."""
         with self.cond:
             base = self.regions.bases.get(arm)
-            for task in sorted((t for t in self.tasks if t.arm == arm and t.state == "waiting" and t is not exclude),
+            for task in sorted((t for t in self.tasks if t.arm == arm and t.state == "waiting" and t is not exclude
+                                and t.blocked_at != self.progress),
                                key=lambda t: 0.0 if base is None else reach(t.shape["xyz"], base)):
                 return None if task.kind == TO_HANDOFF else task
             return None
+
+    # ---- objects with no plan (e.g. hemmed in by others)
+    def _can_take(self, task, arm) -> bool:
+        """Whether `arm` could take over this blocked task: a straight-to-bin task of the other arm, not handed over
+        before, with both the object and its bin in this arm's reach."""
+        if (task.kind != DIRECT or task.reassigned or task.arm == arm or arm in self.dead or arm in self.finished
+                or self.max_reach is None or arm not in self.regions.bases):
+            return False
+        base = self.regions.bases[arm]
+        return reach(task.shape["xyz"], base) <= self.max_reach and box_reach(task.box, base) <= self.max_reach
+
+    def _stuck(self) -> bool:
+        """Nothing can move on: no arm working and every waiting task blocked since the last object was placed."""
+        waiting = [t for t in self.tasks if t.state == "waiting"]
+        return bool(waiting) and not (self.running - self.dead) and all(t.blocked_at == self.progress
+                                                                         for t in waiting)
+
+    def _resolve_blocked(self):
+        """Every waiting task is blocked: each goes to the other arm if it can take it (another direction may get
+        between the objects), else it is given up."""
+        for task in [t for t in self.tasks if t.state == "waiting" and t.blocked_at == self.progress]:
+            other = next((a for a in self.regions.bases if self._can_take(task, a)), None)
+            if other is not None:
+                print(f"  {task.label()}: no plan for {task.arm}; {other} tries it from its side")
+                task.arm, task.reassigned, task.blocked_at = other, True, None
+                task.regions = self.regions.needed(other, [task.shape["xyz"], task.box["xyz"]])
+            else:
+                self._fail(task, "no plan, also after the objects around it were moved")
+        self.cond.notify_all()
+
+    def blocked(self, task, near: bool) -> str:
+        """The arm found no plan for the task. near: other objects lie close around it. Returns what happens next:
+        'later' (tried again once another object is placed), 'other arm' (the other arm tries it from its side), or
+        'failed'."""
+        with self.cond:
+            task.state = "waiting"
+            self._release(task.arm)
+            self.running.discard(task.arm)
+            if task.kind == TO_HANDOFF and task.slot is not None:
+                self.slots.pop(task.slot, None)
+                task.slot = None
+            result = None
+            if near:
+                task.blocked_at = self.progress
+                result = "later"
+            else:
+                other = next((a for a in self.regions.bases if self._can_take(task, a)), None)
+                if other is not None:
+                    task.arm, task.reassigned, task.blocked_at = other, True, None
+                    task.regions = self.regions.needed(other, [task.shape["xyz"], task.box["xyz"]])
+                    result = "other arm"
+                else:
+                    self._fail(task, "no plan")
+                    result = "failed"
+            self.cond.notify_all()
+            return result
 
     def _release(self, arm):
         """Free every region the arm holds (its task's object may have moved: not only task.regions)."""
@@ -341,6 +414,8 @@ class Coordinator:
         """result: 'done' or 'failed'; frees the arm's regions (the arm is home again)."""
         with self.cond:
             task.state = result
+            if result == "done":
+                self.progress += 1                   # room may have opened up for a blocked object
             self._release(task.arm)
             self.running.discard(task.arm)
             if task.kind == FROM_HANDOFF and task.slot is not None:

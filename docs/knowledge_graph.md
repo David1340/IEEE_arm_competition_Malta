@@ -86,7 +86,7 @@ graph LR
 
 **`core/paths.py`**: Every fixed path in the project, in one place.
 - defines: arm_calibration_dir()
-- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.kinematics, planning.sim, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
+- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.kinematics, planning.sim, simulation.run, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
 
 
 ### hardware/
@@ -218,7 +218,7 @@ graph LR
 - used by: state_machine.arm_worker
 
 **`planning/pick_planner.py`**: Planning a pick and place for one arm: every waypoint's pose (M-FRPSO IK) and the collision-free path to it (RRT-Connect), in the planning world of planning/sim.py (the table, the bins, the other o...
-- defines: plan_sequence(), add_obstacle(), add_other_arm(), handoff_checker(), grasp_height(), grasp_heights(), postures_for(), miss_position(), planning_world(), close_worlds(), plan_task()
+- defines: plan_sequence(), add_obstacle(), add_column(), object_stl(), neighbour_radius(), finger_points(), finger_clearance(), down_rolls(), add_other_arm(), handoff_checker(), grasp_height(), grasp_heights(), postures_for(), miss_position(), planning_world(), close_worlds(), plan_task()
 - imports: core.arms, hardware.gripper, perception.detection, planning.sim, state_machine.coordinator
 - used by: games.pick_and_place, planning.planner_service, simulation.run, state_machine.arm_worker (+1 in dev/)
 - config: config/arms.yaml
@@ -289,10 +289,10 @@ graph LR
 - config: config/arms.yaml
 
 **`simulation/run.py`** (runnable): Play a pick-and-place round in PyBullet on a scene: no arms, no camera, the same code as the real game.
-- defines: class SimArm, sim_read_joints(), sim_send_joints(), class SimActions, build_round(), main()
-- imports: core.arms, games.pick_and_place, games.rules, hardware.gripper, planning.ik, planning.pick_planner, planning.planner_service, simulation.scene, simulation.viewer, state_machine.arm_worker, state_machine.coordinator
+- defines: class SimArm, sim_read_joints(), sim_send_joints(), class SimActions, build_round(), main(), test()
+- imports: core.arms, core.paths, games.pick_and_place, games.rules, hardware.gripper, planning.ik, planning.pick_planner, planning.planner_service, simulation.scene, simulation.viewer, state_machine.arm_worker, state_machine.coordinator
 - used by: 04_simulate
-- config: config/arms.yaml, config/games/<game>.yaml
+- config: config/arms.yaml, config/games/<game>.yaml (also saves files)
 
 **`simulation/scene.py`**: A scene: the objects and bins on the table, in the TABLE frame, saved as YAML in simulation/scenes/.
 - defines: resolve(), available(), stl(), check(), load(), save(), marks()

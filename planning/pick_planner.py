@@ -102,6 +102,99 @@ def add_obstacle(world, x, y, half_x, half_y, height):
     return body
 
 
+def add_column(world, x, y, radius, height):
+    """A cylinder from the table up to `height` at (x, y) in the arm frame (an object next to the one being
+    picked: its size, any orientation), as an obstacle for the planners."""
+    import pybullet as p
+
+    c = world.client
+    col = p.createCollisionShape(p.GEOM_CYLINDER, radius=radius, height=height, physicsClientId=c)
+    vis = p.createVisualShape(p.GEOM_CYLINDER, radius=radius, length=height, rgbaColor=[0.6, 0.4, 0.2, 0.5],
+                              physicsClientId=c)
+    body = p.createMultiBody(0, col, vis, basePosition=[x, y, height / 2], physicsClientId=c)
+    world.checker.obstacle_body_ids.append(body)
+    getattr(world, "extra_bodies", []).append(body)
+    return body
+
+
+def object_stl(mark):
+    """The STL of a mark's object at its detected size (the large one when the size is unknown), or None."""
+    from perception.detection import OBJECT_SIZES, OBJECT_STL_FILES
+
+    name = mark.get("name")
+    return OBJECT_SIZES.get(name, {}).get(mark.get("size", "")) or OBJECT_STL_FILES.get(name)
+
+
+def neighbour_radius(mark, args):
+    """How far around another object's centre the gripper must keep out [m]. --neighbour-radius < 0 (default): the
+    object's own half width at its widest (any orientation: the camera does not give it) + --neighbour-margin;
+    0: other objects are not obstacles; > 0: that radius for every object."""
+    radius = getattr(args, "neighbour_radius", -1.0)
+    if radius >= 0:
+        return radius
+    from hardware.gripper import object_width
+
+    stl = object_stl(mark)
+    half = object_width(stl) / 2 if stl is not None else 0.03
+    return half + getattr(args, "neighbour_margin", 0.005)
+
+
+# ---------------------------------------------------------------------------------------------- wrist roll (top-down)
+# For a top-down grasp the wrist roll turns the jaws about the vertical: at roll r (deg) they close along a line
+# about r deg from the reach (measured in the planning world: -90 = across the reach, the home pose's roll; 0 =
+# along it, the fixed finger on the base's side). The planner tries the rolls whose fingers come down in free space.
+DOWN_ROLLS_DEG = (0, -90, 90, -45, 45, -135, 135)   # preference when nothing is near: 0 first (an arm stopping short
+                                                    # of the object still closes on it), then the old -90
+FIXED_FACE = 0.030        # the fixed finger's inner face from the grasp point, along the jaws' closing line [m]
+FINGER_THICK = 0.008      # finger plate thickness [m]
+FINGER_HALF_WIDTH = 0.012  # half the finger plates' width, across the closing line [m]
+
+
+def finger_points(xy, roll_deg, opening_cmd):
+    """Points on the two fingers (arm frame xy) for a top-down grasp at xy with that wrist roll and jaw opening."""
+    from hardware.gripper import opening_width
+
+    reach = math.atan2(xy[1], xy[0])
+    axis = np.array([math.cos(reach + math.radians(roll_deg)), math.sin(reach + math.radians(roll_deg))])
+    side = np.array([-axis[1], axis[0]])
+    fixed = np.asarray(xy) - axis * (FIXED_FACE + FINGER_THICK / 2)
+    moving = np.asarray(xy) + axis * (opening_width(opening_cmd) / 2 + FINGER_THICK / 2)
+    return [c + side * k * FINGER_HALF_WIDTH for c in (fixed, moving) for k in (-1.0, 0.0, 1.0)]
+
+
+def finger_clearance(points, neighbours, boxes, box_half):
+    """The least room [m] between the finger points and the other objects (circles: xy, radius) and the bin walls
+    (squares: xy, half side); negative: a finger would land on something."""
+    best = math.inf
+    for point in points:
+        for centre, radius in neighbours:
+            best = min(best, float(np.linalg.norm(point - centre)) - radius - FINGER_THICK / 2)
+        for centre in boxes:
+            d = np.abs(point - centre)
+            inside = d.max() < box_half
+            to_wall = box_half - d.max() if inside else float(np.linalg.norm(np.maximum(d - box_half, 0.0)))
+            best = min(best, to_wall - FINGER_THICK / 2)
+    return best
+
+
+def down_rolls(world, start_q, xy, opening_cmd, neighbours, boxes, args):
+    """The wrist rolls [rad] to try for a top-down grasp at xy, best first: those whose fingers have
+    --finger-clearance of room in --down-roll's preference order, then the rest by room. --down-roll across: the
+    start pose's roll only (the old behaviour)."""
+    if getattr(args, "down_roll", "auto") == "across":
+        return [float(start_q[4])]
+    low, high = world.roll_limits()
+    need = getattr(args, "finger_clearance", 0.006)
+    scored = []
+    for rank, roll in enumerate(DOWN_ROLLS_DEG):
+        if not low <= math.radians(roll) <= high:
+            continue
+        room = finger_clearance(finger_points(xy, roll, opening_cmd), neighbours, boxes, args.box_size / 2)
+        scored.append((room < need, rank if room >= need else -room, roll, room))
+    scored.sort()
+    return [math.radians(roll) for _, _, roll, _ in scored[:max(1, getattr(args, "down_rolls", 3))]]
+
+
 def add_other_arm(world, to_arm, other, q):
     """The other arm's robot model at its base and joint angles q, as an obstacle (it is not planned). A reused
     world keeps the model between plans (world.other_arms) and only moves it."""
@@ -278,16 +371,23 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     world.level_tolerance_deg = getattr(args, "level_tolerance", 30.0)
     world.stall_iterations = getattr(args, "ik_stall", 30) or None
     try:
+        neighbours, boxes_xy = [], []
         for other in obstacles["shapes"]:
             if other is task.shape or other is task.shape.get("origin"):
                 continue
             xyz = other.get("handoff_xyz") if other["state"] == "handoff" else other["xyz"]
             xy = (to_arm @ np.append(xyz, 1.0))[:2]
-            radius = getattr(args, "neighbour_radius", 0.0)
-            if radius > 0:                     # 0: the other objects are not obstacles (touching ones still picked)
-                add_obstacle(world, *xy, radius, radius, max(xyz[2], 0.01))
+            radius = neighbour_radius(other, args)
+            if radius <= 0:                    # 0: the other objects are not obstacles (the gripper may push them)
+                continue
+            if getattr(args, "neighbour_radius", -1.0) < 0:
+                add_column(world, *xy, radius, max(xyz[2], 0.01))       # each object's own size
+            else:
+                add_obstacle(world, *xy, radius, radius, max(xyz[2], 0.01))   # the old square columns
+            neighbours.append((xy, radius))
         for box in obstacles["boxes"]:
             xy = (to_arm @ np.append(box["xyz"], 1.0))[:2]
+            boxes_xy.append(xy)
             add_obstacle(world, *xy, args.box_size / 2, args.box_size / 2, args.box_height + args.box_margin)
         for other, q in obstacles["arms"].items():
             if other != arm:
@@ -299,6 +399,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                               ("leave handoff", [h[0], h[1], top + args.approach])]
             place_postures = postures_for(h, args)
         else:
+            h = None
             drop_z = max(args.box_height + args.drop_above, top + args.lift)
             rest = lambda z: [("over box", [b[0], b[1], drop_z])]
             place_postures = ["horizontal", "down"]
@@ -308,19 +409,51 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         # of reach fails for every random start. So scan every height with ONE start first and only then give the
         # same heights the other starts (before: 3 starts per height, ~20 s for an object whose lowest heights are
         # out of reach).
-        def attempt(posture, z, seed, tries):
-            return plan_sequence(world, start_q, [
+        # A top-down grasp is tried with each of the best wrist rolls (down_rolls); the wrist turns at the start
+        # pose, before the arm moves (checked collision-free), and the whole pick and carry keep that roll.
+        variants = []
+        for posture in postures_for(o, args):
+            if posture == "down":
+                variants += [(posture, roll) for roll in down_rolls(world, start_q, o[:2], opening, neighbours,
+                                                                    boxes_xy, args)]
+            else:
+                variants.append((posture, float(start_q[4])))
+        turned = {}
+
+        def turn(roll):
+            """The start pose with the wrist at `roll`, or None when the turn is not collision-free."""
+            q = list(start_q)
+            q[4] = roll
+            if abs(roll - float(start_q[4])) < 1e-6:
+                return q
+            if roll not in turned:
+                turned[roll] = q if world.turn_is_free(start_q, q) else None
+            return turned[roll]
+
+        def attempt(posture, roll, z, seed, tries):
+            start = turn(roll)
+            if start is None:
+                raise RuntimeError(f"no room to turn the wrist to {math.degrees(roll):.0f} deg at the start pose")
+            world.set_start(start)
+            # placing on a handoff point: the posture it was picked with first (top-down keeps the object upright)
+            place = [posture] + [p for p in place_postures if p != posture] if h is not None else place_postures
+            plans = plan_sequence(world, start, [
                 ("above shape", [o[0], o[1], top + args.approach]),
                 ("grasp", [o[0], o[1], z]),
                 ("lift", [o[0], o[1], top + args.lift]),
                 *rest(z),
             ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
-                               "over handoff": place_postures, "place": place_postures,
-                               "leave handoff": place_postures, "over box": ["horizontal", "down"]},
+                               "over handoff": place, "place": place,
+                               "leave handoff": place, "over box": ["horizontal", "down"]},
                 seed_tries=tries)
+            if start is not start_q and abs(start[4] - float(start_q[4])) > 1e-6:
+                label, path = plans[0]                   # turn the wrist first, where the arm is
+                plans[0] = (label, [list(start_q), *path])
+            return plans
 
-        def done(posture, plans, z):
-            print(f"  {arm}: {posture} grasp ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
+        def done(posture, roll, plans, z):
+            how = f"{posture} grasp" + (f", wrist roll {math.degrees(roll):+.0f} deg" if posture == "down" else "")
+            print(f"  {arm}: {how} ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
             if args.gui:
                 for _, path in plans:
                     world.start_q = list(path[0])
@@ -330,13 +463,13 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         retry = (args.seed + 1, SEED_TRIES - 1)
         passes = [(args.seed, 1), retry] if SEED_TRIES > 1 else [(args.seed, 1)]
         for seed, tries in passes:
-            for posture in postures_for(o, args):
+            for posture, roll in variants:
                 heights = grasp_heights(top, posture, args)
                 if not len(heights) and seed == args.seed:
                     print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
                 for i, z in enumerate(heights):
                     try:
-                        plans = attempt(posture, z, seed, tries)
+                        plans = attempt(posture, roll, z, seed, tries)
                     except RuntimeError as exc:
                         error = exc
                         if "grasp" not in str(exc) and "place" not in str(exc):
@@ -348,10 +481,10 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                         # the grasp is as low as possible (costs ~1-3 s, only for these picks).
                         for lower in heights[:i]:
                             try:
-                                return done(posture, attempt(posture, lower, *retry), lower)
+                                return done(posture, roll, attempt(posture, roll, lower, *retry), lower)
                             except RuntimeError:
                                 pass
-                    return done(posture, plans, z)
+                    return done(posture, roll, plans, z)
         raise RuntimeError(str(error))
     finally:
         if args.gui:

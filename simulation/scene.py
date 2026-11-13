@@ -18,6 +18,7 @@ from core import config
 from core.paths import ROOT
 
 SCENES = ROOT / "simulation" / "scenes"
+TESTS = SCENES / "tests"          # regression scenes: python 04_simulate.py test
 SHAPES = ("cube", "cylinder", "dodecahedron", "hexagonal")
 SIZES = ("small", "large")
 COLOURS = ("red", "green", "blue", "yellow")
@@ -32,13 +33,16 @@ def resolve(path) -> Path:
     path = Path(path)
     if path.suffix not in (".yaml", ".yml"):
         path = path.with_suffix(".yaml")
-    if not path.is_absolute() and not path.exists() and len(path.parts) == 1:
-        path = SCENES / path
+    if not path.is_absolute() and not path.exists():
+        for folder in (SCENES, TESTS):
+            if (folder / path).exists() or (folder is SCENES and len(path.parts) == 1 and not (TESTS / path).exists()):
+                return folder / path
     return path
 
 
 def available() -> list[str]:
-    return sorted(p.stem for p in SCENES.glob("*.yaml"))
+    """Saved scenes: simulation/scenes/*.yaml, and the regression tests as tests/<name>."""
+    return sorted(p.stem for p in SCENES.glob("*.yaml")) + sorted(f"tests/{p.stem}" for p in TESTS.glob("*.yaml"))
 
 
 def stl(shape: str, size: str) -> Path:

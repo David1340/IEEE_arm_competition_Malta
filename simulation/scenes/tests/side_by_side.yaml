@@ -1,0 +1,11 @@
+# A simulated table: objects and bins in the TABLE frame (metres, degrees; x forward, y towards follower_pink).
+# objects: shape (cube, cylinder, dodecahedron, hexagonal), size (small, large), colour (red, green, blue, yellow),
+# x, y, yaw_deg. bins: colour, x, y (the bin's centre).
+# Edit with `python 04_simulate.py edit <this file>`, run with `python 04_simulate.py run <this file>`.
+# Test: Two large cubes touching side by side, across the pink arm's reach.
+
+objects:
+- {shape: cube, size: large, colour: red, x: 0.26, y: 0.24, yaw_deg: 0}
+- {shape: cube, size: large, colour: red, x: 0.26, y: 0.282, yaw_deg: 0}
+bins:
+- {colour: red, x: 0.14, y: 0.46}

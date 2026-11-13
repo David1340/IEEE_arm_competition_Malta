@@ -18,6 +18,7 @@ Every animation step is checked for contact (simulation/viewer.py): any COLLISIO
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -181,7 +182,7 @@ def main(argv=None):
     if not tasks:
         print("Nothing to do.")
     coordinator = Coordinator(tasks, regions, handoff_points, not args.one_at_a_time,
-                              arm_config.handoff_min_spacing())
+                              arm_config.handoff_min_spacing(), max_reach=args.max_reach)
     workers_module.CURRENT["coordinator"] = coordinator
     workers = [threading.Thread(target=workers_module.arm_worker, daemon=True, name=name,
                                 args=(name, robot, coordinator, marks, last_q, args,
@@ -232,7 +233,62 @@ def main(argv=None):
         for planner in planners.values():
             planner.close()
         viewer.close()
-    return {"placed": placed, "failed": failed, "collisions": len(viewer.collisions), "wrong_bin": wrong}
+    return {"placed": placed, "failed": failed, "left": len(skipped), "collisions": len(viewer.collisions),
+            "wrong_bin": wrong, "seconds": round(time.monotonic() - started, 1),
+            "objects": len(scene["objects"])}
+
+
+def test(argv=None):
+    """Run scenes headless one after another and print one line each: the regression check after a change to the
+    planner, the coordinator or the behaviour tree.
+
+        python 04_simulate.py test                       # every scene in simulation/scenes/tests/, and example
+        python 04_simulate.py test tests/side_by_side    # only these scenes
+        python 04_simulate.py test -- --down-roll across # game options after --, for every scene
+
+    Each scene's full printout goes to outputs/sim_tests/<scene>.log."""
+    import contextlib
+    import io
+
+    from core.paths import OUTPUTS
+
+    argv = list(argv or [])
+    options = argv[argv.index("--") + 1:] if "--" in argv else []
+    names = argv[:argv.index("--")] if "--" in argv else argv
+    names = names or ["example", *[n for n in scenes.available() if n.startswith("tests/")]]
+    logs = OUTPUTS / "sim_tests"
+    logs.mkdir(parents=True, exist_ok=True)
+    rows, bad = [], 0
+    for name in names:
+        out = io.StringIO()
+        log = logs / f"{name.replace('/', '_')}.log"
+        log.write_text("")
+        try:
+            # PyBullet prints from C straight to file descriptor 1: send that to the log as well
+            sys.stdout.flush()
+            saved = os.dup(1)
+            with open(log, "ab") as native:
+                os.dup2(native.fileno(), 1)
+            try:
+                with contextlib.redirect_stdout(out):
+                    result = main([name, "--headless", *options])
+            finally:
+                sys.stdout.flush()
+                os.dup2(saved, 1)
+                os.close(saved)
+        except BaseException as error:              # noqa: BLE001 - one broken scene must not stop the others
+            result = {"error": f"{type(error).__name__}: {error}"}
+        with open(log, "a") as handle:
+            handle.write(out.getvalue())
+        rows.append((name, result))
+        ok = "error" not in result and result["collisions"] == 0 and result["wrong_bin"] == 0
+        bad += not ok
+        print(f"{name:28s} " + (result["error"] if "error" in result else
+              f"placed {result['placed']}/{result['objects']}  failed {result['failed']}  left {result['left']}  "
+              f"collisions {result['collisions']}  wrong bin {result['wrong_bin']}  {result['seconds']:.0f} s")
+              + ("" if ok else "   <-- check"), flush=True)
+    print(f"\n{len(rows)} scenes, {bad} with collisions, wrong bins or errors; logs in {logs}")
+    return rows
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+# A simulated table: objects and bins in the TABLE frame (metres, degrees; x forward, y towards follower_pink).
+# objects: shape (cube, cylinder, dodecahedron, hexagonal), size (small, large), colour (red, green, blue, yellow),
+# x, y, yaw_deg. bins: colour, x, y (the bin's centre).
+# Edit with `python 04_simulate.py edit <this file>`, run with `python 04_simulate.py run <this file>`.
+# Test: Four different objects touching in the middle strip, 36-38 cm from both arms.
+
+objects:
+- {shape: cube, size: large, colour: red, x: 0.30, y: 0.02, yaw_deg: 10}
+- {shape: hexagonal, size: large, colour: yellow, x: 0.30, y: -0.03, yaw_deg: 0}
+- {shape: cylinder, size: large, colour: blue, x: 0.345, y: 0.0, yaw_deg: 0}
+- {shape: dodecahedron, size: small, colour: green, x: 0.255, y: 0.0, yaw_deg: 0}
+bins:
+- {colour: red, x: 0.14, y: 0.46}
+- {colour: green, x: 0.42, y: 0.44}
+- {colour: blue, x: 0.14, y: -0.44}
+- {colour: yellow, x: 0.42, y: -0.40}
