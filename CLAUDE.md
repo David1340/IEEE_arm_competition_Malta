@@ -28,6 +28,7 @@ files or functions (`--check` tells whether it is current).
 | IK | `planning/ik.py` (M-FRPSO); paths `planning/rrt_connect.py` |
 | PyBullet planning world | `planning/sim.py` (`World`) |
 | planning a pick, grasp heights, postures | `planning/pick_planner.py` (`plan_task`, `plan_sequence`) |
+| per object type grasp settings (postures, top-down finger cover, squeeze) | `config/grasping.yaml` via `planning/pick_planner.py` `grasp_settings()` |
 | wrist roll for top-down grasps, neighbours as obstacles | `planning/pick_planner.py` (`down_rolls`, `finger_points`, `neighbour_radius`, `add_column`) |
 | held object in the plan (carry, drop): `World.hold`, checker `attach`; drop height and posture | `planning/sim.py`, `planning/ik.py`, `planning/pick_planner.py` `plan_task` |
 | gripper close: holding by current or stall, `outputs/gripper_trace.csv` | `hardware/gripper.py` `close_gripper_with_current_feedback`, `state_machine/arm_worker.py` `_log_gripper` |

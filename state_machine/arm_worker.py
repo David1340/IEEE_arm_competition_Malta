@@ -305,8 +305,11 @@ class TaskActions:
         self._follow(bb, "grasp", bb["opening"])
         reached_q = self.read_joints_rad(self.robot)            # where the arm stopped, for the grasp check
         trace, info = [], {}
+        from planning.pick_planner import grasp_settings
+
+        squeeze = float(grasp_settings(task.shape.get("name")).get("squeeze", GRIP_SQUEEZE_UNITS))
         grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
-            self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS,
+            self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, squeeze,
             miss_below=miss_position(task.shape, self.args),
             stall_readings=getattr(self.args, "grip_stall_readings", 5) or None,
             empty_below=getattr(self.args, "grip_empty", 8.0), trace=trace, info=info)

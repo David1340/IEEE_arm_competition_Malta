@@ -82,11 +82,11 @@ graph LR
 
 **`core/config.py`**: Read and write the YAML files in config/.
 - defines: class ConfigError, load(), load_copy(), header(), dump(), save()
-- used by: calibration.calibrate, calibration.lerobot_sync, core.arms, games.rules, hardware.joint_offsets, perception.colour, perception.detection, planning.ik, simulation.scene, teleop.teleop_net (+1 in dev/)
+- used by: calibration.calibrate, calibration.lerobot_sync, core.arms, games.rules, hardware.joint_offsets, perception.colour, perception.detection, planning.ik, planning.pick_planner, simulation.scene, teleop.teleop_net (+1 in dev/)
 
 **`core/paths.py`**: Every fixed path in the project, in one place.
 - defines: arm_calibration_dir()
-- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.kinematics, planning.sim, simulation.run, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
+- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.kinematics, planning.pick_planner, planning.sim, simulation.run, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
 
 
 ### hardware/
@@ -218,8 +218,8 @@ graph LR
 - used by: state_machine.arm_worker
 
 **`planning/pick_planner.py`**: Planning a pick and place for one arm: every waypoint's pose (M-FRPSO IK) and the collision-free path to it (RRT-Connect), in the planning world of planning/sim.py (the table, the bins, the other o...
-- defines: plan_sequence(), add_obstacle(), add_column(), object_stl(), neighbour_radius(), finger_points(), finger_clearance(), down_rolls(), add_other_arm(), handoff_checker(), grasp_height(), grasp_heights(), postures_for(), miss_position(), planning_world(), close_worlds(), plan_task()
-- imports: core.arms, hardware.gripper, perception.detection, planning.sim, state_machine.coordinator
+- defines: plan_sequence(), add_obstacle(), add_column(), object_stl(), neighbour_radius(), finger_points(), finger_clearance(), down_rolls(), add_other_arm(), handoff_checker(), grasp_height(), grasp_settings(), grasp_heights(), postures_for(), miss_position(), planning_world(), close_worlds(), plan_task()
+- imports: core.arms, core.config, core.paths, hardware.gripper, perception.detection, planning.sim, state_machine.coordinator
 - used by: games.pick_and_place, planning.planner_service, simulation.run, state_machine.arm_worker (+1 in dev/)
 - config: config/arms.yaml
 

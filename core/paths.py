@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config"
 ARMS_FILE = CONFIG / "arms.yaml"
 PERCEPTION_FILE = CONFIG / "perception.yaml"
+GRASPING_FILE = CONFIG / "grasping.yaml"
 GAMES_CONFIG = CONFIG / "games"
 CALIBRATION = CONFIG / "calibration"                  # every calibration value of this setup
 CAMERA_CALIBRATION_FILE = CALIBRATION / "camera.yaml"

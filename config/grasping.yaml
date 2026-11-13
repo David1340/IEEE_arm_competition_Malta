@@ -1,0 +1,23 @@
+# How the gripper takes each kind of object (the YOLO class names of config/perception.yaml). Read by
+# planning/pick_planner.py (grasp_settings); the squeeze by state_machine/arm_worker.py.
+#
+# postures          the grasps to try, in order: horizontal (level, from the side) and/or down (top-down);
+#                   auto = level first, top-down first within --close-radius of the arm's base (the game's default)
+# min_finger_cover  top-down grasps: at least this much of the object's height between the fingers [m]; a higher
+#                   grasp point is not used (only the top of the object would be held)
+# squeeze           how far the gripper keeps closing past where it stopped on the object (0-100 units)
+#
+# A shape not listed uses `defaults`. --pick-posture level on the command line still means level only.
+
+defaults:
+  postures: auto
+  min_finger_cover: 0.012
+  squeeze: 2.0
+
+objects:
+  cylinder:
+    # Round: flat jaws touch it along two lines; held only near its top it rolls out sideways or tips. Level grips
+    # it round the middle; top-down only with most of it between the fingers, and a firmer squeeze.
+    postures: [horizontal, down]
+    min_finger_cover: 0.03
+    squeeze: 4.0

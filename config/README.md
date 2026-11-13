@@ -9,6 +9,7 @@ header comment; tools that write a file keep that header.
 |---|---|---|
 | `arms.yaml` | the four arms: ports, USB IDs, leader pairing, base positions, home pose, handoff points, LeRobot types | you; `01_setup_usb.py` (usb, port); `02_calibrate.py camera touch` / `offsets --arm` (base) |
 | `perception.yaml` | camera ROI, YOLO weights and classes, colour hues | you; `roi.py select` |
+| `grasping.yaml` | per object type: grasp postures to try, least finger cover for top-down grasps, squeeze | you |
 | `teleop.yaml` | network teleop addresses | you |
 | `games/<game>.yaml` | each game's rules (rounds, which bin each object goes in) | you |
 | `calibration/camera.yaml` | camera -> TABLE frame | `02_calibrate.py camera ...` |

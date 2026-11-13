@@ -275,20 +275,36 @@ def grasp_height(top, args):
 LEVEL_JAW_BELOW = 0.033
 
 
-def grasp_heights(top, posture, args):
+GRASP_DEFAULTS = {"postures": "auto", "min_finger_cover": 0.012, "squeeze": 2.0}
+
+
+def grasp_settings(name):
+    """How the gripper takes this kind of object (config/grasping.yaml): postures, min_finger_cover, squeeze."""
+    from core import config
+    from core.paths import GRASPING_FILE
+
+    data = config.load(GRASPING_FILE, {}, required=False) or {}
+    settings = dict(GRASP_DEFAULTS)
+    settings.update(data.get("defaults") or {})
+    settings.update((data.get("objects") or {}).get(name or "", {}) or {})
+    return settings
+
+
+def grasp_heights(top, posture, args, settings=None):
     """The heights to try for the grasp point, lowest first (5 mm steps); the planner's table clearance check
     decides which are possible.
       level (horizontal): the jaws are at that height, so from half the object's height (--grasp-at) up to
           --level-below-top under its top (higher, they close over it); not below --min-grasp-z. With
           --pick-posture level, up to where the fingers still cover --level-min-contact of the object.
       down: the fingertips hang tip_below_grasp() (from the URDF) below the grasp point, so it never goes lower than
-          that + 1.2 cm (the tips 1.2 cm over the table), and at most so high that the tips still reach 1.2 cm
-          below the object's top."""
+          that + 1.2 cm (the tips 1.2 cm over the table), and at most so high that the fingers still cover the
+          object's min_finger_cover (config/grasping.yaml; 1.2 cm by default, 3 cm for cylinders)."""
     from hardware.gripper import tip_below_grasp
 
     if posture == "down":
         low = max(grasp_height(top, args), tip_below_grasp() + 0.012)
-        high = top + tip_below_grasp() - 0.012
+        cover = float((settings or GRASP_DEFAULTS).get("min_finger_cover", 0.012))
+        high = top + tip_below_grasp() - cover
     else:
         low, high = grasp_height(top, args), top - args.level_below_top
         # Never below where the level fingers still clear the table (--clearance): a lower target is unreachable, and
@@ -426,8 +442,12 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         # out of reach).
         # A top-down grasp is tried with each of the best wrist rolls (down_rolls); the wrist turns at the start
         # pose, before the arm moves (checked collision-free), and the whole pick and carry keep that roll.
+        settings = grasp_settings(task.shape.get("name"))
+        postures = postures_for(o, args)
+        if isinstance(settings.get("postures"), list) and getattr(args, "pick_posture", "auto") != "level":
+            postures = [p for p in settings["postures"] if p in ("horizontal", "down")] or postures
         variants = []
-        for posture in postures_for(o, args):
+        for posture in postures:
             if posture == "down":
                 variants += [(posture, roll) for roll in down_rolls(world, start_q, o[:2], opening, neighbours,
                                                                     boxes_xy, args)]
@@ -486,7 +506,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         passes = [(args.seed, 1), retry] if SEED_TRIES > 1 else [(args.seed, 1)]
         for seed, tries in passes:
             for posture, roll in variants:
-                heights = grasp_heights(top, posture, args)
+                heights = grasp_heights(top, posture, args, settings)
                 if not len(heights) and seed == args.seed:
                     print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
                 for i, z in enumerate(heights):
