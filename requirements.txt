@@ -1,0 +1,13 @@
+# Python packages for this project: pip install -r requirements.txt
+# Also needed, installed separately:
+#   LeRobot (the arms, lerobot-calibrate, lerobot-teleoperate): https://github.com/huggingface/lerobot
+#     e.g. conda create -n lerobot python=3.10 && conda activate lerobot && pip install 'lerobot[feetech]'
+#   ZED SDK and its Python API (pyzed), for the camera: https://www.stereolabs.com/developers/release
+
+numpy
+pyyaml
+opencv-python
+scipy
+matplotlib
+pybullet
+ultralytics

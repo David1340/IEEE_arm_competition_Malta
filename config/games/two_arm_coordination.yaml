@@ -1,0 +1,16 @@
+# Game 2: two-arm coordination (games/two_arm_coordination.py; rules section 5.8, GAME 2). NOT IMPLEMENTED YET.
+#
+# round   the round played when `--round` is not given
+# rounds  each round's description; add its settings (objects, target areas, timings) here as it is built
+
+game: two_arm_coordination
+round: pouring
+
+rounds:
+  pouring:
+    description: Both arms transfer uncooked rice from the source container into the target bowl, with minimal spillage.
+  folding:
+    description: Both arms fold the light blue, light green and light yellow cloths to the required pattern and place
+      them in the target area.
+  wrap_and_pack:
+    description: Both arms wrap the robot mascot in the bubble wrap, put it in the cardboard box and close the box.

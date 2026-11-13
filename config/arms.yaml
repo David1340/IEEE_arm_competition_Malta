@@ -1,0 +1,74 @@
+# The four SO-101 arms: two followers that do the work, two leaders that teleoperate them.
+# Read by every script through core/arms.py; this is the only place these values live.
+#
+# port      fixed device name made by the udev rule from `python 01_setup_usb.py` (which also fills in `usb`)
+# usb       the board's USB identity (serial number = its unique ID); written by 01_setup_usb.py, keep quoted
+# leader    which leader arm teleoperates this follower (03_teleop.py)
+# base      where the follower stands in the TABLE frame: origin on the table halfway between the two arms'
+#           shoulder pan axes, x forward, y towards follower_pink, z up; metres and degrees.
+#           Measured by `python 02_calibrate.py camera touch` or the `offsets --arm` sliders, which write it here.
+# park_deg  (optional) where that follower parks when a script ends, 5 joint angles; default: the home pose
+#
+# home      the pose every script starts and ends in (degrees: shoulder_pan, shoulder_lift, elbow_flex,
+#           wrist_flex, wrist_roll; keep wrist_roll at -90, the planners lock it there), gripper 0-100
+# handoff   points (TABLE x, y) where one arm leaves an object for the other when only the other reaches its bin,
+#           the half width of the shared middle strip, and the least spacing between used handoff points [m]
+# lerobot   LeRobot device types, and where LeRobot itself keeps the motor calibration it uses. The versioned
+#           copy is in config/calibration/<arm>/motors.yaml (`python 02_calibrate.py sync`).
+
+default_arm: follower_pink
+
+home:
+  joints_deg: [0.0, -100.0, 90.0, -75.0, -90.0]
+  gripper: 60.0
+
+followers:
+  follower_pink:
+    port: /dev/so101_follower_pink
+    leader: leader_blue
+    base: {x: 0.0062, y: 0.2579, yaw_deg: -4.16}
+    usb:
+      serial: "5AE6084677"
+      vendor: "1a86"
+      product: "55d3"
+      socket: "1-5.2"
+      by_id: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6084677-if00
+  follower_blue:
+    port: /dev/so101_follower_blue
+    leader: leader_green
+    base: {x: 0.0017, y: -0.2336, yaw_deg: -0.41}
+    usb:
+      serial: "5AE6083782"
+      vendor: "1a86"
+      product: "55d3"
+      socket: "1-1.3"
+      by_id: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6083782-if00
+
+leaders:
+  leader_blue:
+    port: /dev/so101_leader_blue
+    usb:
+      serial: "5AE6083785"
+      vendor: "1a86"
+      product: "55d3"
+      socket: "1-1.2"
+  leader_green:
+    port: /dev/so101_leader_green
+    usb:
+      serial: "5AE6054670"
+      vendor: "1a86"
+      product: "55d3"
+      socket: "1-1.1"
+
+handoff:
+  points:
+    - [0.30, 0.0]
+    - [0.17, 0.0]
+  middle_half_width: 0.10
+  min_spacing: 0.10
+
+lerobot:
+  follower_type: so101_follower
+  leader_type: so101_leader
+  follower_calibration_dir: ~/.cache/huggingface/lerobot/calibration/robots/so_follower
+  leader_calibration_dir: ~/.cache/huggingface/lerobot/calibration/teleoperators/so_leader

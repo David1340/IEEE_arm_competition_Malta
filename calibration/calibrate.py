@@ -1,41 +1,41 @@
-"""Every calibration of the robot, in one script; every calibration value, in one file: calibration.json.
+"""Camera and arm-placement calibration, and the fine joint offsets. Run it through `python 02_calibrate.py camera ...`
+(or `python -m calibration.calibrate ...`). The camera fit is saved in config/calibration/camera.yaml.
 
-    python calibration/calibrate.py --marker-xy 0:0.45,0.30 1:0.15,0.30 2:0.15,-0.30 3:0.45,-0.30
+    python 02_calibrate.py camera --marker-xy 0:0.45,0.30 1:0.15,0.30 2:0.15,-0.30 3:0.45,-0.30
                                                        # the first time: each marker ID's centre x,y in the TABLE
                                                        # frame (below), measured by hand (remembered afterwards)
-    python calibration/calibrate.py                          # after the camera moved: the ArUco markers, a few s, no arm
-    python calibration/calibrate.py --marker-ids 3,2,1,0     # the first time: which ID is TOP_RIGHT, BOTTOM_RIGHT,
+    python 02_calibrate.py camera                          # after the camera moved: the ArUco markers, a few s, no arm
+    python 02_calibrate.py camera --marker-ids 3,2,1,0     # the first time: which ID is TOP_RIGHT, BOTTOM_RIGHT,
                                                        # BOTTOM_LEFT, TOP_LEFT (remembered afterwards)
-    python calibration/calibrate.py ids                      # live view: which marker has which ID
-    python calibration/calibrate.py arm                      # the most accurate camera fit: touch 4 blocks with the arm
+    python 02_calibrate.py camera ids                      # live view: which marker has which ID
+    python 02_calibrate.py camera arm                      # the most accurate camera fit: touch 4 blocks with the arm
                                                        # (once); also re-measures the markers in the arm's frame
-    python calibration/calibrate.py check                    # torque off: where the model puts the tip and the jaws while
+    python 02_calibrate.py camera check                    # torque off: where the model puts the tip and the jaws while
                                                        # the arm is moved by hand
-    python calibration/calibrate.py offsets                  # the fine joint offsets: PyBullet sliders over the live arm
-    python calibration/calibrate.py offsets --arm follower_blue   # the same for one of the two arms (its own file,
-                                                       # calibration/robots/so_follower/fine_joint_offsets_<arm>.json;
-                                                       # plus sliders for its base origin x, y, yaw in arms.json)
-    python calibration/calibrate.py offsets --arm follower_pink --objects   # ... with the camera's objects shown too
-    python calibration/calibrate.py offsets --arm both --objects            # both arms in one window, objects too
-    python calibration/calibrate.py tape                     # the camera from the black tape (no markers needed)
-    python calibration/calibrate.py touch --arm both         # each arm's base x, y, yaw from its fingertip on the tape
-    python calibration/calibrate.py show                     # print what calibration.json holds
+    python 02_calibrate.py camera offsets                  # the fine joint offsets: PyBullet sliders over the live arm
+    python 02_calibrate.py camera offsets --arm follower_blue   # the same for one of the two arms (its own file,
+                                                       # config/calibration/<arm>/joint_offsets.yaml;
+                                                       # plus sliders for its base origin x, y, yaw in config/arms.yaml)
+    python 02_calibrate.py camera offsets --arm follower_pink --objects   # ... with the camera's objects shown too
+    python 02_calibrate.py camera offsets --arm both --objects            # both arms in one window, objects too
+    python 02_calibrate.py camera tape                     # the camera from the black tape (no markers needed)
+    python 02_calibrate.py camera touch --arm both         # each arm's base x, y, yaw from its fingertip on the tape
+    python 02_calibrate.py camera show                     # print what config/calibration/camera.yaml holds
 
 The TABLE frame, shared by both arms: origin on the table halfway between the two arms' shoulder pan axes;
 x forward (the way both arms face), y to the left (seen from behind the arms), z up; metres. Each arm's own base
 frame has the same axes, with its origin under its shoulder pan axis: follower_pink (left) at y = +0.25,
-follower_blue (right) at y = -0.25. These bases are set in arms.json ("base" of each follower).
+follower_blue (right) at y = -0.25. These bases are set in config/arms.yaml ("base" of each follower).
 
-calibration.json (at the repo root):
+config/calibration/camera.yaml:
     camera_to_table    4 x 4: ZED left camera (IMAGE frame: x right, y down, z forward) -> TABLE frame, metres
     camera_to_base     (older files) camera -> one arm's base frame; camera_to_table replaces it
     camera             when, how (aruco / arm) and how well it was fitted; the ZED serial
     table_z            the table's height in the base frame (m)
     aruco              the marker dictionary (DICT_4X4_50) and each marker's centre in the TABLE frame
-    arm                the follower's LeRobot calibration file, and the fine joint offsets (degrees; true angle =
-                       LeRobot reading + offset; control/fine_joint_offsets.py still reads its own json; `offsets` keeps both in sync)
-camera_transform.npy is written from it for the scripts that read that file (experiments/object_3d_live.py,
-experiments/Full_pipeline.py, vision/live.py): camera -> the default arm's (follower_pink's) base frame.
+Each arm's motor calibration and fine joint offsets are in config/calibration/<arm>/ (motors.yaml, joint_offsets.yaml).
+config/calibration/camera_transform.npy is written from camera.yaml for the scripts that read that file
+(perception/live.py): camera -> the default arm's (follower_pink's) base frame. Never edit it by hand.
 
 The camera fit: the table plane from the ZED point cloud fixes the camera's tilt and height (thousands of
 points); two or more known points on the table (markers, or blocks touched with the fixed finger's tip) fix its
@@ -43,8 +43,8 @@ turn about z and its position. The markers' positions are measured by hand in th
 older --marker-ids uses QR_POSITIONS below, which must then hold TABLE-frame values). Which way the camera looks
 does not matter: the fit finds its rotation. Pictures of each run go to outputs/calibrate/.
 
-Other modules import this one for calibration.json (load, camera_to_base, joint_offsets, ...): it runs nothing
-on import.
+Other modules import this one for the camera calibration (load, camera_to_table, arm_from_table, ...): it runs
+nothing on import.
 """
 
 import argparse
@@ -57,38 +57,51 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-FILE = ROOT / "calibration.json"
-LEGACY_CAMERA = ROOT / "camera_transform.npy"
-LEGACY_OFFSETS = ROOT / "calibration" / "robots" / "so_follower" / "fine_joint_offsets.json"
-DEFAULT_LEROBOT = "~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core import config  # noqa: E402
+from core.paths import CAMERA_CALIBRATION_FILE, CAMERA_TRANSFORM_FILE, OUTPUTS, URDF as REPO_URDF  # noqa: E402
+
+FILE = CAMERA_CALIBRATION_FILE
+LEGACY_CAMERA = CAMERA_TRANSFORM_FILE
+COMMENT = """The camera calibration: written by `python 02_calibrate.py camera ...`; do not edit by hand.
+camera_to_table: 4 x 4, ZED left camera (x right, y down, z forward) -> TABLE frame (config/arms.yaml), metres.
+camera: when, how and how well it was fitted. aruco: the marker dictionary and each marker's TABLE centre."""
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 
 def load():
-    """calibration.json as a dict ({} when there is none)."""
-    return json.loads(FILE.read_text()) if FILE.is_file() else {}
+    """camera.yaml as a dict ({} when there is none); a copy, safe to change."""
+    return config.load_copy(FILE, {}, required=False)
 
 
 def save(data):
-    """Write calibration.json (atomically), and camera_transform.npy from it for the scripts that read that. The
-    arm's calibrations found elsewhere (the LeRobot file's path, the older fine_joint_offsets.json) are brought in
-    the first time, so the file holds them all."""
-    arm = data.setdefault("arm", {})
-    arm.setdefault("lerobot_calibration", DEFAULT_LEROBOT)
-    if "joint_offsets_deg" not in arm:
-        arm["joint_offsets_deg"] = joint_offsets()
+    """Write camera.yaml (atomically), and camera_transform.npy from it for the scripts that read that."""
+    data.pop("arm", None)                     # per-arm values live in config/calibration/<arm>/
     data.setdefault("table_z", 0.0)
-    tmp = FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(FILE)
+    config.save(FILE, _plain(data), comment=COMMENT)
     if data.get("camera_to_table") is not None:
         np.save(LEGACY_CAMERA, arm_from_table(default_arm(data), data) @ np.array(data["camera_to_table"], float))
     elif data.get("camera_to_base") is not None:
         np.save(LEGACY_CAMERA, np.array(data["camera_to_base"], float))
 
 
+def _plain(value):
+    """numpy arrays and numbers -> plain lists and floats, so the YAML stays readable."""
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return _plain(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def update(**sections):
-    """Merge sections into calibration.json and save."""
+    """Merge sections into camera.yaml and save."""
     data = load()
     for k, v in sections.items():
         if isinstance(v, dict) and isinstance(data.get(k), dict):
@@ -100,33 +113,24 @@ def update(**sections):
 
 
 def arms(data=None):
-    """{arm id: {x, y, yaw_deg}}: each follower's base in the TABLE frame, from arms.json."""
-    sys.path.insert(0, str(ROOT))
-    from control import arm_config
+    """{arm id: {x, y, yaw_deg}}: each follower's base in the TABLE frame, from config/arms.yaml."""
+    from core import arms as arm_config
 
     return {name: arm_config.base(name) for name in arm_config.followers()}
 
 
 def default_arm(data=None):
-    """The arm camera_transform.npy is written for (arms.json "default_arm")."""
-    sys.path.insert(0, str(ROOT))
-    from control import arm_config
+    """The arm camera_transform.npy is written for (config/arms.yaml "default_arm")."""
+    from core import arms as arm_config
 
     return arm_config.default_arm()
 
 
 def arm_from_table(arm, data=None):
-    """4 x 4: TABLE frame -> the arm's base frame."""
-    all_arms = arms(data)
-    if arm not in all_arms:
-        raise KeyError(f"unknown arm {arm!r}; known: {', '.join(all_arms)}")
-    b = all_arms[arm]
-    yaw = math.radians(b["yaw_deg"])
-    R = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
-    T = np.eye(4)
-    T[:3, :3] = R.T
-    T[:3, 3] = -R.T @ np.array([b["x"], b["y"], 0.0])
-    return T
+    """4 x 4: TABLE frame -> the arm's base frame (core/arms.py)."""
+    from core import arms as arm_config
+
+    return arm_config.arm_from_table(arm)
 
 
 def camera_to_table():
@@ -147,19 +151,18 @@ def camera_to_base(arm=None):
     return None
 
 
-def lerobot_calibration():
-    return Path(load().get("arm", {}).get("lerobot_calibration", DEFAULT_LEROBOT)).expanduser()
+def lerobot_calibration(arm=None):
+    """The LeRobot calibration file of an arm (default: config/arms.yaml default_arm)."""
+    from core import arms as arm_config
+
+    return arm_config.lerobot_calibration(arm or default_arm())
 
 
-def joint_offsets():
-    """The fine joint offsets (degrees) by joint: calibration.json's, else the old fine_joint_offsets.json's, else 0."""
-    arm = load().get("arm", {})
-    if "joint_offsets_deg" in arm:
-        values = arm["joint_offsets_deg"]
-    elif LEGACY_OFFSETS.is_file():
-        values = json.loads(LEGACY_OFFSETS.read_text()).get("joint_offsets_deg", {})
-    else:
-        values = {}
+def joint_offsets(arm=None):
+    """The fine joint offsets (degrees) by joint of an arm (default: the default arm)."""
+    from hardware.joint_offsets import load_fine_joint_offsets
+
+    values = load_fine_joint_offsets(arm=arm or default_arm())
     return {j: float(values.get(j, 0.0)) for j in JOINTS}
 
 
@@ -326,11 +329,12 @@ def grab(zed, frames=10):
 
 
 def plane_of(cloud):
-    """The table plane in the camera frame: (normal, d), from the cloud inside yolo_dataset/roi.json's region."""
+    """The table plane in the camera frame: (normal, d), from the cloud inside config/perception.yaml roi."""
     roi = None
-    roi_file = ROOT / "yolo_dataset" / "roi.json"
-    if roi_file.is_file():
-        r = json.loads(roi_file.read_text())
+    from perception.detection import load_roi
+
+    r = load_roi(required=False)
+    if r:
         sx, sy = cloud.shape[1] / r.get("ref_size", [cloud.shape[1]])[0], cloud.shape[0] / r.get("ref_size", [0, cloud.shape[0]])[1]
         roi = (round(r["x"] * sx), round(r["y"] * sy), round(r["w"] * sx), round(r["h"] * sy))
     n, d, share = fit_plane(table_points(cloud, roi=roi))
@@ -391,19 +395,19 @@ def aruco(args):
     use = [m for m in markers if m in cam]
     print(f"markers seen: {sorted(cam)}; with a stored position: {use}")
     if len(use) < 2:
-        draw(frame, corners, cam, None, markers, ROOT / "outputs" / "calibrate" / "aruco.jpg")
+        draw(frame, corners, cam, None, markers, OUTPUTS / "calibrate" / "aruco.jpg")
         raise SystemExit("Need 2 or more of the stored markers in view (see the picture)")
     plane = plane_of(cloud)
     T, res = fit_camera(plane, [cam[m] for m in use], [markers[m] for m in use], data.get("table_z", 0.0))
     for m, r in zip(use, res):
         print(f"  marker {m}: {r:.1f} mm from its stored position after the fit")
-    draw(frame, corners, cam, T, markers, ROOT / "outputs" / "calibrate" / "aruco.jpg")
+    draw(frame, corners, cam, T, markers, OUTPUTS / "calibrate" / "aruco.jpg")
     old = camera_to_table()
     if old is not None:
         moved = 1000 * np.linalg.norm(old[:3, 3] - T[:3, 3])
         turned = np.degrees(np.arccos(np.clip((np.trace(old[:3, :3].T @ T[:3, :3]) - 1) / 2, -1, 1)))
         print(f"compared with the last calibration: camera moved {moved:.0f} mm, turned {turned:.1f} deg")
-    if args.yes or input("Save to calibration.json? [Y/n] ").strip().lower() in ("", "y", "yes"):
+    if args.yes or input("Save to camera.yaml? [Y/n] ").strip().lower() in ("", "y", "yes"):
         data = load()
         data.pop("camera_to_base", None)          # the older one-arm matrix; camera_to_table replaces it
         save(data)
@@ -474,18 +478,18 @@ def arm(args):
     for a, r in zip(arm_pts, res):
         print(f"  block at x {100 * a[0]:.1f} y {100 * a[1]:.1f}: {r:.1f} mm off after the fit")
     # The tip was measured in the ARM's base frame, so T_arm is camera -> that arm. Everything stored is in the
-    # TABLE frame (camera_to_table and the markers), via the arm's base in arms.json: the markers saved here were
+    # TABLE frame (camera_to_table and the markers), via the arm's base in config/arms.yaml: the markers saved here were
     # otherwise in the arm's frame and the next `aruco` calibration took them as TABLE positions.
     which = args.arm or default_arm()
     T = np.linalg.inv(arm_from_table(which)) @ T_arm
-    print(f"(the arm is {which}: its base in arms.json {arms()[which]} turns its frame into the TABLE frame)")
+    print(f"(the arm is {which}: its base in config/arms.yaml {arms()[which]} turns its frame into the TABLE frame)")
     markers = {m: (xyz @ T[:3, :3].T + T[:3, 3]).tolist() for m, xyz in cam_markers.items()}
     if markers:
         old = data.get("aruco", {}).get("markers", {})
         for m, p in sorted(markers.items()):
             was = f" (stored {np.round(np.array(old[m][:2]) * 100, 1)} cm)" if m in old else ""
             print(f"  marker {m} measured at x {100 * p[0]:.1f} y {100 * p[1]:.1f} cm (TABLE frame){was}")
-    if args.yes or input("Save to calibration.json (camera and marker positions)? [Y/n] ").strip().lower() in ("", "y", "yes"):
+    if args.yes or input("Save to camera.yaml (camera and marker positions)? [Y/n] ").strip().lower() in ("", "y", "yes"):
         data = load()
         data.pop("camera_to_base", None)          # the older one-arm matrix; camera_to_table replaces it
         save(data)
@@ -495,7 +499,7 @@ def arm(args):
         if markers:
             sections["aruco"] = {"dictionary": dictionary, "markers": markers}
         update(**sections)
-        print(f"Saved {FILE}: later camera bumps only need `python calibration/calibrate.py`.")
+        print(f"Saved {FILE}: later camera bumps only need `python 02_calibrate.py camera`.")
 
 
 def ids(args):
@@ -518,7 +522,7 @@ def ids(args):
             cv2.imshow("marker ids", img)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("s"):                    # screenshots of this window can come out blank: save it directly
-                path = ROOT / "outputs" / "calibrate" / f"ids_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+                path = OUTPUTS / "calibrate" / f"ids_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(path), img)
                 cv2.imwrite(str(path.with_name(path.stem + "_raw.jpg")), frame)
@@ -646,7 +650,7 @@ def fit_tape(frame, cloud, plane, model, prior=None, flip=False, dark=None, tabl
             left_out["far"] = pix[dist >= 0.12]
             pts, pix = pts[dist < 0.12], pix[dist < 0.12]  # only near where the tape was: other dark things left out
         if len(keep_out):
-            # around the arms (their bases in arms.json): their black cables and the thin shadows of their links look
+            # around the arms (their bases in config/arms.yaml): their black cables and the thin shadows of their links look
             # like tape; the tape has plenty of length away from them
             where = pts @ rot(yaw_prior).T + t_prior
             away = np.all([np.hypot(*(where - c).T) > keep_out_radius for c in keep_out], axis=0)
@@ -757,7 +761,7 @@ def draw_tape_view(frame, cloud, T, model, rep, status=None):
     import cv2
 
     sys.path.insert(0, str(ROOT))
-    from vision.silhouette_live import intrinsics_from_cloud
+    from perception.silhouette_live import intrinsics_from_cloud
 
     corners, half = model
     img = (0.75 * frame).astype(np.uint8)
@@ -888,7 +892,7 @@ def tape(args):
         turned = np.degrees(np.arccos(np.clip((np.trace(prior[:3, :3].T @ T[:3, :3]) - 1) / 2, -1, 1)))
         print(f"compared with the current calibration: camera {moved:.0f} mm, {turned:.1f} deg apart")
     img = draw_tape_view(frame, cloud, T, model, rep)
-    path = ROOT / "outputs" / "calibrate" / "tape.jpg"
+    path = OUTPUTS / "calibrate" / "tape.jpg"
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), img)
     print(f"Picture: {path}")
@@ -907,7 +911,7 @@ def tape(args):
         if rep["on_tape_share"] < 0.8:
             print(f"  ({100 * (1 - rep['on_tape_share']):.0f} % of the dark points are other thin dark things; they "
                   "were left out of the fit, but check the picture.)")
-        question = "Save to calibration.json? [Y/n] "
+        question = "Save to camera.yaml? [Y/n] "
     else:
         print("WARNING: the fit looks POOR (want 3+ sides seen and each within 2.5 mm of the tape's centre). Look at "
               "the picture: the tape fully in view? Something else dark and thin near the tape (cables, shadows)? "
@@ -925,7 +929,7 @@ def fingertip_in_gripper_link():
     there, the same end control/gripper.py tip_below_grasp uses), averaged over the vertices within 1 mm of it."""
     sys.path.insert(0, str(ROOT))
     import xml.etree.ElementTree as ET
-    from control import gripper as jaw
+    from hardware import gripper as jaw
 
     root = ET.parse(jaw.URDF).getroot()
     link = next(l for l in root.findall("link") if l.get("name") == "gripper_link")
@@ -935,7 +939,7 @@ def fingertip_in_gripper_link():
 
 
 class FingertipModel:
-    """Forward kinematics of the repo URDF (robot_urdfs/so101/robot.urdf, world_to_base included): the fixed
+    """Forward kinematics of the repo URDF (models/robot/so101/robot.urdf, world_to_base included): the fixed
     fingertip in the arm's base frame for corrected joint angles (radians, ARM_JOINTS order)."""
 
     def __init__(self):
@@ -943,7 +947,7 @@ class FingertipModel:
 
         self.p = p
         self.client = p.connect(p.DIRECT)
-        self.robot = p.loadURDF(str(ROOT / "robot_urdfs" / "so101" / "robot.urdf"), useFixedBase=True,
+        self.robot = p.loadURDF(str(REPO_URDF), useFixedBase=True,
                                 physicsClientId=self.client)
         info = [p.getJointInfo(self.robot, i, physicsClientId=self.client)
                 for i in range(p.getNumJoints(self.robot, physicsClientId=self.client))]
@@ -988,7 +992,7 @@ def touch_points(arm, args):
             out.append((f"point {len(out) + 1}", np.array([x, y, z])))
         return out
     sys.path.insert(0, str(ROOT))
-    from control import arm_config
+    from core import arms as arm_config
 
     corners, half = tape_model(args.area_size, args.area_near, args.area_tape, args.area_tape_side)
     inner = corners + np.sign(corners.mean(axis=0) - corners) * half       # the tape's inside edge
@@ -1004,10 +1008,10 @@ def touch_points(arm, args):
 
 
 def touch(args):
-    """Each arm's base pose (arms.json) from its fixed fingertip held on known TABLE points (torque off)."""
+    """Each arm's base pose (config/arms.yaml) from its fixed fingertip held on known TABLE points (torque off)."""
     sys.path.insert(0, str(ROOT))
-    from control import arm_config
-    from control.IK_control import connect_robot, read_joints_rad
+    from core import arms as arm_config
+    from hardware.arm import connect_robot, read_joints_rad
 
     arms_to_do = list(arm_config.followers()) if args.arm in (None, "both", "all") else [args.arm]
     model = FingertipModel()
@@ -1045,10 +1049,10 @@ def touch(args):
                      "  (some > 4 mm: the joint offsets are off too, or a point was touched badly; the far points "
                      "show joint-offset errors most)"))
             print(f"  height: the model's fingertip is {abs(dz):.1f} mm {'below' if dz > 0 else 'above'} the "
-                  f"points on average" + (f" -> raise world_to_base z in robot_urdfs/so101/robot.urdf by {dz / 1000:.4f}"
+                  f"points on average" + (f" -> raise world_to_base z in models/robot/so101/robot.urdf by {dz / 1000:.4f}"
                                           if dz > 0 else f" -> lower world_to_base z by {-dz / 1000:.4f}")
                   + " (shared by both arms; if the two arms disagree, it is their joint offsets)")
-            if args.yes or input(f"  Save {arm}'s base to arms.json? [Y/n] ").strip().lower() in ("", "y", "yes"):
+            if args.yes or input(f"  Save {arm}'s base to config/arms.yaml? [Y/n] ").strip().lower() in ("", "y", "yes"):
                 store_base(arm, base)
     finally:
         model.close()
@@ -1058,9 +1062,12 @@ def show(args):
     data = load()
     if not data:
         print(f"No {FILE.name} yet.")
-    print(json.dumps(data, indent=2))
-    print(f"\nLeRobot calibration: {lerobot_calibration()}")
-    print("Fine joint offsets: " + ", ".join(f"{j} {v:+.2f}" for j, v in joint_offsets().items()))
+    print(config.dump(_plain(data)))
+    from core import arms as arm_config
+
+    for name in arm_config.followers():
+        print(f"{name}: LeRobot calibration {lerobot_calibration(name)}")
+        print("    fine joint offsets: " + ", ".join(f"{j} {v:+.2f}" for j, v in joint_offsets(name).items()))
 
 
 
@@ -1122,9 +1129,7 @@ class LiveObjects:
     def __init__(self, p, client):
         import threading
 
-        sys.path.insert(0, str(ROOT))
-        sys.path.insert(0, str(ROOT / "yolo_dataset"))
-        from vision.live import Vision, add_vision_args
+        from perception.live import Vision, add_vision_args
 
         parser = argparse.ArgumentParser()
         add_vision_args(parser)
@@ -1134,8 +1139,8 @@ class LiveObjects:
         self.p, self.client = p, client
         self.latest, self.lock, self.stop = [], threading.Lock(), threading.Event()
         self.bodies, self.shapes = {}, {}
-        # the ArUco markers as the camera sees them now (point cloud -> calibration.json's camera_to_table), to compare
-        # with their hand-measured positions (calibration.json aruco markers, the dark squares)
+        # the ArUco markers as the camera sees them now (point cloud -> camera.yaml's camera_to_table), to compare
+        # with their hand-measured positions (camera.yaml aruco markers, the dark squares)
         self.camera_to_table = camera_to_table()
         self.dictionary = load().get("aruco", {}).get("dictionary")
         self.hand_markers = {k: np.asarray(v, float) for k, v in load().get("aruco", {}).get("markers", {}).items()}
@@ -1173,7 +1178,7 @@ class LiveObjects:
                 self.latest = found
 
     def _stl(self, name, size):
-        from vision.detection import OBJECT_SIZES, OBJECT_STL_FILES
+        from perception.detection import OBJECT_SIZES, OBJECT_STL_FILES
 
         return OBJECT_SIZES.get(name, {}).get(size) or OBJECT_STL_FILES.get(name)
 
@@ -1277,9 +1282,9 @@ MARKER_SIZE = 0.06          # the printed ArUco markers' side [m] (calibrate.py 
 
 def reference_marks(p, client, shown=()):
     """Visual references in the TABLE frame for the sliders: a white ball at the TABLE origin, a ball at each
-    other follower's base origin (arms.json) and a flat square at each ArUco marker of calibration.json."""
+    other follower's base origin (config/arms.yaml) and a flat square at each ArUco marker of camera.yaml."""
     sys.path.insert(0, str(ROOT))
-    from control import arm_config
+    from core import arms as arm_config
 
     def ball(xyz, rgba, radius=0.012):
         shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=rgba, physicsClientId=client)
@@ -1334,21 +1339,21 @@ def working_area(p, client, args):
     print(f"A {100 * MARKER_SIZE:.0f} cm marker pushed into each inside corner of the tape has its CENTRE at (x, y) cm: "
           + ", ".join(f"({100 * (x + (h if x == x0 else -h)):.1f}, {100 * (y + (h if y == y0 else -h)):+.1f})"
                       for x, y in corners)
-          + "  (calibration.json stores marker centres, x forward, y towards follower_pink)")
+          + "  (camera.yaml stores marker centres, x forward, y towards follower_pink)")
     return corners
 
 
 def store_base(arm_id, base):
-    """Write an arm's base origin (TABLE frame) into arms.json (the old file kept as arms.json.bak), and rewrite
+    """Write an arm's base origin (TABLE frame) into config/arms.yaml (the old file kept as config/arms.yaml.bak), and rewrite
     camera_transform.npy (camera -> the default arm's base) when the camera is calibrated."""
     sys.path.insert(0, str(ROOT))
-    from control import arm_config
+    from core import arms as arm_config
 
-    data = arm_config.load()
+    data = arm_config.load_copy()
     entry = data["followers"][arm_id].setdefault("base", {})
     old = {k: float(entry.get(k, 0.0)) for k in ("x", "y", "yaw_deg")}
     entry.update(x=round(base["x"], 4), y=round(base["y"], 4), yaw_deg=round(base["yaw_deg"], 2))
-    backup = arm_config.FILE.with_suffix(".json.bak")
+    backup = arm_config.FILE.with_suffix(".yaml.bak")
     backup.write_text(arm_config.FILE.read_text())
     arm_config.save(data)
     calibration = load()
@@ -1362,14 +1367,14 @@ def store_base(arm_id, base):
 def offsets(args):
     """The fine joint offsets, by eye: the arm's torque off, PyBullet shows the URDF at the measured angles plus each
     joint's slider; move the arm by hand and set the sliders until the model matches it. s saves (into
-    calibration.json), q or Esc leaves (unsaved changes dropped). --no-robot: sliders on the zero pose only;
+    camera.yaml), q or Esc leaves (unsaved changes dropped). --no-robot: sliders on the zero pose only;
     --reset: all offsets to 0.
 
-    With --arm, three more sliders set where that arm's base frame origin is in the TABLE frame (arms.json "base":
+    With --arm, three more sliders set where that arm's base frame origin is in the TABLE frame (config/arms.yaml "base":
     x, y [m], yaw [deg]; the model is drawn there, with the TABLE origin, the other arm's origin and the ArUco
-    markers of calibration.json). To check them: put the real gripper tip on a marker (or another known point) by
-    hand and move the base sliders until the model's tip (the yellow ball) is on it. s saves them into arms.json too
-    (the old one is kept as arms.json.bak).
+    markers of camera.yaml). To check them: put the real gripper tip on a marker (or another known point) by
+    hand and move the base sliders until the model's tip (the yellow ball) is on it. s saves them into config/arms.yaml too
+    (the old one is kept as config/arms.yaml.bak).
 
     --arm both: both followers in one window, each with its own model, offset and base sliders (prefixed with its
     name); s saves every arm. An arm that cannot be connected is shown at its zero pose with a warning.
@@ -1378,8 +1383,8 @@ def offsets(args):
     centre, a label with x y and top), in the TABLE frame as pick and place sees them. With the real jaws closed on an
     object by hand, the model's jaws should then be around the shown object."""
     sys.path.insert(0, str(ROOT))
-    from control import arm_config
-    from control.fine_joint_offsets import ARM_JOINTS, load_fine_joint_offsets, own_offsets_file, save_fine_joint_offsets
+    from core import arms as arm_config
+    from hardware.joint_offsets import ARM_JOINTS, load_fine_joint_offsets, own_offsets_file, save_fine_joint_offsets
 
     if args.arm in ("both", "all"):
         arm_ids = list(arm_config.followers())
@@ -1403,10 +1408,10 @@ def offsets(args):
         print("All saved fine offsets reset to 0 degrees.")
         return
     import pybullet as p
-    from control.IK_control import connect_robot
-    # The repo's model (robot_urdfs/so101/robot.urdf), the one pick and place plans with: its world_to_base z and
-    # any other edit show here (the LeRobot copy that IK_control.py loads is not used).
-    URDF = ROOT / "robot_urdfs" / "so101" / "robot.urdf"
+    from hardware.arm import connect_robot
+    # The repo's model (models/robot/so101/robot.urdf), the one pick and place plans with: its world_to_base z and
+    # any other edit show here (the LeRobot copy that hardware/arm.py EEController loads is not used).
+    URDF = REPO_URDF
 
     rgba = {"follower_pink": [1.0, 0.41, 0.71, 1], "follower_blue": [0.0, 0.55, 1.0, 1]}
     arms_state, objects = [], None
@@ -1417,11 +1422,12 @@ def offsets(args):
         p.setAdditionalSearchPath(str(URDF.parent), physicsClientId=client)
         p.setGravity(0, 0, 0, physicsClientId=client)
         p.setRealTimeSimulation(0, physicsClientId=client)
-        on_table = any(arm_ids)                    # models at their bases in the TABLE frame (arms.json)
+        on_table = any(arm_ids)                    # models at their bases in the TABLE frame (config/arms.yaml)
         for arm_id in arm_ids:
             a = {"id": arm_id, "short": (arm_id or "").replace("follower_", ""), "robot": None,
                  "file": own_offsets_file(arm_id), "saved": load_fine_joint_offsets(arm=arm_id)}
-            print(f"Fine offsets of {arm_id or 'the arm'}: saved to {a['file'].relative_to(ROOT)}")
+            print(f"Fine offsets of {arm_id or 'the arm'}: saved to "
+                  f"{a['file'].relative_to(ROOT) if a['file'] else '(no file: pass --arm)'}")
             if not args.no_robot:
                 try:
                     a["robot"] = connect_robot(arm_id)
@@ -1566,7 +1572,7 @@ def offsets(args):
 
 
 # ---------------------------------------------------------------------------------------------- main
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("what", nargs="?", default="aruco", choices=["aruco", "ids", "arm", "check", "offsets", "show", "tape", "touch"])
     ap.add_argument("--marker-xy", nargs="+", metavar="ID:X,Y",
@@ -1611,10 +1617,10 @@ def main():
     ap.add_argument("--tape-dark", type=float, default=None,
                     help="tape: brightness (0-255) below which a table pixel is tape (default: half the table's)")
     ap.add_argument("--base-range", type=float, default=0.05,
-                    help="offsets --arm: the base x / y sliders' +- range around arms.json [m]")
+                    help="offsets --arm: the base x / y sliders' +- range around config/arms.yaml [m]")
     ap.add_argument("--base-yaw-range", type=float, default=10.0,
-                    help="offsets --arm: the base yaw slider's +- range around arms.json [deg]")
-    args = ap.parse_args()
+                    help="offsets --arm: the base yaw slider's +- range around config/arms.yaml [deg]")
+    args = ap.parse_args(argv)
     if args.show_ids:
         args.what = "ids"
     {"aruco": aruco, "ids": ids, "arm": arm, "check": check, "offsets": offsets, "show": show,

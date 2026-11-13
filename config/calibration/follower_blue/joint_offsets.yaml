@@ -1,0 +1,11 @@
+# Fine joint offsets of follower_blue: software corrections on top of LeRobot's motor calibration, in degrees.
+# true angle = LeRobot reading + offset; motor target = wanted angle - offset.
+# Set with `python 02_calibrate.py offsets --arm follower_blue` (PyBullet sliders over the live arm).
+
+unit: degrees
+joint_offsets_deg:
+  shoulder_pan: 0.8421
+  shoulder_lift: -3.3684
+  elbow_flex: -7.0526
+  wrist_flex: 0.3158
+  wrist_roll: 0.0

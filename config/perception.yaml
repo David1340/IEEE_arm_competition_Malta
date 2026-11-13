@@ -1,0 +1,28 @@
+# Camera perception: the ZED camera image region, the YOLO model, and the object colours.
+# Read by perception/detection.py (settings, load_roi, latest_weights) and perception/colour.py.
+#
+# roi        the part of the camera image YOLO looks at, in pixels of an image of ref_size (scaled to the real
+#            frame size); set with `python dev/dataset_tools/yolo_dataset/roi.py select` (or edit it here)
+# yolo       weights: a .pt file (relative to the repo root) or "latest" = the newest runs/segment/*/weights/best.pt,
+#            then the newest models/yolo/*.pt. `--weights` on the command line overrides it.
+#            classes: the model's class names, in its class order
+# colours    hue centre and spread (degrees 0-360) of each block colour, used to name an object's colour.
+#            `python -m perception.colour --calibrate` fits them on labelled images and writes
+#            config/calibration/colours.yaml, which then overrides these.
+
+roi:
+  x: 164
+  y: 30
+  w: 1088
+  h: 640
+  ref_size: [1280, 720]
+
+yolo:
+  weights: latest
+  classes: [cube, cylinder, dodecahedron, hexagonal, bin]
+
+colours:
+  red: {hue: 353.0, sigma: 12.0}
+  yellow: {hue: 56.0, sigma: 10.0}
+  green: {hue: 181.0, sigma: 12.0}
+  blue: {hue: 235.0, sigma: 12.0}

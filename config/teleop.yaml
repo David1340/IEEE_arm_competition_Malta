@@ -1,0 +1,13 @@
+# Teleop over the network (teleop/teleop_net.py, `python 03_teleop.py net send|receive`): the leaders on one
+# computer (send), the followers on another (receive).
+#
+# receiver_ip  the follower computer's address (`hostname -I` there)
+# sender_ip    the leader computer's address; receive only accepts messages from it ("" = any)
+# port         the UDP port the receiver opens
+# key          a word both computers must have the same
+
+network:
+  receiver_ip: "192.168.0.101"
+  sender_ip: "192.168.0.100"
+  port: 5555
+  key: swervy

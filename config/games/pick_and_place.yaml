@@ -1,0 +1,39 @@
+# Game 1: pick and place (rules section 5.8, GAME 1: rounds colour, shape, dynamic). Which bin each object goes in (games/pick_and_place.py, read through games/rules.py).
+#
+# mode   the round played when `--round` is not given
+# modes  each round sorts `by` the object's colour (from the camera) or its shape (the YOLO class, see
+#        config/perception.yaml `classes`); `bins` maps that colour or shape to the colour of its bin.
+#        Change a line to change a rule; add a mode to add a round.
+
+game: pick_and_place
+mode: colour
+
+modes:
+  colour:
+    description: Colour sorting, each object goes in the bin of its own colour.
+    by: colour
+    bins:
+      red: red
+      green: green
+      blue: blue
+      yellow: yellow
+  shape:
+    description: "Geometry sorting (Game 1 rules): cube -> red, cylinder -> blue, dodecahedron -> green,
+      hexagonal prism -> yellow."
+    by: shape
+    bins:
+      cube: red
+      cylinder: blue
+      dodecahedron: green
+      hexagonal: yellow
+      hexagonal_prism: yellow
+  dynamic:
+    description: "Round 3, dynamic sort: the shape rules, while a judge moves bins and objects. The arms look for the
+      object and its bin again before every pick and drop; tracking them during a move is not done yet."
+    by: shape
+    bins:
+      cube: red
+      cylinder: blue
+      dodecahedron: green
+      hexagonal: yellow
+      hexagonal_prism: yellow
