@@ -125,10 +125,9 @@ class World:
         joint = {info[1].decode(): info[0] for info in infos}
         link = {info[12].decode(): info[0] for info in infos}
         arm_joints = [joint[n] for n in JOINTS]
-        low, high = infos[joint["gripper"]][8:10]
-        opening = GRIPPER_OPEN if gripper_open is None else gripper_open
-        p.resetJointState(self.robot, joint["gripper"], low + opening * (high - low), physicsClientId=c)
-        
+        self._gripper_joint = joint["gripper"]
+        self._gripper_range = infos[joint["gripper"]][8:10]
+        self.set_gripper(gripper_open)
 
         self.checker = ModifiedFRPSOIK(
             self.robot, link["grasp_center_link"], arm_joints,
@@ -145,18 +144,44 @@ class World:
             # shadowing `arm` meant the offsets were never found). Set True to plan with them.
             fine_offsets_in_limits=False,
         )
-        # Artificial joint limits that also contain the current joint reading, so a start pose
-        # slightly outside the URDF limits is valid for both M-FRPSO and RRT-Connect.
-        self.checker.lower = np.minimum(self.checker.lower, self.start_q)
-        self.checker.upper = np.maximum(self.checker.upper, self.start_q)
-        self.rrt = RRTConnectPlanner(self.checker, max_joint_step_rad=math.radians(3.0))
+        self._base_lower, self._base_upper = self.checker.lower.copy(), self.checker.upper.copy()
+        self._base_obstacles = list(self.checker.obstacle_body_ids)
+        self._roll_offset = arm_joints.index(joint["wrist_roll"])
+        self.extra_bodies = []          # obstacles added for one plan (reset() removes them)
+        self.other_arms = {}            # name -> the other arm's model, kept between plans (add_other_arm)
         # Visual-only balls (no collision shape, not in the obstacle list): blue = target,
         # red = the point the IK uses (grasp_center_link), which follows the robot.
         self.target_ball = self._ball([0.1, 0.3, 1, 0.6])
         self.tcp_ball = self._ball([1, 0, 0, 1])
-        self.show(self.start_q)
+        self.reset(self.start_q)
         if gui:
             p.resetDebugVisualizerCamera(1.2, 45, -40, [0.3, 0.1, 0.1], physicsClientId=c)
+
+    def set_gripper(self, gripper_open=None):
+        """How far the jaws are open in the collision model: a fraction of the gripper range (default GRIPPER_OPEN)."""
+        low, high = self._gripper_range
+        opening = GRIPPER_OPEN if gripper_open is None else gripper_open
+        p.resetJointState(self.robot, self._gripper_joint, low + opening * (high - low), physicsClientId=self.client)
+
+    def reset(self, start_q, gripper_open=None):
+        """Make this world what a new World(objects, start_q, ..., gripper_open=gripper_open) would be, so one world
+        per arm serves every plan (building one takes ~0.85 s): the start pose, the wrist roll fixed at its value,
+        the joint limits widened to contain the start pose, the jaw opening (None: unchanged), and no obstacles but
+        the table and the world's own objects (add_obstacle's are removed, add_other_arm's left out)."""
+        self.start_q = list(start_q)
+        for body in self.extra_bodies:
+            p.removeBody(body, physicsClientId=self.client)
+        self.extra_bodies = []
+        self.checker.obstacle_body_ids = list(self._base_obstacles)
+        if gripper_open is not None:
+            self.set_gripper(gripper_open)
+        self.checker.fixed_joint_offsets[self._roll_offset] = float(self.start_q[4])
+        # Artificial joint limits that also contain the current joint reading, so a start pose
+        # slightly outside the URDF limits is valid for both M-FRPSO and RRT-Connect.
+        self.checker.lower = np.minimum(self._base_lower, self.start_q)
+        self.checker.upper = np.maximum(self._base_upper, self.start_q)
+        self.rrt = RRTConnectPlanner(self.checker, max_joint_step_rad=math.radians(3.0))
+        self.show(self.start_q)
 
     def _ball(self, color):
         shape = p.createVisualShape(p.GEOM_SPHERE, radius=0.01, rgbaColor=color, physicsClientId=self.client)

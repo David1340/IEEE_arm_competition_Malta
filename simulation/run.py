@@ -134,6 +134,8 @@ def main(argv=None):
     ap.add_argument("--speed", type=float, default=1.0, help="playback speed (2 = twice as fast)")
     ap.add_argument("--headless", action="store_true", help="no window: plan, move and check as fast as possible")
     ap.add_argument("--keep-open", action="store_true", help="leave the window open at the end until Ctrl+C")
+    ap.add_argument("--realtime", action="store_true",
+                    help="with --headless: the moves still take their time (at --speed), to compare round times")
     add_game_args(ap)
     args = ap.parse_args(argv)
     args.gui = False                                   # the planners' own worlds stay headless
@@ -156,7 +158,7 @@ def main(argv=None):
     print(f"Scene {scene_path}: {len(scene['objects'])} objects, {len(scene['bins'])} bins | "
           f"sorting {rules.describe(args.round)}")
 
-    viewer = Viewer(scene, args, gui=not args.headless, speed=args.speed)
+    viewer = Viewer(scene, args, gui=not args.headless, speed=args.speed, realtime=args.realtime)
     viewer.scene_objects = scene["objects"]
     bases = {n: np.array([arm_config.base(n)["x"], arm_config.base(n)["y"]]) for n in names}
     regions = Regions(bases, arm_config.middle_half_width())
@@ -165,6 +167,9 @@ def main(argv=None):
         viewer._apply(name, list(HOME_Q), arm_config.HOME_GRIPPER)
     last_q = {n: list(HOME_Q) for n in names}
 
+    from planning.planner_service import ArmPlanner
+
+    planners = {n: ArmPlanner(n, args, args.planner, HOME_Q) for n in names}   # build each arm's world meanwhile
     planning_started = time.monotonic()
     tasks, skipped, marks, handoff_points, close_checker = build_round(scene, args, bases, regions)
     for shape, why in skipped:
@@ -180,7 +185,8 @@ def main(argv=None):
     workers_module.CURRENT["coordinator"] = coordinator
     workers = [threading.Thread(target=workers_module.arm_worker, daemon=True, name=name,
                                 args=(name, robot, coordinator, marks, last_q, args,
-                                      (sim_send_joints, sim_read_joints), handoff_points, None, SimActions))
+                                      (sim_send_joints, sim_read_joints), handoff_points, None, SimActions,
+                                      planners[name]))
                for name, robot in robots.items()]
     started = time.monotonic()
     placed = failed = wrong = 0
@@ -223,6 +229,8 @@ def main(argv=None):
         coordinator.stop.set()
     finally:
         close_checker()
+        for planner in planners.values():
+            planner.close()
         viewer.close()
     return {"placed": placed, "failed": failed, "collisions": len(viewer.collisions), "wrong_bin": wrong}
 

@@ -28,6 +28,9 @@ files or functions (`--check` tells whether it is current).
 | IK | `planning/ik.py` (M-FRPSO); paths `planning/rrt_connect.py` |
 | PyBullet planning world | `planning/sim.py` (`World`) |
 | planning a pick, grasp heights, postures | `planning/pick_planner.py` (`plan_task`, `plan_sequence`) |
+| planning world reuse (one per arm, `World.reset`) | `planning/pick_planner.py` `planning_world()`, `planning/sim.py` |
+| planner process per arm, plan-ahead of the next object | `planning/planner_service.py` (`ArmPlanner`); used in `state_machine/arm_worker.py` (`_prefetch_next`, `_take_prefetch`) |
+| grasp check: planned vs reached grasp point (real arm), `outputs/grasp_log.csv` | `state_machine/arm_worker.py` `_check_grasp()`, FK in `planning/kinematics.py` |
 | which arm does what, regions, handoffs | `state_machine/coordinator.py` |
 | one arm's behaviour tree (locate, plan, grasp, carry, verify) | `state_machine/arm_worker.py`; nodes in `state_machine/behaviour.py` |
 | game rules (which bin) | `config/games/<game>.yaml` via `games/rules.py` |
@@ -61,6 +64,8 @@ python 04_simulate.py edit example                   # place objects and bins (O
 - Keep USB IDs quoted in YAML. Tools that write config use `core.config.save`, which keeps the header comment.
 - New game: `games/<game>.py` with `main(argv=None)`, register it in `games/__init__.py` `GAMES`, rules in
   `config/games/<game>.yaml`. Build from the shared packages; do not import from `dev/`.
+- A reused planning world must give the same plans as a new one: after changing `World` or `plan_task`, compare
+  plan digests with a fresh world (same seeds) and run `04_simulate.py run example --headless`.
 - The planner leaves fine joint offsets out of its joint limits on purpose (`planning/sim.py`
   `fine_offsets_in_limits=False`, matching earlier behaviour).
 - Hardware (arms, ZED, LeRobot) is not available in a cloud session: test with imports, `--help`,

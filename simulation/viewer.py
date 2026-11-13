@@ -37,8 +37,9 @@ def yaw_of(quaternion) -> float:
 
 
 class Viewer:
-    def __init__(self, scene, args, gui=True, speed=1.0):
+    def __init__(self, scene, args, gui=True, speed=1.0, realtime=False):
         self.gui, self.speed, self.args = gui, speed, args
+        self.realtime = realtime        # headless, but moves take as long as on screen (timing tests)
         self.c = c = p.connect(p.GUI if gui else p.DIRECT)
         if gui:
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0, physicsClientId=c)
@@ -252,7 +253,7 @@ class Viewer:
                 self.text[i] = p.addUserDebugText(line, [0.75, 0.60, 0.25 - 0.035 * i], [0.1, 0.1, 0.1], 1.2,
                                                   replaceItemUniqueId=old if old is not None else -1,
                                                   physicsClientId=self.c)
-        return wait / self.speed if self.gui else 0.0
+        return wait / self.speed if (self.gui or self.realtime) else 0.0
 
     def busy(self):
         return bool(self.active) or any(not q.empty() for q in self.commands.values())

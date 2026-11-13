@@ -8,6 +8,8 @@ The coordinator (state_machine/coordinator.py) decides which arm does which task
 other's regions; the tree's nodes are in state_machine/behaviour.py; the planning is planning/pick_planner.py.
 robot None: plan only (no arm moves). camera None: the objects' known positions are used as they are.
 """
+import csv
+import math
 import time
 import traceback
 
@@ -65,8 +67,10 @@ def task_tree(task, w):
 class TaskActions:
     """The actions of one arm's behaviour tree; the blackboard bb holds this attempt's data (plans, hold, why)."""
 
-    def __init__(self, arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera):
+    def __init__(self, arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera, planner=None):
         self.arm, self.robot, self.coordinator, self.marks = arm, robot, coordinator, marks
+        self.planner = planner                              # planning/planner_service.py ArmPlanner, or None
+        self.prefetch = None                                # the next task, planned ahead while this one moves
         self.last_q, self.args, self.handoff_points, self.camera = last_q, args, handoff_points, camera
         self.send_joints, self.read_joints_rad = io
         self.home_at = time.monotonic()                     # when the arm was last home (out of the camera's view)
@@ -138,24 +142,149 @@ class TaskActions:
         return False
 
     # ---- planning
+    def _obstacles(self, leave_out=()):
+        """What the planner avoids: the objects still on the table (columns, with --neighbour-radius), the bins, and
+        the other arm at its last known joint angles. leave_out: marks that will be gone by then."""
+        gone = {id(m) for m in leave_out}
+        return {"shapes": [m for m in self.marks if m["kind"] == "shape" and id(m) not in gone
+                           and m["state"] in ("todo", "handoff", "failed")],
+                "boxes": [m for m in self.marks if m["kind"] == "box"], "arms": dict(self.last_q)}
+
+    def _inputs(self, task, start_q, obstacles):
+        """Everything a plan depends on, to tell whether a plan made ahead of time is still right."""
+        return {"shape": np.array(task.shape["xyz"], float), "box": np.array(task.box["xyz"], float),
+                "opening": task.shape.get("open_cmd"), "start": np.array(start_q, float),
+                "boxes": [np.array(b["xyz"], float) for b in obstacles["boxes"]],
+                "shapes": [np.array(m["xyz"], float) for m in obstacles["shapes"]] if self.args.neighbour_radius > 0
+                else [],
+                "arms": {a: np.array(q, float) for a, q in obstacles["arms"].items() if a != self.arm}}
+
+    def _still_valid(self, planned, now):
+        """Why a plan made ahead of time cannot be used now (None: it can). Positions within 2 mm, the other arm
+        within 1 deg, the start pose within --prefetch-tolerance (the arm starts where the plan assumed)."""
+        close = lambda a, b: np.linalg.norm(a - b) <= 0.002
+        if not close(planned["shape"], now["shape"]):
+            return "the object moved"
+        if not close(planned["box"], now["box"]) or len(planned["boxes"]) != len(now["boxes"]) or \
+                not all(close(a, b) for a, b in zip(planned["boxes"], now["boxes"])):
+            return "a bin moved"
+        if len(planned["shapes"]) != len(now["shapes"]) or \
+                not all(close(a, b) for a, b in zip(planned["shapes"], now["shapes"])):
+            return "the other objects changed"
+        if planned["opening"] != now["opening"]:
+            return "another gripper opening"
+        if planned["arms"].keys() != now["arms"].keys() or any(
+                np.abs(planned["arms"][a] - now["arms"][a]).max() > math.radians(1.0) for a in now["arms"]):
+            return "the other arm is elsewhere"
+        off = math.degrees(np.abs(planned["start"] - now["start"]).max())
+        if off > getattr(self.args, "prefetch_tolerance", 3.0):
+            return f"the arm starts {off:.1f} deg from where the plan assumed"
+        return None
+
+    def _prefetch_next(self, bb):
+        """While this task's object is carried: plan the next task from the home pose, in the planner's process."""
+        if self.planner is None or self.planner.mode != "process" or not getattr(self.args, "prefetch", True):
+            return
+        task = bb["task"]
+        upcoming = self.coordinator.peek(self.arm, exclude=task)
+        if upcoming is None:
+            return
+        now = self._obstacles(leave_out=[task.shape, task.shape.get("origin", task.shape)])
+        now["arms"][self.arm] = list(HOME_Q)
+        self.prefetch = {"task": upcoming, "inputs": self._inputs(upcoming, HOME_Q, now),
+                         "future": self.planner.submit(upcoming, HOME_Q, now, self.args)}
+
+    def _take_prefetch(self, task, start_q, obstacles):
+        """The plan made ahead of time for this task, if it is still right: (plans, z, log), else None."""
+        ahead, self.prefetch = self.prefetch, None
+        if ahead is None or ahead["task"] is not task:
+            if ahead is not None:
+                ahead["future"].cancel()
+            return None
+        try:
+            plans, z, log = ahead["future"].result()
+        except Exception:                                   # noqa: BLE001 - no plan ahead: plan now, as always
+            return None
+        why = self._still_valid(ahead["inputs"], self._inputs(task, start_q, obstacles))
+        if why is not None:
+            print(f"  {self.arm}: the plan made ahead is not used: {why}")
+            return None
+        plans[0][1][0] = list(map(float, start_q))           # the path starts where the arm really is
+        return plans, z, log
+
     def plan(self, bb):
         task, args = bb["task"], self.args
         bb["picked_at"] = np.asarray(task.shape["xyz"], float)
         if task.kind == TO_HANDOFF:
             hx, hy = self.handoff_points[task.slot]
             bb["handoff_xyz"] = np.array([hx, hy, task.shape["xyz"][2]])   # same top height: it stands on the table
-        obstacles = {"shapes": [m for m in self.marks if m["kind"] == "shape"
-                                and m["state"] in ("todo", "handoff", "failed")],
-                     "boxes": [m for m in self.marks if m["kind"] == "box"], "arms": dict(self.last_q)}
+        obstacles = self._obstacles()
         start_q = self.last_q[self.arm] if self.robot is None else self.read_joints_rad(self.robot)
+        started = time.monotonic()
         try:
-            with PLAN_LOCK:
-                bb["plans"], z = plan_task(task, start_q, obstacles, args, bb.get("handoff_xyz"))
+            ahead = self._take_prefetch(task, start_q, obstacles)
+            if ahead is not None:
+                bb["plans"], z, log = ahead
+                print(log, end="")
+                print(f"  {self.arm}: planned ahead, while the last object was carried")
+            elif self.planner is not None:
+                bb["plans"], z, log = self.planner.submit(task, start_q, obstacles, args, bb.get("handoff_xyz")).result()
+                print(log, end="")
+            else:
+                with PLAN_LOCK:
+                    bb["plans"], z = plan_task(task, start_q, obstacles, args, bb.get("handoff_xyz"))
         except RuntimeError as error:
+            print(getattr(error, "log", ""), end="")       # the planner's printout up to the failure
             bb["why"] = f"no plan: {error}"
             return False
-        print(f"  {self.arm}: grasp at {100 * z:.1f} cm above the table")
+        bb["grasp_z"] = z
+        print(f"  {self.arm}: grasp at {100 * z:.1f} cm above the table "
+              f"({time.monotonic() - started:.1f} s waiting for the plan)")
         return True
+
+    def _check_grasp(self, bb, reached_q, grasped, current_ma):
+        """Where the grasp point really went (forward kinematics of the joint readings) against the plan and the
+        object: printed, and a row in outputs/grasp_log.csv. Separates the errors: planned vs object = the planner's
+        tolerance; reached vs planned = the motors not reaching the planned joint angles. When both are small but
+        grasps still miss, the error is outside the model: the camera's position of the object, or the arm's
+        calibration (the model's joint angles are not the real ones), or bending the encoders do not see."""
+        try:
+            from core.arms import arm_from_table
+            from core.paths import OUTPUTS
+            from planning.kinematics import grasp_pose, reach_frame
+
+            task = bb["task"]
+            planned_q = dict(bb["plans"])["grasp"][-1]
+            target = (arm_from_table(self.arm) @ np.append(task.shape["xyz"], 1.0))[:3]
+            target[2] = bb.get("grasp_z", target[2])
+            planned, tilt = grasp_pose(planned_q)
+            reached, _ = grasp_pose(reached_q)
+            along, across = reach_frame(target)
+            parts = lambda v: (1000 * float((v - target)[:2] @ along), 1000 * float((v - target)[:2] @ across),
+                               1000 * float((v - target)[2]))
+            p_off, r_off = parts(planned), parts(reached)
+            joints = np.degrees(np.asarray(reached_q, float) - np.asarray(planned_q, float))
+            posture = "top-down" if tilt < 45 else "level"
+            text = lambda o: f"{o[0]:+.0f} along, {o[1]:+.0f} across, {o[2]:+.0f} z"
+            print(f"  {self.arm}: grasp check ({posture}, {100 * np.linalg.norm(target[:2]):.0f} cm out), mm from the "
+                  f"object (along: + beyond, - short; across: + left): planned {text(p_off)} | reached {text(r_off)} | "
+                  f"joints off " + " ".join(f"{d:+.1f}" for d in joints) + " deg")
+            path = OUTPUTS / "grasp_log.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            new = not path.is_file()
+            with path.open("a", newline="") as handle:
+                out = csv.writer(handle)
+                if new:
+                    out.writerow(["time", "arm", "object", "posture", "reach_cm", "target_x", "target_y", "target_z",
+                                  "planned_along_mm", "planned_across_mm", "planned_z_mm", "reached_along_mm",
+                                  "reached_across_mm", "reached_z_mm", "pan_deg", "lift_deg", "elbow_deg",
+                                  "wrist_flex_deg", "wrist_roll_deg", "grasped", "current_ma"])
+                out.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), self.arm, task.shape.get("label", ""), posture,
+                              round(100 * float(np.linalg.norm(target[:2])), 1), *np.round(target, 4),
+                              *np.round(p_off, 1), *np.round(r_off, 1), *np.round(joints, 2), int(bool(grasped)),
+                              round(float(current_ma), 1)])
+        except Exception as error:                          # noqa: BLE001 - a check must never stop the arm
+            print(f"  {self.arm}: grasp check failed ({error})")
 
     # ---- moving (each one is a no-op without a robot: plan only)
     PRECISE_STEPS = ("grasp", "over box", "place")     # where the gripper is put somewhere; the rest only roughly
@@ -173,9 +302,11 @@ class TaskActions:
             return True
         self._follow(bb, "above shape", bb["opening"])
         self._follow(bb, "grasp", bb["opening"])
+        reached_q = self.read_joints_rad(self.robot)            # where the arm stopped, for the grasp check
         grasped, stop, hold, current_ma = close_gripper_with_current_feedback(
             self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS,
             miss_below=miss_position(task.shape, self.args))
+        self._check_grasp(bb, reached_q, grasped, current_ma)
         if not grasped:
             print(f"  {self.arm}: missed it (gripper closed to {stop:.0f}/100, {current_ma:.0f} mA)")
             return False
@@ -188,12 +319,14 @@ class TaskActions:
         return True
 
     def carry_to_bin(self, bb):
+        self._prefetch_next(bb)                             # plan the next object while this one is carried
         self._follow(bb, "lift", bb["hold"])
         self._follow(bb, "over box", bb["hold"])
         bb["release_at"] = "over box"
         return True
 
     def place_on_dropoff(self, bb):
+        self._prefetch_next(bb)
         self._follow(bb, "lift", bb["hold"])
         self._follow(bb, "over handoff", bb["hold"])
         self._follow(bb, "place", bb["hold"])
@@ -217,12 +350,15 @@ class TaskActions:
         return True
 
 
-def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera=None, actions=None):
+def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera=None, actions=None,
+               planner=None):
     """One arm, task after task: the coordinator gives it the next task it may do, and each attempt at it is one run
     of its behaviour tree (task_tree). camera: what the camera sees now (games/pick_and_place.py; find_object, find_bin,
     find_stray), or None (the known positions are used as they are). actions: the TaskActions class to use (the
-    simulator passes one that moves the arms in PyBullet instead of the real motors)."""
-    w = (actions or TaskActions)(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera)
+    simulator passes one that moves the arms in PyBullet instead of the real motors). planner: the arm's
+    planning/planner_service.py ArmPlanner (plans in its own process, and the next task ahead of time), or None
+    (plan in this thread, one arm at a time)."""
+    w = (actions or TaskActions)(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera, planner)
     task = None
     try:
         while True:

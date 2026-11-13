@@ -98,19 +98,28 @@ def add_obstacle(world, x, y, half_x, half_y, height):
     vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half, rgbaColor=[0.6, 0.4, 0.2, 0.5], physicsClientId=c)
     body = p.createMultiBody(0, col, vis, basePosition=[x, y, height / 2], physicsClientId=c)
     world.checker.obstacle_body_ids.append(body)
+    getattr(world, "extra_bodies", []).append(body)        # removed by the world's next reset()
     return body
 
 
 def add_other_arm(world, to_arm, other, q):
-    """The other arm's robot model at its base and joint angles q, as an obstacle (it is not planned)."""
+    """The other arm's robot model at its base and joint angles q, as an obstacle (it is not planned). A reused
+    world keeps the model between plans (world.other_arms) and only moves it."""
     import pybullet as p
 
     c = world.client
     b = arm_config.base(other)
     xy = (to_arm @ np.array([b["x"], b["y"], 0.0, 1.0]))[:2]
     yaw = math.atan2(to_arm[1, 0], to_arm[0, 0]) + math.radians(b["yaw_deg"])
-    body = p.loadURDF(str(URDF_FILE), basePosition=[*xy, 0.0], baseOrientation=p.getQuaternionFromEuler([0, 0, yaw]),
-                      useFixedBase=True, physicsClientId=c)
+    kept = getattr(world, "other_arms", None)
+    if kept is not None and other in kept:
+        body = kept[other]
+        p.resetBasePositionAndOrientation(body, [*xy, 0.0], p.getQuaternionFromEuler([0, 0, yaw]), physicsClientId=c)
+    else:
+        body = p.loadURDF(str(URDF_FILE), basePosition=[*xy, 0.0],
+                          baseOrientation=p.getQuaternionFromEuler([0, 0, yaw]), useFixedBase=True, physicsClientId=c)
+        if kept is not None:
+            kept[other] = body
     index = {p.getJointInfo(body, i, physicsClientId=c)[1].decode(): i
              for i in range(p.getNumJoints(body, physicsClientId=c))}
     for name, value in zip(JOINTS, q):
@@ -230,6 +239,31 @@ def miss_position(shape, args):
     return max(0.0, contact - args.miss_margin)
 
 
+_WORLDS = {}       # (arm, clearance) -> the arm's planning world, reused for every plan (World.reset)
+
+
+def planning_world(arm, start_q, args, gripper_open=None):
+    """The arm's planning world, ready for a plan from start_q: built the first time, reset afterwards (the same
+    as a new one, without the ~0.85 s it takes to build). With args.gui a new world is opened each time (shown)."""
+    if args.gui:
+        return World([], start_q, gui=True, clearance=args.clearance, arm=arm,
+                     calibration_path=arm_config.follower_calibration(arm), gripper_open=gripper_open)
+    key = (arm, round(float(args.clearance), 6))
+    world = _WORLDS.get(key)
+    if world is None:
+        world = _WORLDS[key] = World([], start_q, gui=False, clearance=args.clearance, arm=arm,
+                                     calibration_path=arm_config.follower_calibration(arm), gripper_open=gripper_open)
+    else:
+        world.reset(start_q, gripper_open)
+    return world
+
+
+def close_worlds():
+    for world in _WORLDS.values():
+        world.close()
+    _WORLDS.clear()
+
+
 def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     """Plan the whole task in the arm's frame. Returns ([(label, path)], grasp z) or raises RuntimeError."""
     arm = task.arm
@@ -240,8 +274,7 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
     b = (to_arm @ np.array([*drop, 0.0, 1.0]))[:3]
     top = max(o[2], 0.0)
     opening = task.shape.get("open_cmd", GRIPPER_OPEN)        # the jaws open only as wide as this shape needs
-    world = World([], start_q, gui=args.gui, clearance=args.clearance, arm=arm,
-                  calibration_path=arm_config.follower_calibration(arm), gripper_open=opening / 100)
+    world = planning_world(arm, start_q, args, gripper_open=opening / 100)
     world.level_tolerance_deg = getattr(args, "level_tolerance", 30.0)
     world.stall_iterations = getattr(args, "ik_stall", 30) or None
     try:
@@ -321,4 +354,8 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                     return done(posture, plans, z)
         raise RuntimeError(str(error))
     finally:
-        world.close()
+        if args.gui:
+            world.close()
+        else:
+            world.reset(world.start_q)               # drop this plan's obstacles; the world is kept for the next
+

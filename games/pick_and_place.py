@@ -247,6 +247,15 @@ def add_game_args(ap):
                     help="the gripper keeps this far above the table in the plans [m] (was 0.01; a level grasp point "
                          "then goes down to 4.0 cm instead of 4.5 cm; raise it if the fingers touch the table)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--planner", choices=["process", "thread"], default="process",
+                    help="process (default): each arm plans in a process of its own, both at the same time and the "
+                         "next object ahead while the current one is carried; thread: one plan at a time, in this "
+                         "process (the old way)")
+    ap.add_argument("--no-prefetch", dest="prefetch", action="store_false",
+                    help="do not plan the next object ahead of time (with --planner process)")
+    ap.add_argument("--prefetch-tolerance", type=float, default=3.0,
+                    help="a plan made ahead is used only when the arm starts within this many degrees (every "
+                         "joint) of the home pose it assumed; else the object is planned again")
     ap.add_argument("--grip-current-ma", type=float, default=GRIP_CURRENT_MA)
     ap.add_argument("--grip-margin", type=float, default=0.02,
                     help="the jaws open to the object's width (its STL, widest direction) plus this much [m]")
@@ -283,7 +292,7 @@ def main(argv=None):
 
     from hardware.arm import connect_robot, on_every_arm, park_and_disconnect, read_joints_rad, send_joints
 
-    robots, workers, vision = {}, [], None
+    robots, workers, vision, planners = {}, [], None, {}
     run = {"coordinator": None, "start": 0.0, "reported": True, "status": "Enter: sort what is in view"}
     close_checker = lambda: None
     try:
@@ -310,6 +319,9 @@ def main(argv=None):
             on_every_arm(robots, home)                 # both arms at the same time
 
         print("Arms going home ...")
+        from planning.planner_service import ArmPlanner
+
+        planners = {n: ArmPlanner(n, args, args.planner, HOME_Q) for n in robots}   # build each arm's world now
         home_all()
         vision = Vision(args)
         area = handoff_area(bases, args.max_reach, args.min_reach, regions, step=args.drop_step)
@@ -453,7 +465,8 @@ def main(argv=None):
             for name, robot in robots.items():
                 worker = threading.Thread(target=workers_module.arm_worker, daemon=True, name=name,
                                           args=(name, robot, coordinator, marks, last_q, args,
-                                                (send_joints, read_joints_rad), handoff_points, camera))
+                                                (send_joints, read_joints_rad), handoff_points, camera, None,
+                                                planners[name]))
                 workers.append(worker)
                 worker.start()
 
@@ -530,6 +543,8 @@ def main(argv=None):
             vision.close()
         cv2.destroyAllWindows()
         close_checker()
+        for planner in planners.values():
+            planner.close()
         on_every_arm(robots, lambda name, robot: park_and_disconnect(robot))    # both arms at the same time
 
 

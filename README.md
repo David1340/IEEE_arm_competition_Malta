@@ -31,6 +31,22 @@ re-calibrating motors anywhere: `python 02_calibrate.py sync pull` and commit `c
 **Coming from the old layout:** `python 02_calibrate.py import-old path/to/calibration.json` moves the old camera
 calibration into `config/calibration/camera.yaml`. The fine joint offsets and `arms.json` are already converted.
 
+## Grasp check (real arms)
+
+After every grasp the game prints a `grasp check` line and appends a row to `outputs/grasp_log.csv`: where the grasp
+point was planned and where the arm really put it (forward kinematics of the joint readings), both in mm from the
+object along the reach (+ beyond, - short), across it and in height, and how far each joint stopped from its target.
+Planned close to 0 but reached short: the motors do not reach the planned angles (sag). Both close to 0 but the
+grasp still misses: the error is outside the model (the camera's position of the object, or the calibration).
+
+## Planning speed
+
+Each arm plans in a process of its own (`--planner process`, the default): both arms plan at once, and each plans its
+next object while the current one is carried; that plan is used only if nothing it depended on has changed (the
+object, the bins, the other arm, the arm's start pose within `--prefetch-tolerance`). `--planner thread
+--no-prefetch` is the old behaviour. Each arm's planning world is built once and reused (same plans, ~0.85 s less
+per plan).
+
 ## Simulation: test without the arms or the camera
 
 `04_simulate.py` plays a pick-and-place round in a PyBullet window with the same code as the real game: the same

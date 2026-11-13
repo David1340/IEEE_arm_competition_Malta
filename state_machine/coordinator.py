@@ -311,6 +311,17 @@ class Coordinator:
                 self.cond.wait(timeout=0.5)
             return None
 
+    def peek(self, arm, exclude=None) -> Task | None:
+        """The task next_task(arm) will most likely give this arm after the current one, without reserving anything:
+        its closest waiting task that goes straight to a bin (DIRECT or FROM_HANDOFF; a TO_HANDOFF task's handoff
+        point is only chosen when it starts). For planning it ahead of time; it may still turn out to be another."""
+        with self.cond:
+            base = self.regions.bases.get(arm)
+            for task in sorted((t for t in self.tasks if t.arm == arm and t.state == "waiting" and t is not exclude),
+                               key=lambda t: 0.0 if base is None else reach(t.shape["xyz"], base)):
+                return None if task.kind == TO_HANDOFF else task
+            return None
+
     def _release(self, arm):
         """Free every region the arm holds (its task's object may have moved: not only task.regions)."""
         for region in [r for r, holder in self.held.items() if holder == arm]:

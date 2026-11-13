@@ -86,7 +86,7 @@ graph LR
 
 **`core/paths.py`**: Every fixed path in the project, in one place.
 - defines: arm_calibration_dir()
-- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.sim, simulation.scene, simulation.viewer, teleop.teleop_net (+1 in dev/)
+- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.kinematics, planning.sim, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
 
 
 ### hardware/
@@ -209,14 +209,24 @@ graph LR
 **`planning/ik.py`**: Modified Fully Resampled PSO inverse kinematics using PyBullet.
 - defines: read_motor_calibration(), class IKResult, load_robot_for_collision(), find_link_index(), class ModifiedFRPSOIK
 - imports: core.arms, core.config, hardware.joint_offsets
-- used by: hardware.arm, planning.rrt_connect, planning.sim, simulation.run
+- used by: hardware.arm, planning.planner_service, planning.rrt_connect, planning.sim, simulation.run
 - config: config/arms.yaml, config/calibration/<arm>/motors.yaml, config/calibration/<arm>/joint_offsets.yaml
 
+**`planning/kinematics.py`**: Forward kinematics of the repo's SO-101 model (models/robot/so101/robot.urdf): where the grasp point and the gripper are for given joint angles, in the arm's base frame.
+- defines: grasp_pose(), reach_frame()
+- imports: core.paths
+- used by: state_machine.arm_worker
+
 **`planning/pick_planner.py`**: Planning a pick and place for one arm: every waypoint's pose (M-FRPSO IK) and the collision-free path to it (RRT-Connect), in the planning world of planning/sim.py (the table, the bins, the other o...
-- defines: plan_sequence(), add_obstacle(), add_other_arm(), handoff_checker(), grasp_height(), grasp_heights(), postures_for(), miss_position(), plan_task()
+- defines: plan_sequence(), add_obstacle(), add_other_arm(), handoff_checker(), grasp_height(), grasp_heights(), postures_for(), miss_position(), planning_world(), close_worlds(), plan_task()
 - imports: core.arms, hardware.gripper, perception.detection, planning.sim, state_machine.coordinator
-- used by: games.pick_and_place, simulation.run, state_machine.arm_worker (+1 in dev/)
+- used by: games.pick_and_place, planning.planner_service, simulation.run, state_machine.arm_worker (+1 in dev/)
 - config: config/arms.yaml
+
+**`planning/planner_service.py`**: A planner per arm, so planning runs in parallel with the other arm's planning and with the arm's own moves.
+- defines: class PlanError, class ArmPlanner
+- imports: planning.ik, planning.pick_planner
+- used by: games.pick_and_place, simulation.run
 
 **`planning/rrt_connect.py`**: Joint-space RRT-Connect using ModifiedFRPSOIK collision validation.
 - defines: class RRTConnectResult, class RRTConnectPlanner
@@ -234,7 +244,7 @@ graph LR
 
 **`state_machine/arm_worker.py`**: The state machine of one arm: task after task from the coordinator, each attempt a behaviour tree (locate the object and its bin, plan, grasp or back off, carry, release, home, verify the drop).
 - defines: short(), follow(), go_home(), task_tree(), class TaskActions, arm_worker()
-- imports: core.arms, hardware.arm, hardware.gripper, planning.pick_planner, state_machine.behaviour, state_machine.coordinator
+- imports: core.arms, core.paths, hardware.arm, hardware.gripper, planning.kinematics, planning.pick_planner, state_machine.behaviour, state_machine.coordinator
 - used by: games.pick_and_place, simulation.run (+1 in dev/)
 - config: config/arms.yaml
 
@@ -254,7 +264,7 @@ graph LR
 
 **`games/pick_and_place.py`** (runnable): Game 1, pick and place: the live view of every object and bin, Enter, and the arms sort them straight away.
 - defines: colour_of(), object_stl(), same_size(), detect(), bin_for(), class TableView, put(), add_game_args(), main()
-- imports: calibration.calibrate, core.arms, games.rules, hardware.arm, hardware.gripper, perception.colour, perception.detection, perception.live, planning.pick_planner, state_machine.arm_worker, state_machine.coordinator
+- imports: calibration.calibrate, core.arms, games.rules, hardware.arm, hardware.gripper, perception.colour, perception.detection, perception.live, planning.pick_planner, planning.planner_service, state_machine.arm_worker, state_machine.coordinator
 - used by: 04_simulate, simulation.run
 - config: config/arms.yaml, config/games/<game>.yaml, config/calibration/colours.yaml
 
@@ -280,7 +290,7 @@ graph LR
 
 **`simulation/run.py`** (runnable): Play a pick-and-place round in PyBullet on a scene: no arms, no camera, the same code as the real game.
 - defines: class SimArm, sim_read_joints(), sim_send_joints(), class SimActions, build_round(), main()
-- imports: core.arms, games.pick_and_place, games.rules, hardware.gripper, planning.ik, planning.pick_planner, simulation.scene, simulation.viewer, state_machine.arm_worker, state_machine.coordinator
+- imports: core.arms, games.pick_and_place, games.rules, hardware.gripper, planning.ik, planning.pick_planner, planning.planner_service, simulation.scene, simulation.viewer, state_machine.arm_worker, state_machine.coordinator
 - used by: 04_simulate
 - config: config/arms.yaml, config/games/<game>.yaml
 
