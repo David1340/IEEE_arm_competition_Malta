@@ -101,6 +101,7 @@ Already cloned: `git fetch origin`, `git checkout clean`, `git pull`.
 | `python 04_simulate.py run example --arm follower_pink` | one arm only |
 | `python 04_simulate.py run example --headless` | no window: plan, move and check (quick tests, CI) |
 | `python 04_simulate.py test` | every regression scene in `simulation/scenes/tests/` (touching objects, clusters, against a bin), one line each |
+| `python 04_simulate.py test --gui` | the same, each scene played in the PyBullet window (`test --gui -- --speed 3` faster) |
 
 Scenes are YAML files in `simulation/scenes/` (TABLE frame, metres), so a test layout can be committed and shared.
 Joint limits: the planner uses each arm's motor calibration from `config/calibration/<arm>/motors.yaml`; until

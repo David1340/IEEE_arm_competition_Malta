@@ -245,6 +245,8 @@ def test(argv=None):
         python 04_simulate.py test                       # every scene in simulation/scenes/tests/, and example
         python 04_simulate.py test tests/side_by_side    # only these scenes
         python 04_simulate.py test -- --down-roll across # game options after --, for every scene
+        python 04_simulate.py test --gui                 # watch each scene in the PyBullet window, one after another
+        python 04_simulate.py test --gui -- --speed 3    # ... faster
 
     Each scene's full printout goes to outputs/sim_tests/<scene>.log."""
     import contextlib
@@ -255,11 +257,15 @@ def test(argv=None):
     argv = list(argv or [])
     options = argv[argv.index("--") + 1:] if "--" in argv else []
     names = argv[:argv.index("--")] if "--" in argv else argv
+    gui = "--gui" in names
+    names = [n for n in names if n != "--gui"]
     names = names or ["example", *[n for n in scenes.available() if n.startswith("tests/")]]
     logs = OUTPUTS / "sim_tests"
     logs.mkdir(parents=True, exist_ok=True)
     rows, bad = [], 0
     for name in names:
+        if gui:
+            print(f"{name:28s} playing in the window ...", flush=True)
         out = io.StringIO()
         log = logs / f"{name.replace('/', '_')}.log"
         log.write_text("")
@@ -271,7 +277,7 @@ def test(argv=None):
                 os.dup2(native.fileno(), 1)
             try:
                 with contextlib.redirect_stdout(out):
-                    result = main([name, "--headless", *options])
+                    result = main([name, *([] if gui else ["--headless"]), *options])
             finally:
                 sys.stdout.flush()
                 os.dup2(saved, 1)
