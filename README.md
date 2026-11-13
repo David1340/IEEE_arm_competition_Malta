@@ -57,6 +57,11 @@ the gripper has stopped moving (`--grip-stall-readings`) while still above `--gr
 `--grip-empty` or fully means a miss. Every reading of every close (time, position, current) is appended to
 `outputs/gripper_trace.csv`, with the object and the result, to see how the real gripper behaves on each object.
 `--miss-margin 10` brings back the earlier model-based early miss check.
+The gripper closes at `--grip-close-speed` (40 units of its 0-100 scale per second; `0` = the servo's full speed, as
+before), so it does not hit an object hard enough to flick it out of the jaws.
+
+**How fast the arms move:** `--speed` (top joint speed, 20 deg/s by default) and `--accel` (40 deg/s²), e.g.
+`python run_game.py pick_and_place --speed 30 --accel 60`; `--profile minjerk` gives smoother starts and stops.
 
 ## Carrying and dropping into a bin
 

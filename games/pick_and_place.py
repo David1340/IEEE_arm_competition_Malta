@@ -255,6 +255,9 @@ def add_game_args(ap):
     ap.add_argument("--grip-stall-readings", type=int, default=5,
                     help="holding = the gripper stops moving while closing (this many readings, ~40 ms each, with "
                          "less than 0.5 units of movement) above --grip-empty; 0 = only the current tells")
+    ap.add_argument("--grip-close-speed", type=float, default=40.0,
+                    help="how fast the gripper closes on an object [units of 0-100 per second; 0 = the servo's full "
+                         "speed, as before]: slower is gentler (a block is less likely to be knocked out of the jaws)")
     ap.add_argument("--grip-empty", type=float, default=8.0,
                     help="a gripper that stops at or below this (0-100) has closed on nothing: a miss")
     ap.add_argument("--neighbour-radius", type=float, default=-1.0,
@@ -568,34 +571,61 @@ def main(argv=None):
                 settle["said"] = text
                 print(f"[auto] {text}", flush=True)
 
+        tracks = []                            # --auto: objects followed over frames (YOLO / colour flicker tolerated)
+        recent_bins = []                       # --auto: bins seen in the last few seconds
+        GAP, BIN_MEMORY = 0.6, 3.0             # s: an object may drop out this long; a bin is remembered this long
+
+        def steady_bins(bins, now):
+            """The bins in view, plus those seen in the last BIN_MEMORY s (a bin under --bin-conf for a frame would
+            otherwise take every object that goes in it out of the round)."""
+            for b in bins:
+                if b["colour"] and b["conf"] >= args.bin_conf:
+                    near = [r for r in recent_bins if r["colour"] == b["colour"]
+                            and np.linalg.norm(np.asarray(r["xyz"][:2]) - b["xyz"][:2]) < 0.05]
+                    for r in near:
+                        recent_bins.remove(r)
+                    recent_bins.append(dict(b, seen=now))
+            recent_bins[:] = [r for r in recent_bins if now - r["seen"] <= BIN_MEMORY]
+            here = [b for b in bins if b["colour"] and b["conf"] >= args.bin_conf]
+            return here + [r for r in recent_bins if now - r["seen"] > 0
+                           and not any(np.linalg.norm(np.asarray(r["xyz"][:2]) - h["xyz"][:2]) < 0.05 for h in here)]
+
         def auto_step(objects, bins):
-            """Start a round when the same sortable objects have been in view for --auto-settle seconds."""
+            """Start a round once an object to sort has been in view (dropouts up to GAP s allowed) for --auto-settle
+            seconds; objects still coming and going join the next round."""
+            now = time.monotonic()
+            bins = steady_bins(bins, now)
             shapes, _, _ = to_marks(objects, bins)
             sortable = {sh["source"] for sh in shapes}
             todo = [o for o in objects if id(o) in sortable and not given_up(o)]
-            if not todo:
-                settle["key"] = None
+            for o in todo:                       # match by shape and place, not colour (it may flicker)
+                xy = np.asarray(o["xyz"][:2], float)
+                track = next((t for t in tracks if t["name"] == o["name"] and np.linalg.norm(t["xy"] - xy) < 0.03),
+                             None)
+                if track is None:
+                    tracks.append({"name": o["name"], "xy": xy, "first": now, "last": now})
+                else:
+                    track["xy"], track["last"] = xy, now
+            tracks[:] = [t for t in tracks if now - t["last"] <= GAP]
+            steady = [t for t in tracks if now - t["first"] >= args.auto_settle]
+            if not tracks:
                 left = sum(given_up(o) for o in objects)
                 say("waiting for objects" + (f" ({left} left where they failed: move them to try again)" if left
                                              else ""))
                 return
-            key = sorted((o["name"], o["colour"] or "", round(o["xyz"][0] / 0.02), round(o["xyz"][1] / 0.02))
-                         for o in todo)
-            now = time.monotonic()
-            if key != settle["key"]:
-                settle["key"], settle["since"] = key, now
-            if now - settle["since"] < args.auto_settle:
-                say(f"{len(todo)} object(s) in view, starting when they stay put")
+            if not steady or not todo:
+                say(f"{len(tracks)} object(s) in view, starting when they stay put")
                 return
-            settle["key"] = None
             say(f"sorting {len(todo)} object(s)")
             run["skipped"] = []
             go(objects, bins, skip={id(o) for o in objects if given_up(o)})
             for shape in run.get("skipped", []):        # no arm reaches it: leave it until it is moved
                 failed_here.append({"name": shape["name"], "colour": shape["object_colour"],
                                     "xy": np.asarray(shape["xyz"][:2], float), "count": args.auto_retries + 1})
-            if run["reported"]:                       # nothing could be done: wait for the scene to change
-                settle["key"], settle["since"] = key, now + 5.0
+            tracks.clear()
+            if run["reported"]:                       # nothing could be done now: give the scene a moment to change
+                tracks.extend({"name": o["name"], "xy": np.asarray(o["xyz"][:2], float), "first": now + 5.0,
+                               "last": now + 5.0} for o in todo)
 
         if not args.headless:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -619,7 +649,8 @@ def main(argv=None):
                       + (f" ({took / placed:.1f} s per object)" if placed else ""))
                 if args.auto:
                     remember_failures()
-                    settle["key"], settle["said"] = None, ""
+                    tracks.clear()
+                    settle["said"] = ""
             if args.headless:
                 if not busy:
                     auto_step(objects, bins)

@@ -314,7 +314,8 @@ class TaskActions:
             self.robot, 0.0, self.args.grip_current_ma, GRIP_CONFIRM_READINGS, squeeze,
             miss_below=miss_position(task.shape, self.args),
             stall_readings=getattr(self.args, "grip_stall_readings", 5) or None,
-            empty_below=getattr(self.args, "grip_empty", 8.0), trace=trace, info=info)
+            empty_below=getattr(self.args, "grip_empty", 8.0), trace=trace, info=info,
+            close_speed=getattr(self.args, "grip_close_speed", 40.0) or None)
         self._check_grasp(bb, reached_q, grasped, current_ma)
         self._log_gripper(task, bb["opening"], trace, info.get("reason", ""), grasped)
         if not grasped:

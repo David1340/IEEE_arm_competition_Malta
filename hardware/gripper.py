@@ -248,7 +248,7 @@ def read_gripper_current_ma(robot):
 
 def close_gripper_with_current_feedback(robot, closed_target, current_threshold_ma, confirm_readings,
                                         squeeze_units, *, timeout=10.0, miss_below=None, stall_readings=None,
-                                        empty_below=None, trace=None, info=None):
+                                        empty_below=None, trace=None, info=None, close_speed=None):
     """Close the gripper until it is holding something, then hold a light squeeze.
 
     Holding is recognised two ways, whichever comes first:
@@ -258,6 +258,9 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
           the current; a gripper that stops at or below empty_below has closed on nothing.
     A miss: the gripper reaches closed_target (or stops at or below empty_below) without either, or passes miss_below
     (a model-based shortcut; None = off) without a current rise.
+
+    close_speed (units of the 0-100 scale per second): the target moves towards closed_target at this speed instead of
+    being sent at once (the servo's full speed can hit an object hard and flick it out sideways); None = at once.
 
     Returns (grasped, stop_position, hold_position, current_ma). trace (a list): (seconds, position, current mA) of
     every reading is appended to it; info (a dict): info["reason"] is set to how it ended ("current", "stall",
@@ -271,11 +274,18 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
     current_ma = 0.0
     history = []
     info["reason"] = "timeout"
+    commanded, last = position, started
     while time.monotonic() < deadline:
         observation = robot.get_observation()
         hold = {key: value for key, value in observation.items()
                 if key.endswith(".pos") and key != "gripper.pos"}
-        robot.send_action({**hold, "gripper.pos": float(closed_target)})
+        now = time.monotonic()
+        if close_speed:
+            commanded = max(float(closed_target), commanded - close_speed * (now - last))
+        else:
+            commanded = float(closed_target)
+        last = now
+        robot.send_action({**hold, "gripper.pos": commanded})
         time.sleep(0.04)
         position = float(robot.get_observation()["gripper.pos"])
         current_ma = read_gripper_current_ma(robot)
@@ -290,10 +300,11 @@ def close_gripper_with_current_feedback(robot, closed_target, current_threshold_
             return True, position, hold_position, current_ma
         if stall_readings and len(history) > stall_readings and (start - position >= 2.0
                                                                  or time.monotonic() - started > 0.4):
-            if history[-1 - stall_readings] - position < 0.5:          # told to close, but not moving any more
-                if empty_below is not None and position <= empty_below:
-                    info["reason"] = "closed empty"
-                    break
+            still = history[-1 - stall_readings] - position < 0.5            # not moving any more
+            if still and empty_below is not None and position <= empty_below:
+                info["reason"] = "closed empty"                              # stopped at the end: nothing there
+                break
+            if still and commanded < position - 2.0:                         # told to close further than it is
                 info["reason"] = "stall"
                 hold_position = max(position - squeeze_units, closed_target)
                 robot.send_action({**hold, "gripper.pos": hold_position})
