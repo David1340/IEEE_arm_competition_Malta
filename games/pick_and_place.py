@@ -230,7 +230,13 @@ def add_game_args(ap):
     ap.add_argument("--box-height", type=float, default=0.08, help="height of the bins [m]")
     ap.add_argument("--box-size", type=float, default=0.15, help="width of the bins, for the planner [m]")
     ap.add_argument("--box-margin", type=float, default=0.03, help="the arm keeps this much above a bin's rim [m]")
-    ap.add_argument("--drop-above", type=float, default=0.08, help="jaws this high over a bin's rim at release [m]")
+    ap.add_argument("--drop-above", type=float, default=0.08,
+                    help="the jaws at least this high over a bin's rim at release [m]")
+    ap.add_argument("--drop-clearance", type=float, default=0.01,
+                    help="the held object's bottom this far above the bin as the planner sees it (rim + --box-margin) "
+                         "at release [m]: an object grasped high hangs lower, so it is carried higher")
+    ap.add_argument("--no-hold-check", dest="hold_check", action="store_false",
+                    help="do not check the held object against the bins and the other arm while it is carried")
     ap.add_argument("--drop-inset", type=float, default=0.04,
                     help="the object is released this far inside the bin's rim nearest the arm [m]")
     ap.add_argument("--bin-conf", type=float, default=0.6,

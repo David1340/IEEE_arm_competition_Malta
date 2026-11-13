@@ -168,6 +168,7 @@ class World:
         per arm serves every plan (building one takes ~0.85 s): the start pose, the wrist roll fixed at its value,
         the joint limits widened to contain the start pose, the jaw opening (None: unchanged), and no obstacles but
         the table and the world's own objects (add_obstacle's are removed, add_other_arm's left out)."""
+        self.drop_held()
         for body in self.extra_bodies:
             p.removeBody(body, physicsClientId=self.client)
         self.extra_bodies = []
@@ -187,6 +188,24 @@ class World:
         self.checker.upper = np.maximum(self._base_upper, self.start_q)
         self.rrt = RRTConnectPlanner(self.checker, max_joint_step_rad=math.radians(3.0))
         self.show(self.start_q)
+
+    def hold(self, q, xyz, radius, height, obstacle_ids):
+        """From the arm at q (the grasp) on, the gripper holds an object: a cylinder of that radius and height
+        standing at xyz (its base centre, arm frame). It then moves with the gripper and is checked against
+        obstacle_ids (e.g. the bins), so a carry or a drop cannot put it through a wall."""
+        c = self.client
+        self.drop_held()
+        body = p.createMultiBody(0, p.createCollisionShape(p.GEOM_CYLINDER, radius=radius, height=height,
+                                                           physicsClientId=c),
+                                 p.createVisualShape(p.GEOM_CYLINDER, radius=radius, length=height,
+                                                     rgbaColor=[0.9, 0.6, 0.1, 0.6], physicsClientId=c),
+                                 basePosition=[xyz[0], xyz[1], xyz[2] + height / 2], physicsClientId=c)
+        self.checker._set_joint_state(q)
+        self.checker.attach(body, self.checker.ee_link_index, obstacle_ids)
+
+    def drop_held(self):
+        for body in self.checker.detach_all():
+            p.removeBody(body, physicsClientId=self.client)
 
     def roll_limits(self):
         """The wrist roll's joint limits [rad] (calibration and URDF)."""

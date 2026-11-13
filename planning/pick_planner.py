@@ -30,7 +30,7 @@ ROUGH = 0.03           # m: the in-between points (above, lift, over the box) on
 SEED_TRIES = 3         # a failed point is tried again from other random starts
 
 
-def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=None):
+def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=None, on_reached=None):
     """Plan start -> each waypoint in turn. waypoints: [(label, xyz in the arm frame)] or
     [(label, xyz, tolerance m)]; without a tolerance the grasp is PRECISE and every other point ROUGH.
     postures: {label: [gripper postures to try, in order]} ("horizontal", "down", "free"; planning.sim.World.find_pose),
@@ -83,6 +83,8 @@ def plan_sequence(world, start_q, waypoints, seed, postures=None, seed_tries=Non
             raise RuntimeError(f"no collision-free path to '{label}'")
         plans.append((label, route.path))
         q = np.asarray(route.path[-1], float)
+        if on_reached is not None:
+            on_reached(label, q)                 # e.g. from the grasp on, the gripper holds the object
     return plans
 
 
@@ -387,13 +389,20 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             else:
                 add_obstacle(world, *xy, radius, radius, max(xyz[2], 0.01))   # the old square columns
             neighbours.append((xy, radius))
+        held_obstacles = []                    # what the held object must not touch: the bins and the other arm
         for box in obstacles["boxes"]:
             xy = (to_arm @ np.append(box["xyz"], 1.0))[:2]
             boxes_xy.append(xy)
-            add_obstacle(world, *xy, args.box_size / 2, args.box_size / 2, args.box_height + args.box_margin)
+            held_obstacles.append(add_obstacle(world, *xy, args.box_size / 2, args.box_size / 2,
+                                               args.box_height + args.box_margin))
         for other, q in obstacles["arms"].items():
             if other != arm:
-                add_other_arm(world, to_arm, other, q)
+                held_obstacles.append(add_other_arm(world, to_arm, other, q))
+        from hardware.gripper import object_height, object_width
+
+        stl = object_stl(task.shape)
+        held_radius = object_width(stl) / 2 if stl is not None else 0.03     # widest: any orientation
+        held_height = object_height(stl) if stl is not None else max(top, 0.01)
 
         if task.kind == TO_HANDOFF:
             h = (to_arm @ np.array([*handoff_xyz[:2], 0.0, 1.0]))[:3]
@@ -402,8 +411,12 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             place_postures = postures_for(h, args)
         else:
             h = None
-            drop_z = max(args.box_height + args.drop_above, top + args.lift)
-            rest = lambda z: [("over box", [b[0], b[1], drop_z])]
+            # The jaws at least --drop-above over the rim, and the object's bottom (it hangs z below the grasp point:
+            # it stood on the table, grasped z up) above the bin as the planner sees it (rim + --box-margin) plus
+            # --drop-clearance: a high grasp is carried higher.
+            drop_z = lambda z: max(args.box_height + args.drop_above, top + args.lift,
+                                   args.box_height + args.box_margin + getattr(args, "drop_clearance", 0.01) + z)
+            rest = lambda z: [("over box", [b[0], b[1], drop_z(z)])]
             place_postures = ["horizontal", "down"]
         error = None
         # one posture for the whole pick (above, down, lift: a straight descent); the other one if that fails.
@@ -437,8 +450,15 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             if start is None:
                 raise RuntimeError(f"no room to turn the wrist to {math.degrees(roll):.0f} deg at the start pose")
             world.set_start(start)
-            # placing on a handoff point: the posture it was picked with first (top-down keeps the object upright)
-            place = [posture] + [p for p in place_postures if p != posture] if h is not None else place_postures
+            world.drop_held()
+            # placing or dropping: the posture it was picked with first. A top-down grasp carried with the gripper
+            # level swings the object up sideways (a tall one sticks out ~9 cm past the jaws, over the bin's rim).
+            place = [posture] + [p for p in place_postures if p != posture]
+
+            def on_reached(label, q):
+                if label == "grasp" and getattr(args, "hold_check", True):
+                    world.hold(q, [o[0], o[1], 0.0], held_radius, held_height, held_obstacles)
+
             plans = plan_sequence(world, start, [
                 ("above shape", [o[0], o[1], top + args.approach]),
                 ("grasp", [o[0], o[1], z]),
@@ -446,8 +466,8 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                 *rest(z),
             ], seed, postures={"above shape": [posture], "grasp": [posture], "lift": [posture],
                                "over handoff": place, "place": place,
-                               "leave handoff": place, "over box": ["horizontal", "down"]},
-                seed_tries=tries)
+                               "leave handoff": place, "over box": place},
+                seed_tries=tries, on_reached=on_reached)
             if start is not start_q and abs(start[4] - float(start_q[4])) > 1e-6:
                 label, path = plans[0]                   # turn the wrist first, where the arm is
                 plans[0] = (label, [list(start_q), *path])
@@ -487,7 +507,8 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                             except RuntimeError:
                                 pass
                     return done(posture, roll, plans, z)
-        raise RuntimeError(str(error))
+        raise RuntimeError(str(error) if error is not None else
+                           f"no grasp height possible for a {100 * top:.1f} cm object ({', '.join(p for p, _ in variants)})")
     finally:
         if args.gui:
             world.close()

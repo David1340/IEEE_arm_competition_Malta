@@ -187,6 +187,9 @@ class ModifiedFRPSOIK:
             parent_index = p.getJointInfo(robot_id, joint_index, physicsClientId=physics_client_id)[16]
             parents.add(frozenset((joint_index, parent_index)))
         self._parent_link_pairs = parents
+        # Objects the gripper holds: moved with their link in every collision check and checked against their own
+        # obstacles (e.g. the bins), not against the robot holding them. attach() / detach_all().
+        self.attached = []
         self._movable_joint_indices = [
             joint_index for joint_index in range(p.getNumJoints(robot_id, physicsClientId=physics_client_id))
             if p.getJointInfo(robot_id, joint_index, physicsClientId=physics_client_id)[2] != p.JOINT_FIXED
@@ -209,6 +212,35 @@ class ModifiedFRPSOIK:
                 float(value),
                 physicsClientId=self.physics_client_id,
             )
+
+    def attach(self, body_id: int, link_index: int, obstacle_ids: Sequence[int]) -> None:
+        """Hold body_id in link_index's grip from the current joint state on: it moves with the link and must stay
+        clear of obstacle_ids in every state checked."""
+        link = p.getLinkState(self.robot_id, link_index, computeForwardKinematics=True,
+                              physicsClientId=self.physics_client_id)
+        inv = p.invertTransform(link[4], link[5])
+        body = p.getBasePositionAndOrientation(body_id, physicsClientId=self.physics_client_id)
+        rel = p.multiplyTransforms(*inv, *body)
+        self.attached.append({"body": body_id, "link": link_index, "rel": rel, "obstacles": list(obstacle_ids)})
+
+    def detach_all(self) -> list[int]:
+        """Let go of every held body; returns their ids (the caller removes them)."""
+        bodies = [a["body"] for a in self.attached]
+        self.attached = []
+        return bodies
+
+    def _held_bodies_collide(self) -> bool:
+        for held in self.attached:
+            link = p.getLinkState(self.robot_id, held["link"], computeForwardKinematics=True,
+                                  physicsClientId=self.physics_client_id)
+            pos, orn = p.multiplyTransforms(link[4], link[5], *held["rel"])
+            p.resetBasePositionAndOrientation(held["body"], pos, orn, physicsClientId=self.physics_client_id)
+        for held in self.attached:
+            for body_id in held["obstacles"]:
+                if p.getClosestPoints(held["body"], body_id, distance=self.collision_margin_m,
+                                      physicsClientId=self.physics_client_id):
+                    return True
+        return False
 
     def _apply_fixed_joint_values(self, q: np.ndarray) -> np.ndarray:
         q = np.asarray(q, dtype=float).copy()
@@ -246,6 +278,8 @@ class ModifiedFRPSOIK:
             if lower_aabb[2] < minimum_z:
                 return False
         p.performCollisionDetection(physicsClientId=self.physics_client_id)
+        if self.attached and self._held_bodies_collide():
+            return False
         allowed = set(allowed_collision_body_ids)
         for body_id in self.obstacle_body_ids:
             if body_id in allowed:

@@ -29,6 +29,8 @@ files or functions (`--check` tells whether it is current).
 | PyBullet planning world | `planning/sim.py` (`World`) |
 | planning a pick, grasp heights, postures | `planning/pick_planner.py` (`plan_task`, `plan_sequence`) |
 | wrist roll for top-down grasps, neighbours as obstacles | `planning/pick_planner.py` (`down_rolls`, `finger_points`, `neighbour_radius`, `add_column`) |
+| held object in the plan (carry, drop): `World.hold`, checker `attach`; drop height and posture | `planning/sim.py`, `planning/ik.py`, `planning/pick_planner.py` `plan_task` |
+| gripper close: holding by current or stall, `outputs/gripper_trace.csv` | `hardware/gripper.py` `close_gripper_with_current_feedback`, `state_machine/arm_worker.py` `_log_gripper` |
 | blocked objects: retry later, give to the other arm | `state_machine/coordinator.py` (`blocked`, `_resolve_blocked`), `state_machine/arm_worker.py` |
 | planning world reuse (one per arm, `World.reset`) | `planning/pick_planner.py` `planning_world()`, `planning/sim.py` |
 | planner process per arm, plan-ahead of the next object | `planning/planner_service.py` (`ArmPlanner`); used in `state_machine/arm_worker.py` (`_prefetch_next`, `_take_prefetch`) |

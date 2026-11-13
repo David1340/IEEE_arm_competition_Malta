@@ -47,6 +47,16 @@ the gripper has stopped moving (`--grip-stall-readings`) while still above `--gr
 `outputs/gripper_trace.csv`, with the object and the result, to see how the real gripper behaves on each object.
 `--miss-margin 10` brings back the earlier model-based early miss check.
 
+## Carrying and dropping into a bin
+
+- The held object is part of the plan from the grasp on (a cylinder of its widest width and its height, moving with
+  the gripper): no carry path or drop pose may put it through a bin wall or into the other arm
+  (`--no-hold-check` turns this off).
+- It is dropped in the posture it was picked with: an object picked top-down hangs straight down (carried level, a
+  tall one swings up sideways and sticks out past the jaws, over the rim).
+- The drop height is set by the object's bottom, not the jaws: it hangs as far below the grasp point as it was
+  grasped above the table, so a high grasp is carried higher (`--drop-clearance`, `--drop-above`).
+
 ## Objects close together
 
 - **Other objects are obstacles** (default `--neighbour-radius -1`): each one a column of its own size (its widest
