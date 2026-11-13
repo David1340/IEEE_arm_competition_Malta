@@ -21,8 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "docs" / "knowledge_graph.md"
-PACKAGES = ["core", "hardware", "calibration", "teleop", "perception", "planning", "state_machine", "games"]
-ENTRY_POINTS = ["01_setup_usb.py", "02_calibrate.py", "03_teleop.py", "run_game.py"]
+PACKAGES = ["core", "hardware", "calibration", "teleop", "perception", "planning", "state_machine", "games", "simulation"]
+ENTRY_POINTS = ["01_setup_usb.py", "02_calibrate.py", "03_teleop.py", "run_game.py", "04_simulate.py"]
 SKIP_DIRS = {".git", "__pycache__", "datasets", "runs", "outputs", ".venv", "venv"}
 
 # Which config file a module touches, recognised by the names it uses (core/paths.py and the config helpers).

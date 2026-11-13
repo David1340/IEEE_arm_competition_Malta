@@ -32,6 +32,10 @@ import pybullet as p
 from hardware.joint_offsets import load_fine_joint_offsets
 
 DEFAULT_CALIBRATION_PATH = "default"     # the arm's LeRobot calibration (config/arms.yaml); None = URDF limits only
+# The simulator sets this on a computer without the arms' motor calibration: the planner then uses the URDF's joint
+# limits (with a warning) instead of stopping. Never set it for the real arms.
+ALLOW_URDF_LIMITS = False
+_WARNED = set()
 
 
 def read_motor_calibration(calibration_path, arm: str | None = None) -> dict:
@@ -48,6 +52,12 @@ def read_motor_calibration(calibration_path, arm: str | None = None) -> dict:
     copy = arm_config.calibration_file(name)
     if copy.is_file():
         return config.load(copy)
+    if ALLOW_URDF_LIMITS:
+        if name not in _WARNED:
+            _WARNED.add(name)
+            print(f"WARNING: no motor calibration for {name} ({path} or {copy}); planning with the URDF's joint "
+                  f"limits, which can be wider than the real arm's (python 02_calibrate.py sync pull on the lab PC)")
+        return None
     raise FileNotFoundError(f"No motor calibration for {name}: neither {path} nor {copy} exists "
                             f"(python 02_calibrate.py sync pull, on the computer where the arm was calibrated)")
 
@@ -143,6 +153,9 @@ class ModifiedFRPSOIK:
         self.upper = self.urdf_upper.copy()
         if calibration_path is not None:
             calibration = read_motor_calibration(calibration_path, arm)
+        else:
+            calibration = None
+        if calibration is not None:
             for offset, item in enumerate(limits):
                 joint_name = item[1].decode()
                 if joint_name not in calibration:

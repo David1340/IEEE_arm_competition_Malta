@@ -183,10 +183,9 @@ def put(canvas, text, org, colour, scale=0.55):
     cv2.putText(canvas, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, 2)
 
 
-# ---------------------------------------------------------------------------------------------- main
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    add_vision_args(ap)
+def add_game_args(ap):
+    """The game's options (rules, arms, reach, grasp, bins, planner tuning); shared with the simulator
+    (simulation/run.py), so a simulated round plans with exactly the same settings."""
     ap.add_argument("--round", choices=task_config.modes(), default=task_config.default_mode(),
                     help="which bin each object goes in: a mode of config/games/pick_and_place.yaml (default: its 'mode')")
     ap.add_argument("--arm", default="both", help="follower_pink, follower_blue, or both (default)")
@@ -254,6 +253,13 @@ def main(argv=None):
     ap.add_argument("--grip-open", type=float, default=None,
                     help=f"open the jaws to this fixed command (0-100) instead (the old: {GRIPPER_OPEN:.0f})")
     ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
+
+
+# ---------------------------------------------------------------------------------------------- main
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_vision_args(ap)
+    add_game_args(ap)
     from hardware.arm import add_motion_args, apply_motion_args
 
     add_motion_args(ap)

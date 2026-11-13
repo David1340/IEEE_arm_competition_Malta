@@ -217,11 +217,12 @@ class TaskActions:
         return True
 
 
-def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera=None):
+def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera=None, actions=None):
     """One arm, task after task: the coordinator gives it the next task it may do, and each attempt at it is one run
     of its behaviour tree (task_tree). camera: what the camera sees now (games/pick_and_place.py; find_object, find_bin,
-    find_stray), or None (the known positions are used as they are)."""
-    w = TaskActions(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera)
+    find_stray), or None (the known positions are used as they are). actions: the TaskActions class to use (the
+    simulator passes one that moves the arms in PyBullet instead of the real motors)."""
+    w = (actions or TaskActions)(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera)
     task = None
     try:
         while True:

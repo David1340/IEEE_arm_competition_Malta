@@ -33,6 +33,8 @@ files or functions (`--check` tells whether it is current).
 | game rules (which bin) | `config/games/<game>.yaml` via `games/rules.py` |
 | Game 1 main loop, live view | `games/pick_and_place.py` |
 | Game 2 (stub) | `games/two_arm_coordination.py` |
+| simulate a round in PyBullet (no hardware): scenes, editor, viewer, runner | `simulation/` (`04_simulate.py`); scenes in `simulation/scenes/*.yaml` |
+| game options shared by the game and the simulator | `games/pick_and_place.py` `add_game_args()` |
 | teleop | `teleop/` (`03_teleop.py`) |
 | meshes, URDF, YOLO weights | `models/objects/`, `models/robot/so101/robot.urdf`, `models/yolo/` |
 | experiments, old GUIs, dataset tools | `dev/` (nothing outside `dev/` imports it; ignore it unless asked) |
@@ -48,6 +50,8 @@ python 02_calibrate.py status | motors --arm all | sync status|pull|push | offse
 python 03_teleop.py [--gui | net send|receive]
 python run_game.py pick_and_place [--round colour|shape|dynamic] [--arm follower_pink] [--no-robot]
 python -m planning.sim --direct --no-pause          # planner smoke test, no hardware or camera
+python 04_simulate.py run example --headless        # a full simulated round: plans, moves, collision check
+python 04_simulate.py edit example                   # place objects and bins (OpenCV window)
 ```
 
 ## Rules for changes
@@ -58,7 +62,9 @@ python -m planning.sim --direct --no-pause          # planner smoke test, no har
   `config/games/<game>.yaml`. Build from the shared packages; do not import from `dev/`.
 - The planner leaves fine joint offsets out of its joint limits on purpose (`planning/sim.py`
   `fine_offsets_in_limits=False`, matching earlier behaviour).
-- Hardware (arms, ZED, LeRobot) is not available in a cloud session: test with imports, `--help`, `--no-robot`
-  and `planning.sim --direct`. pybullet needs Python <= 3.12 to install from a wheel.
+- Hardware (arms, ZED, LeRobot) is not available in a cloud session: test with imports, `--help`,
+  `planning.sim --direct` and `04_simulate.py run example --headless` (prints COLLISION lines and a summary).
+- The simulator reuses the game's code: change behaviour in `state_machine/`, `planning/` or `games/`, not in
+  `simulation/`, which only replaces the camera (scene file) and the motors (`SimActions`, `simulation/viewer.py`). pybullet needs Python <= 3.12 to install from a wheel.
 - After adding, moving or renaming files or functions, run `python dev/tools/knowledge_graph.py` and commit
   `docs/knowledge_graph.md` with the change.

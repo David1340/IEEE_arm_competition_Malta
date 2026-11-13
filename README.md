@@ -22,6 +22,7 @@ a generated graph of every module (purpose, definitions, imports, users, config)
 | | `python 02_calibrate.py status` | what is calibrated |
 | 3. teleop | `python 03_teleop.py` (`--gui` for live telemetry, `net send/receive` over the network) | |
 | 4. play | `python run_game.py pick_and_place --round colour` | |
+| test without hardware | `python 04_simulate.py run example` | the round in PyBullet (see Simulation below) |
 
 **On another computer:** `git pull`, then `python 01_setup_usb.py --install-saved` (the udev rule from the saved
 IDs) and `python 02_calibrate.py sync push` (the repo's motor calibration into LeRobot's folder). After
@@ -30,10 +31,50 @@ re-calibrating motors anywhere: `python 02_calibrate.py sync pull` and commit `c
 **Coming from the old layout:** `python 02_calibrate.py import-old path/to/calibration.json` moves the old camera
 calibration into `config/calibration/camera.yaml`. The fine joint offsets and `arms.json` are already converted.
 
+## Simulation: test without the arms or the camera
+
+`04_simulate.py` plays a pick-and-place round in a PyBullet window with the same code as the real game: the same
+rules, coordinator, behaviour trees, planner (IK, RRT-Connect, the other arm, the bins and the table as obstacles),
+gripper openings and arm bases. You place the objects and bins yourself instead of the camera finding them. Every
+animation step is checked for contact: a `COLLISION` line names the arm, the link and what it hit, and the round
+ends with a summary (placed / failed / in which bin / collisions).
+
+Simulated, so not tested here: YOLO and the camera (positions are exact, no orientation), grasp physics (a grasp
+always holds), motor tracking (the arm follows the path exactly).
+
+**Get it on your computer** (Python 3.10-3.12; pybullet has no ready wheel for 3.13):
+
+```bash
+git clone https://github.com/David1340/IEEE_arm_competition_Malta.git
+cd IEEE_arm_competition_Malta
+git checkout clean
+python3.12 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements-sim.txt
+```
+
+Already cloned: `git fetch origin`, `git checkout clean`, `git pull`.
+
+**Run it:**
+
+| command | what it does |
+|---|---|
+| `python 04_simulate.py edit example` | top-down editor: click to place, drag to move, `1-4` shape, `Tab` bin, `r g b y` colour, `s l` size, `, .` turn, `x` delete, `Enter` save and run |
+| `python 04_simulate.py edit my_test --random 8` | a new scene with 8 random objects |
+| `python 04_simulate.py run example` | play the round in the PyBullet window (mouse: Ctrl + left drag turns the view, wheel zooms) |
+| `python 04_simulate.py run example --round shape --speed 2` | any game option (`run -h`), faster playback |
+| `python 04_simulate.py run example --arm follower_pink` | one arm only |
+| `python 04_simulate.py run example --headless` | no window: plan, move and check (quick tests, CI) |
+
+Scenes are YAML files in `simulation/scenes/` (TABLE frame, metres), so a test layout can be committed and shared.
+Joint limits: the planner uses each arm's motor calibration from `config/calibration/<arm>/motors.yaml`; until
+that is in the repo (`python 02_calibrate.py sync pull` on the lab PC, then commit), the simulator warns and uses the
+URDF's limits, which can be wider than the real arm's.
+
 ## Layout
 
 ```
-01_setup_usb.py  02_calibrate.py  03_teleop.py  run_game.py      the entry points, in the order they are used
+01_setup_usb.py  02_calibrate.py  03_teleop.py  run_game.py  04_simulate.py   the entry points
 
 config/          every setting and calibration value, YAML (see config/README.md)
   arms.yaml        the 4 arms: ports, USB IDs, pairs, bases, home pose, handoff points
@@ -50,6 +91,7 @@ perception/      ZED + YOLO: object and bin positions (live.py), colours (colour
 planning/        IK (ik.py, M-FRPSO), paths (rrt_connect.py), the simulation world (sim.py), pick plans (pick_planner.py)
 state_machine/   behaviour trees (behaviour.py), the two-arm coordinator (coordinator.py), each arm's worker
 games/           one script per game: pick_and_place.py (Game 1), two_arm_coordination.py (Game 2, stub); rules.py
+simulation/      PyBullet simulation of a round: scenes/ (YAML layouts), editor.py, viewer.py, run.py (04_simulate.py)
 models/          objects/ (STLs), robot/ (SO-101 URDF), yolo/ (trained weights, not in git)
 dev/             experiments, older GUIs and dataset tools (see dev/README.md)
 docs/            competition rules
