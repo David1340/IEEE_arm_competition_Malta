@@ -426,7 +426,7 @@ class Coordinator:
             if task.kind == TO_HANDOFF:
                 if result == "done":
                     moved = dict(task.shape, xyz=np.asarray(handoff_xyz, float), state="todo", handoff=task.slot,
-                                 origin=task.shape.get("origin", task.shape))
+                                 origin=task.shape.get("origin", task.shape), yaw=None)   # turned while carried
                     follow = Task(next(self.ids), FROM_HANDOFF, task.then_arm, moved, task.box, slot=task.slot,
                                   depends_on=task.id,
                                   regions=self.regions.needed(task.then_arm, [handoff_xyz, task.box["xyz"]]))

@@ -95,19 +95,23 @@ def same_size(seen, shape):
 
 def detect(vision, colors, table_from_default):
     """One live frame -> (canvas, objects, bins). Each is a dict: name, colour, size ("small" / "large", or "" when the
-    vision did not measure it), xyz (TABLE frame; an object's top centre, at its size's height), pixel. The centres
+    vision did not measure it), xyz (TABLE frame; an object's top centre, at its size's height), yaw (its angle seen
+    from above, TABLE frame, degrees 0-180, or None), pixel. The centres
     are the median over the last frames (perception/live.py --smooth-frames)."""
     frame, cloud = vision.grab()
     canvas, detections = vision.detect(frame, cloud)
     objects, bins = [], []
     sizes = getattr(vision, "last_sizes", None) or [""] * len(detections)
-    for (name, conf, centre, _), polygon, size in zip(detections, vision.last_polygons, sizes):
+    yaws = getattr(vision, "last_yaws", None) or {}
+    turn = np.degrees(np.arctan2(table_from_default[1, 0], table_from_default[0, 0]))   # vision frame -> TABLE
+    for index, ((name, conf, centre, _), polygon, size) in enumerate(zip(detections, vision.last_polygons, sizes)):
         if centre is None:
             continue
         colour, _ = colour_of(frame, polygon, colors)
         xyz = (table_from_default @ np.append(np.asarray(centre, float), 1.0))[:3]
         item = {"name": name.casefold(), "conf": conf, "colour": colour, "xyz": xyz,
                 "size": size if size in ("small", "large") else "",   # rect mode puts its rectangle here
+                "yaw": None if yaws.get(index) is None else float((yaws[index] + turn) % 180.0),   # deg, TABLE
                 "pixel": np.asarray(polygon).reshape(-1, 2).mean(axis=0)}
         if item["name"] == BIN_CLASS:
             bins.append(item)
@@ -380,7 +384,7 @@ def main(argv=None):
                 best = min(same, key=lambda o: np.linalg.norm(o["xyz"][:2] - old))
                 if np.linalg.norm(best["xyz"][:2] - old) > args.redetect_radius:
                     return None
-                return best["xyz"], best["pixel"]
+                return best["xyz"], best["pixel"], best.get("yaw")
 
             def find_bin(self, box, since):
                 """The bin of that colour nearest to where it was (within 15 cm): xyz, or None."""
@@ -442,7 +446,7 @@ def main(argv=None):
                 shapes.append({"kind": "shape", "colour": wanted, "label": label,
                                "name": o["name"], "object_colour": o["colour"], "size": o["size"],
                                "xyz": o["xyz"], "pixel": o["pixel"], "state": "todo", "open_cmd": opening,
-                               "source": id(o)})
+                               "yaw": o.get("yaw"), "source": id(o)})
             return shapes, boxes, notes
 
         def plan_labels(objects, bins):

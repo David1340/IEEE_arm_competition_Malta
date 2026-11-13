@@ -170,7 +170,7 @@ graph LR
 - config: config/perception.yaml, config/calibration/camera.yaml, config/calibration/camera_transform.npy (also saves files)
 
 **`perception/live.py`**: ZED + YOLO + top-face silhouette detection of table objects, shared by the live viewer and the pipeline.
-- defines: add_vision_args(), inside_bins(), rect_center(), class CentreSmoother, resample_outline(), parallax_center(), rendered_area(), parallax_with_size(), bin_center_from_pixels(), class Vision
+- defines: add_vision_args(), inside_bins(), rect_center(), class CentreSmoother, resample_outline(), parallax_center(), top_face_yaw(), rendered_area(), parallax_with_size(), bin_center_from_pixels(), class Vision
 - imports: hardware.gripper, perception.detection, perception.silhouette, perception.silhouette_live
 - used by: calibration.calibrate, games.pick_and_place, perception.silhouette_live (+3 in dev/)
 - config: config/perception.yaml, config/calibration/camera_transform.npy

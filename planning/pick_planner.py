@@ -9,6 +9,7 @@ obstacles).
 PyBullet is used by one thread at a time: hold PLAN_LOCK around plan_task when arms plan in parallel.
 """
 import math
+import re
 import threading
 
 import numpy as np
@@ -145,6 +146,7 @@ def neighbour_radius(mark, args):
 # For a top-down grasp the wrist roll turns the jaws about the vertical: at roll r (deg) they close along a line
 # about r deg from the reach (measured in the planning world: -90 = across the reach, the home pose's roll; 0 =
 # along it, the fixed finger on the base's side). The planner tries the rolls whose fingers come down in free space.
+DOWN_REACH = 0.34         # beyond this from the base a top-down grasp may simply be out of reach (it ends ~35 cm)
 DOWN_ROLLS_DEG = (0, -90, 90, -45, 45, -135, 135)   # preference when nothing is near: 0 first (an arm stopping short
                                                     # of the object still closes on it), then the old -90
 FIXED_FACE = 0.030        # the fixed finger's inner face from the grasp point, along the jaws' closing line [m]
@@ -179,16 +181,30 @@ def finger_clearance(points, neighbours, boxes, box_half):
     return best
 
 
-def down_rolls(world, start_q, xy, opening_cmd, neighbours, boxes, args):
+def _wrap(deg):
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def down_rolls(world, start_q, xy, opening_cmd, neighbours, boxes, args, faces=None, yaw=None, room_to_turn=True):
     """The wrist rolls [rad] to try for a top-down grasp at xy, best first: those whose fingers have
     --finger-clearance of room in --down-roll's preference order, then the rest by room. --down-roll across: the
-    start pose's roll only (the old behaviour)."""
+    start pose's roll only (the old behaviour).
+    faces / yaw: an object with parallel faces every `faces` deg (a cube: 90) and its angle seen from the camera
+    (deg, arm frame): the jaws close square to a pair of faces (a corner grip makes it twist in the jaws); a roll
+    off the faces is only tried when it has room to turn into the jaws (room_to_turn). Without a yaw, any roll."""
     if getattr(args, "down_roll", "auto") == "across":
         return [float(start_q[4])]
     low, high = world.roll_limits()
     need = getattr(args, "finger_clearance", 0.006)
+    candidates = list(DOWN_ROLLS_DEG)
+    if faces and yaw is not None:
+        reach = math.degrees(math.atan2(xy[1], xy[0]))
+        square = sorted({round(_wrap(yaw + k * faces - reach), 1) for k in range(int(round(360 / faces)))},
+                        key=lambda r: (min(abs(r), abs(_wrap(r - 180))) > 45, abs(r)))   # nearest along the reach first
+        candidates = square + ([r for r in DOWN_ROLLS_DEG if all(abs(_wrap(r - a)) > 10 for a in square)]
+                               if room_to_turn else [])
     scored = []
-    for rank, roll in enumerate(DOWN_ROLLS_DEG):
+    for rank, roll in enumerate(candidates):
         if not low <= math.radians(roll) <= high:
             continue
         room = finger_clearance(finger_points(xy, roll, opening_cmd), neighbours, boxes, args.box_size / 2)
@@ -275,7 +291,8 @@ def grasp_height(top, args):
 LEVEL_JAW_BELOW = 0.033
 
 
-GRASP_DEFAULTS = {"postures": "auto", "min_finger_cover": 0.012, "squeeze": 2.0}
+GRASP_DEFAULTS = {"postures": "auto", "min_finger_cover": 0.012, "squeeze": 2.0, "faces": None,
+                  "level_over_top": True}
 
 
 def grasp_settings(name):
@@ -290,7 +307,7 @@ def grasp_settings(name):
     return settings
 
 
-def grasp_heights(top, posture, args, settings=None):
+def grasp_heights(top, posture, args, settings=None, over_top=False):
     """The heights to try for the grasp point, lowest first (5 mm steps); the planner's table clearance check
     decides which are possible.
       level (horizontal): the jaws are at that height, so from half the object's height (--grasp-at) up to
@@ -311,7 +328,7 @@ def grasp_heights(top, posture, args, settings=None):
         # the IK would then stop at the nearest reachable pose up to PRECISE (12 mm) away, partly sideways, so the
         # jaws ended off-centre on small objects. Starting at the real lowest height keeps the error near zero.
         low = max(low, getattr(args, "clearance", 0.01) + LEVEL_JAW_BELOW + 0.002)
-        if getattr(args, "pick_posture", "auto") == "level":
+        if over_top or getattr(args, "pick_posture", "auto") == "level":
             # The level fingers are tall plates reaching LEVEL_JAW_BELOW under the grasp point, so a short object is
             # still between them with the grasp point above its top: allow that while they cover
             # --level-min-contact of it (the table clearance check decides the lowest possible height).
@@ -446,13 +463,23 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         postures = postures_for(o, args)
         if isinstance(settings.get("postures"), list) and getattr(args, "pick_posture", "auto") != "level":
             postures = [p for p in settings["postures"] if p in ("horizontal", "down")] or postures
-        variants = []
+        yaw = task.shape.get("yaw")
+        yaw_arm = None if yaw is None else float(yaw) - arm_config.base(arm)["yaw_deg"]
+        half = held_radius                                   # the object's widest half: what it needs to turn
+        room = all(np.linalg.norm(np.asarray(c) - o[:2]) >= half + r for c, r in neighbours)
+        variants = []                                        # (posture, wrist roll, level grasp over its top)
         for posture in postures:
             if posture == "down":
-                variants += [(posture, roll) for roll in down_rolls(world, start_q, o[:2], opening, neighbours,
-                                                                    boxes_xy, args)]
-            else:
-                variants.append((posture, float(start_q[4])))
+                variants += [(posture, roll, False) for roll in down_rolls(
+                    world, start_q, o[:2], opening, neighbours, boxes_xy, args, faces=settings.get("faces"),
+                    yaw=yaw_arm, room_to_turn=room)]
+            elif len(grasp_heights(top, posture, args, settings)):
+                variants.append((posture, float(start_q[4]), False))
+        if (settings.get("level_over_top", True) and getattr(args, "pick_posture", "auto") != "level"
+                and not any(v[0] == "horizontal" for v in variants)):
+            # too short for a level grasp below its top: level with the grasp point over it (the fingers still
+            # cover --level-min-contact of it) as the last resort; it reaches farther than top-down (~42 vs ~35 cm)
+            variants.append(("horizontal", float(start_q[4]), True))
         turned = {}
 
         def turn(roll):
@@ -478,6 +505,11 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
             def on_reached(label, q):
                 if label == "grasp" and getattr(args, "hold_check", True):
                     world.hold(q, [o[0], o[1], 0.0], held_radius, held_height, held_obstacles)
+                elif label == "place" and h is not None:
+                    # put down on the handoff point: no longer held, and in the way of the gripper leaving it
+                    # (the move away may start touching it, but must not touch it again once clear)
+                    world.drop_held()
+                    add_column(world, h[0], h[1], held_radius, held_height)
 
             plans = plan_sequence(world, start, [
                 ("above shape", [o[0], o[1], top + args.approach]),
@@ -493,8 +525,9 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                 plans[0] = (label, [list(start_q), *path])
             return plans
 
-        def done(posture, roll, plans, z):
-            how = f"{posture} grasp" + (f", wrist roll {math.degrees(roll):+.0f} deg" if posture == "down" else "")
+        def done(posture, roll, plans, z, over_top=False):
+            how = f"{posture} grasp" + (f", wrist roll {math.degrees(roll):+.0f} deg" if posture == "down" else "") \
+                + (", over its top" if over_top else "")
             print(f"  {arm}: {how} ({100 * np.hypot(*o[:2]):.0f} cm from its base)")
             if args.gui:
                 for _, path in plans:
@@ -505,15 +538,21 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
         retry = (args.seed + 1, SEED_TRIES - 1)
         passes = [(args.seed, 1), retry] if SEED_TRIES > 1 else [(args.seed, 1)]
         for seed, tries in passes:
-            for posture, roll in variants:
-                heights = grasp_heights(top, posture, args, settings)
+            down_out_of_reach = False
+            for posture, roll, over_top in variants:
+                if posture == "down" and down_out_of_reach:
+                    continue                          # another wrist roll does not change how far the arm reaches
+                heights = grasp_heights(top, posture, args, settings, over_top)
                 if not len(heights) and seed == args.seed:
                     print(f"  {arm}: a {100 * top:.1f} cm object is too short for a {posture} grasp")
+                reach_misses = []
                 for i, z in enumerate(heights):
                     try:
                         plans = attempt(posture, roll, z, seed, tries)
                     except RuntimeError as exc:
                         error = exc
+                        off = re.search(r"best (\d+) mm off", str(exc))
+                        reach_misses.append(off is not None and int(off.group(1)) >= 15)
                         if "grasp" not in str(exc) and "place" not in str(exc):
                             break
                         continue
@@ -523,10 +562,14 @@ def plan_task(task, start_q, obstacles, args, handoff_xyz=None):
                         # the grasp is as low as possible (costs ~1-3 s, only for these picks).
                         for lower in heights[:i]:
                             try:
-                                return done(posture, roll, attempt(posture, roll, lower, *retry), lower)
+                                return done(posture, roll, attempt(posture, roll, lower, *retry), lower, over_top)
                             except RuntimeError:
                                 pass
-                    return done(posture, roll, plans, z)
+                    return done(posture, roll, plans, z, over_top)
+                if posture == "down" and reach_misses and all(reach_misses) and np.hypot(*o[:2]) > DOWN_REACH:
+                    down_out_of_reach = True          # far out and every height 15+ mm short: the arm does not get
+                                                      # there (closer in, a miss that big is a collision, e.g. a bin
+                                                      # wall, which another wrist roll may avoid)
         raise RuntimeError(str(error) if error is not None else
                            f"no grasp height possible for a {100 * top:.1f} cm object ({', '.join(p for p, _ in variants)})")
     finally:

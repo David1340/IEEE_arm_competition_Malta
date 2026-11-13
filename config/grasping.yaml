@@ -6,6 +6,11 @@
 # min_finger_cover  top-down grasps: at least this much of the object's height between the fingers [m]; a higher
 #                   grasp point is not used (only the top of the object would be held)
 # squeeze           how far the gripper keeps closing past where it stopped on the object (0-100 units)
+# faces             an object with parallel faces every this many degrees (a cube: 90): with its angle from the
+#                   camera, a top-down grasp closes the jaws square to a pair of faces; across a corner only when the
+#                   object has room to turn into the jaws. null: any angle (round or no parallel faces)
+# level_over_top    an object too short for a level grasp below its top may still be grasped level with the grasp
+#                   point over it, as the last resort (a level grasp reaches ~42 cm, top-down ~35 cm)
 #
 # A shape not listed uses `defaults`. --pick-posture level on the command line still means level only.
 
@@ -13,6 +18,8 @@ defaults:
   postures: auto
   min_finger_cover: 0.012
   squeeze: 2.0
+  faces: null
+  level_over_top: true
 
 objects:
   cylinder:
@@ -21,3 +28,7 @@ objects:
     postures: [horizontal, down]
     min_finger_cover: 0.03
     squeeze: 4.0
+  cube:
+    # Gripped across a corner, parallel jaws touch two edges and the cube twists in the jaws (into its neighbours, in
+    # a cluster): square to its faces.
+    faces: 90

@@ -72,6 +72,16 @@ the gripper has stopped moving (`--grip-stall-readings`) while still above `--gr
 
 `--down-roll across --neighbour-radius 0` gives exactly the old plans.
 
+**Cubes are gripped square to their faces.** The camera measures each object's angle seen from above
+(`perception/live.py` `top_face_yaw`: the rectangle around its mask outline cast onto the plane of its top; shown as
+`..deg` in the live view). For a shape with parallel faces (`faces: 90` for cubes in `config/grasping.yaml`) a top-down
+grasp turns the wrist square to a pair of faces; across a corner only if the cube has room to turn into the jaws. Without
+an angle (e.g. `--centre fit`) any wrist roll, as before.
+
+**Short objects far out are grasped level.** Top-down reaches ~35 cm from a base, so objects in the middle of the table
+(~37-42 cm from both arms) need a level grasp; an object under 5 cm tall is grasped level with the grasp point over its
+top, as the last resort (`level_over_top` in `config/grasping.yaml`).
+
 ## Planning speed
 
 Each arm plans in a process of its own (`--planner process`, the default): both arms plan at once, and each plans its

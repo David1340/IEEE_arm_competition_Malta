@@ -80,11 +80,13 @@ class TaskActions:
         self.coordinator.set_state(self.arm, text)
 
     @staticmethod
-    def _move(shape, xyz, pixel=None):
+    def _move(shape, xyz, pixel=None, yaw=None):
         for s in {id(shape): shape, id(shape.get("origin", shape)): shape.get("origin", shape)}.values():
             s["xyz"] = np.asarray(xyz, float)
             if pixel is not None:
                 s["pixel"] = pixel
+            if yaw is not None:
+                s["yaw"] = yaw
 
     # ---- seeing
     def locate_object(self, bb):
@@ -97,7 +99,7 @@ class TaskActions:
                 return True
             bb["why"] = "not seen again"
             return False
-        xyz, pixel = seen
+        xyz, pixel, yaw = (*seen, None)[:3]
         moved = np.linalg.norm(np.asarray(xyz[:2]) - np.asarray(task.shape["xyz"][:2]))
         base = arm_config.base(self.arm)
         if np.hypot(xyz[0] - base["x"], xyz[1] - base["y"]) > self.args.max_reach:
@@ -105,7 +107,7 @@ class TaskActions:
             return False
         if moved > 0.01:
             print(f"  {self.arm}: {task.shape.get('label', 'object')} is {100 * moved:.0f} cm from where it was")
-        self._move(task.shape, xyz, pixel)
+        self._move(task.shape, xyz, pixel, yaw)
         self.coordinator.relocate(task)
         return True
 
@@ -229,7 +231,7 @@ class TaskActions:
                 print(log, end="")
                 print(f"  {self.arm}: planned ahead, while the last object was carried")
             elif self.planner is not None:
-                bb["plans"], z, log = self.planner.submit(task, start_q, obstacles, args, bb.get("handoff_xyz")).result()
+                bb["plans"], z, log = self.planner.plan(task, start_q, obstacles, args, bb.get("handoff_xyz"))
                 print(log, end="")
             else:
                 with PLAN_LOCK:
@@ -365,11 +367,13 @@ class TaskActions:
 
     def release(self, bb):
         if self.robot is not None:
-            self.send_joints(self.robot, dict(bb["plans"])[bb["release_at"]][-1], gripper=GRIPPER_OPEN)
+            # open only as wide as it was picked with: a wide-open jaw swings into the object just put down
+            self.send_joints(self.robot, dict(bb["plans"])[bb["release_at"]][-1],
+                             gripper=bb.get("opening", GRIPPER_OPEN))
         return True
 
     def leave_dropoff(self, bb):
-        self._follow(bb, "leave handoff", GRIPPER_OPEN)
+        self._follow(bb, "leave handoff", bb.get("opening", GRIPPER_OPEN))
         return True
 
     def home(self, bb):

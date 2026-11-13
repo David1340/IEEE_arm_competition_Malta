@@ -87,6 +87,7 @@ def marks(scene: dict):
     from hardware.gripper import object_height
 
     objects = [{"name": o["shape"], "colour": o["colour"], "size": o["size"], "conf": 1.0, "source": i,
+                "yaw": float(o.get("yaw_deg", 0.0)) % 180.0,
                 "xyz": np.array([o["x"], o["y"], object_height(stl(o["shape"], o["size"]))]), "pixel": np.zeros(2)}
                for i, o in enumerate(scene["objects"])]
     bins = [{"name": "bin", "colour": b["colour"], "size": "", "conf": 1.0, "source": i,

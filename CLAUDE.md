@@ -28,6 +28,7 @@ files or functions (`--check` tells whether it is current).
 | IK | `planning/ik.py` (M-FRPSO); paths `planning/rrt_connect.py` |
 | PyBullet planning world | `planning/sim.py` (`World`) |
 | planning a pick, grasp heights, postures | `planning/pick_planner.py` (`plan_task`, `plan_sequence`) |
+| object angle from the camera (yaw) -> face-on wrist rolls for cubes | `perception/live.py` `top_face_yaw`, marks' `yaw` (TABLE deg), `planning/pick_planner.py` `down_rolls(faces, yaw)` |
 | per object type grasp settings (postures, top-down finger cover, squeeze) | `config/grasping.yaml` via `planning/pick_planner.py` `grasp_settings()` |
 | wrist roll for top-down grasps, neighbours as obstacles | `planning/pick_planner.py` (`down_rolls`, `finger_points`, `neighbour_radius`, `add_column`) |
 | held object in the plan (carry, drop): `World.hold`, checker `attach`; drop height and posture | `planning/sim.py`, `planning/ik.py`, `planning/pick_planner.py` `plan_task` |

@@ -81,7 +81,7 @@ class SimActions(TaskActions):
 
     def release(self, bb):
         viewer = self.robot.viewer
-        viewer.run(self.arm, "gripper", GRIPPER_OPEN)
+        viewer.run(self.arm, "gripper", bb.get("opening", GRIPPER_OPEN))     # as TaskActions.release
         viewer.run(self.arm, "release")
         return True
 
@@ -114,7 +114,7 @@ def build_round(scene, args, bases, regions):
                    else jaw.open_command(jaw.object_width(scenes.stl(o["name"], o["size"])), args.grip_margin))
         shapes.append({"kind": "shape", "colour": wanted, "label": label, "name": o["name"],
                        "object_colour": o["colour"], "size": o["size"], "xyz": o["xyz"], "pixel": o["pixel"],
-                       "state": "todo", "open_cmd": opening, "source": o["source"]})
+                       "state": "todo", "open_cmd": opening, "yaw": o.get("yaw"), "source": o["source"]})
     fixed = [list(p) for p in arm_config.handoff_points()] if len(bases) > 1 else []
     area = handoff_area(bases, args.max_reach, args.min_reach, regions, step=args.drop_step) if len(bases) > 1 else []
     taken = [o["xyz"][:2] for o in objects] + [b["xyz"][:2] for b in bins]

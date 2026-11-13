@@ -69,7 +69,11 @@ class ArmPlanner:
     def __init__(self, arm, args, mode="process", start_q=None):
         if mode not in MODES:
             raise ValueError(f"planner mode {mode!r}: one of {MODES}")
-        self.arm, self.mode = arm, mode
+        self.arm, self.mode, self.args, self.start_q = arm, mode, args, start_q
+        self._start()
+
+    def _start(self):
+        arm, mode, args, start_q = self.arm, self.mode, self.args, self.start_q
         if mode == "process":
             import planning.ik
 
@@ -79,6 +83,25 @@ class ArmPlanner:
             self.pool = ThreadPoolExecutor(1, thread_name_prefix=f"plan-{arm}")
         if start_q is not None and not getattr(args, "gui", False):
             self.pool.submit(_warm, arm, list(start_q), args)
+
+    def restart(self):
+        """A new planner process (after the old one stopped: e.g. killed, or out of memory)."""
+        try:
+            self.pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:                                   # noqa: BLE001 - it is gone anyway
+            pass
+        self._start()
+
+    def plan(self, task, start_q, obstacles, args, handoff_xyz=None):
+        """submit(...).result(), restarting the planner process once if it has stopped."""
+        from concurrent.futures.process import BrokenProcessPool
+
+        try:
+            return self.submit(task, start_q, obstacles, args, handoff_xyz).result()
+        except BrokenProcessPool:
+            print(f"  {self.arm}: the planner process stopped; starting a new one")
+            self.restart()
+            return self.submit(task, start_q, obstacles, args, handoff_xyz).result()
 
     def submit(self, task, start_q, obstacles, args, handoff_xyz=None) -> Future:
         """Plan the task (planning/pick_planner.py plan_task) without waiting: a Future of (plans, grasp z, log)."""

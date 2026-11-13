@@ -288,6 +288,15 @@ def parallax_center(polygon_full, cam, height, quantile=0.02):
     return along * r + across * q, top, bottom, points
 
 
+def top_face_yaw(top_xy):
+    """The angle [deg, 0-180] of the smallest rectangle around an object's top face seen from above, from its mask
+    outline cast onto the plane of its top (parallax_center's `top`): the outline's parts that are walls land inside
+    the object at that plane, so its hull is the top face. For a cube, its faces are at this angle and + 90."""
+    hull = cv2.convexHull((1000.0 * np.asarray(top_xy, float)).astype(np.float32))
+    _, _, angle = cv2.minAreaRect(hull)
+    return float(angle) % 180.0
+
+
 _FOOTPRINT_CACHE = {}
 
 
@@ -424,6 +433,7 @@ class Vision:
         objects = []
         self.last_polygons = []   # full-frame pixel outline of each entry of objects, in the same order
         self.last_sizes = []      # "small" / "large" (parallax centre) or "" (unknown), in the same order
+        self.last_yaws = {}       # index in last_polygons -> the object's angle seen from above [deg, robot frame]
 
         self.smoother.begin()
         if result.masks is not None:
@@ -484,8 +494,10 @@ class Vision:
                         cv2.line(canvas, tuple(np.rint(pa).astype(int)), tuple(np.rint(pb).astype(int)), color, 1)
                     cx, cy = (int(round(v)) for v in self.cam.project(center)[0])
                     cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 22, 2)
+                    yaw = top_face_yaw(top_xy)
+                    self.last_yaws[len(self.last_polygons)] = yaw
                     text = (f"{size} {class_name} {confidence:.2f} PARALLAX X{center[0]:+.3f} Y{center[1]:+.3f} "
-                            f"top {1000 * height:.0f}mm")
+                            f"top {1000 * height:.0f}mm {yaw:.0f}deg")
                     objects.append((class_name, confidence, center, count))
                     self.last_polygons.append(points)
                     self.last_sizes.append(size)
@@ -512,6 +524,8 @@ class Vision:
                         text = (f"{class_name} {confidence:.2f} RECT[{how}] X{center[0]:+.3f} Y{center[1]:+.3f} "
                                 f"{1000 * size[0]:.0f}x{1000 * size[1]:.0f}mm ({count} pts)")
                         objects.append((class_name, confidence, center, count))
+                        if angle is not None:
+                            self.last_yaws[len(self.last_polygons)] = float(angle) % 180.0
                         self.last_polygons.append(points)
                         self.last_sizes.append(size)
                         px, py = points.min(axis=0)
