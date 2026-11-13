@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Bowl and cup (Game 2, pouring): collect pictures, label them, train and try a YOLO segmentation model.
 
-The same tools as the blocks (yolo_dataset/*.py), run on this folder: yolo_pouring/images, labels, classes.txt
-(bowl, cup), roi.json; the trained models go to runs/pouring/ (not runs/segment/, which the blocks pipeline
-takes its newest model from, so the two models never mix).
+The same tools as the blocks (dev/dataset_tools/yolo_dataset/*.py), run on datasets/yolo_pouring/ (images, labels,
+classes.txt (bowl, cup), roi.json; not in git: copy it between computers); the trained models go to runs/pouring/
+(not runs/segment/, which the blocks pipeline takes its newest model from, so the two models never mix).
 
-    python yolo_pouring/pouring_dataset.py capture            # ZED pictures: s = save one, a = auto on/off, q = quit
-    python yolo_pouring/pouring_dataset.py capture --interval 0.5
-    python yolo_pouring/pouring_dataset.py roi select         # drag the area the bowl and cup are in (once)
-    python yolo_pouring/pouring_dataset.py label              # SAM labelling of the new pictures (0 = bowl, 1 = cup)
-    python yolo_pouring/pouring_dataset.py view               # check the labels
-    python yolo_pouring/pouring_dataset.py train              # crop to the ROI, split, train
-    python yolo_pouring/pouring_dataset.py live               # the newest model on the live camera
-    python yolo_pouring/pouring_dataset.py status             # how many pictures / labels / models there are
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py status        # pictures / labels / models so far
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py capture       # ZED pictures: s = save one, a = auto, q = quit
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py capture --interval 0.5
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py roi select    # drag the area the bowl and cup are in (once)
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py label         # SAM labelling (0 = bowl, 1 = cup)
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py view          # check the labels
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py train         # crop to the ROI, split, train
+    python dev/dataset_tools/yolo_pouring/pouring_dataset.py live          # the newest model on the live camera
+
+The dataset folder is made the first time, with this folder's classes.txt and roi.json in it.
 
 Anything after the step is passed on to that tool (e.g. `label --redo`, `train --epochs 150`).
 """
@@ -53,11 +55,26 @@ def status():
     print(f"models: {len(models)}" + (f", newest {models[-1].relative_to(ROOT)}" if models else ""))
 
 
+def prepare():
+    """datasets/yolo_pouring/ with its images/ and labels/, and this folder's classes.txt and roi.json in it (the
+    tools read them from the dataset folder) unless it has its own."""
+    import shutil
+
+    for sub in ("images", "labels"):
+        (HERE / sub).mkdir(parents=True, exist_ok=True)
+    for name in ("classes.txt", "roi.json"):
+        own = Path(__file__).resolve().parent / name
+        if own.is_file() and not (HERE / name).is_file():
+            shutil.copy2(own, HERE / name)
+            print(f"(made {(HERE / name).relative_to(ROOT)} from {own.relative_to(ROOT)})")
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help") or sys.argv[1] not in [*STEPS, "status"]:
         print(__doc__)
         raise SystemExit(0 if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help") else 1)
     step, rest = sys.argv[1], sys.argv[2:]
+    prepare()
     if step == "status":
         status()
         return
