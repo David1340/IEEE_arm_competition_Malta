@@ -243,7 +243,7 @@ graph LR
 ### state_machine/
 
 **`state_machine/arm_worker.py`**: The state machine of one arm: task after task from the coordinator, each attempt a behaviour tree (locate the object and its bin, plan, grasp or back off, carry, release, home, verify the drop).
-- defines: short(), follow(), go_home(), task_tree(), class TaskActions, arm_worker()
+- defines: short(), follow(), go_home(), return_motion(), task_tree(), class TaskActions, arm_worker()
 - imports: core.arms, core.paths, hardware.arm, hardware.gripper, planning.kinematics, planning.pick_planner, state_machine.behaviour, state_machine.coordinator
 - used by: games.pick_and_place, simulation.run (+1 in dev/)
 - config: config/arms.yaml

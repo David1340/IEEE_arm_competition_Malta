@@ -30,16 +30,26 @@ def short(arm):
     return arm.replace("follower_", "")
 
 
-def follow(robot, path, gripper, send_joints=None, precise=True):
+def follow(robot, path, gripper, send_joints=None, precise=True, **motion):
     """Move along a joint path in one smooth motion (hardware/arm.py follow_path), the gripper going to
-    `gripper` on the way; precise=False: its end only roughly (faster). send_joints is not used any more."""
+    `gripper` on the way; precise=False: its end only roughly (faster). motion: speed / accel for this move instead
+    of --speed / --accel. send_joints is not used any more."""
     from hardware.arm import follow_path
 
-    return follow_path(robot, path, gripper, precise=precise)
+    return follow_path(robot, path, gripper, precise=precise, **motion)
 
 
-def go_home(robot, send_joints, read_joints_rad):
-    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints, precise=False)
+def go_home(robot, send_joints, read_joints_rad, **motion):
+    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints, precise=False, **motion)
+
+
+def return_motion(args):
+    """speed / accel for the moves back after a miss or a release (--return-speed / --return-accel); {} = as any
+    other move."""
+    speed = getattr(args, "return_speed", 0) or 0
+    if speed <= 0:
+        return {}
+    return {"speed": float(speed), "accel": float(getattr(args, "return_accel", 0) or 3 * speed)}
 
 
 def task_tree(task, w):
@@ -348,7 +358,10 @@ class TaskActions:
             print(f"  {self.arm}: gripper trace not saved ({error})")
 
     def back_off(self, bb):
-        self._follow(bb, "lift", bb["opening"])
+        bb["missed"] = True                                  # the way back is quick (--return-speed)
+        if self.robot is not None:
+            follow(self.robot, dict(bb["plans"])["lift"], bb["opening"], self.send_joints, precise=False,
+                   **return_motion(self.args))
         return True
 
     def carry_to_bin(self, bb):
@@ -371,6 +384,8 @@ class TaskActions:
             # open only as wide as it was picked with: a wide-open jaw swings into the object just put down
             self.send_joints(self.robot, dict(bb["plans"])[bb["release_at"]][-1],
                              gripper=bb.get("opening", GRIPPER_OPEN))
+            time.sleep(max(0.0, getattr(self.args, "release_pause", 0.2)))   # let it fall clear of the jaws
+        bb["released"] = True                                # the way back is quick (--return-speed)
         return True
 
     def leave_dropoff(self, bb):
@@ -379,7 +394,8 @@ class TaskActions:
 
     def home(self, bb):
         if self.robot is not None:
-            go_home(self.robot, self.send_joints, self.read_joints_rad)
+            quick = return_motion(self.args) if (bb.get("missed") or bb.get("released")) else {}
+            go_home(self.robot, self.send_joints, self.read_joints_rad, **quick)
             self.last_q[self.arm] = self.read_joints_rad(self.robot)
         self.home_at = time.monotonic()
         return True

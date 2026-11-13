@@ -342,6 +342,13 @@ def add_motion_args(ap):
     ap.add_argument("--speed", type=float, default=MOTION["speed"],
                     help="top speed of the fastest joint along a path [deg/s]")
     ap.add_argument("--accel", type=float, default=MOTION["accel"], help="speed-up / slow-down [deg/s^2]")
+    ap.add_argument("--return-speed", type=float, default=60.0,
+                    help="top joint speed of the moves back after a missed grip or a release (back off, home) "
+                         "[deg/s]; 0 = --speed like every other move")
+    ap.add_argument("--return-accel", type=float, default=200.0,
+                    help="speed-up / slow-down of those moves back [deg/s^2]")
+    ap.add_argument("--release-pause", type=float, default=0.2,
+                    help="wait this long after opening over a bin, before the quick move home [s]")
     ap.add_argument("--profile", choices=["trapezoid", "minjerk"], default=MOTION["profile"],
                     help="trapezoid: constant acceleration; minjerk: smoother start and stop, a little slower")
     ap.add_argument("--max-lag", type=float, default=MOTION["max_lag"],

@@ -62,6 +62,9 @@ before), so it does not hit an object hard enough to flick it out of the jaws.
 
 **How fast the arms move:** `--speed` (top joint speed, 20 deg/s by default) and `--accel` (40 deg/s²), e.g.
 `python run_game.py pick_and_place --speed 30 --accel 60`; `--profile minjerk` gives smoother starts and stops.
+The moves back after a missed grip or a release (back off, home) are quicker: `--return-speed` (60 deg/s) and
+`--return-accel` (200 deg/s²); `--return-speed 0` makes them like every other move. After opening over a bin the arm
+waits `--release-pause` (0.2 s) so the object falls clear before it moves away.
 
 ## Carrying and dropping into a bin
 

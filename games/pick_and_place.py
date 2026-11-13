@@ -293,6 +293,13 @@ def add_game_args(ap):
     ap.add_argument("--grip-open", type=float, default=None,
                     help=f"open the jaws to this fixed command (0-100) instead (the old: {GRIPPER_OPEN:.0f})")
     ap.add_argument("--width", type=int, default=1280, help="window width in pixels")
+
+
+# ---------------------------------------------------------------------------------------------- main
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_vision_args(ap)
+    add_game_args(ap)
     ap.add_argument("--auto", action="store_true",
                     help="start a round by itself whenever objects with their bin are in view and the arms are home "
                          "(instead of Enter); the arms go home after each round and wait for more")
@@ -305,13 +312,6 @@ def add_game_args(ap):
     ap.add_argument("--auto-retries", type=int, default=1,
                     help="--auto: an object that failed is tried again in at most this many later rounds while it "
                          "stays where it is (it is tried afresh once it is moved)")
-
-
-# ---------------------------------------------------------------------------------------------- main
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    add_vision_args(ap)
-    add_game_args(ap)
     from hardware.arm import add_motion_args, apply_motion_args
 
     add_motion_args(ap)

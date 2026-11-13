@@ -38,6 +38,9 @@ from simulation import scene as scenes  # noqa: E402
 from state_machine.arm_worker import TaskActions, short  # noqa: E402
 
 
+JOINT_SPEED = 90.0      # deg/s the viewer plays an ordinary move at (simulation/viewer.py JOINT_SPEED_DEG)
+
+
 class SimArm:
     """Stands in for a connected follower: its joint angles are wherever the viewer last put them."""
 
@@ -80,6 +83,7 @@ class SimActions(TaskActions):
         return True
 
     def release(self, bb):
+        bb["released"] = True
         viewer = self.robot.viewer
         viewer.run(self.arm, "gripper", bb.get("opening", GRIPPER_OPEN))     # as TaskActions.release
         viewer.run(self.arm, "release")
@@ -88,7 +92,11 @@ class SimActions(TaskActions):
     def home(self, bb):
         from planning.pick_planner import HOME_Q
 
-        self.robot.viewer.run(self.arm, "move", [list(HOME_Q)], self.robot.viewer.grip[self.arm])
+        # quick after a release (or a miss), as on the real arms: on screen at the real ratio of --return-speed
+        # (60 deg/s) to --speed (20 deg/s)
+        quick = bb.get("released") or bb.get("missed")
+        scale = JOINT_SPEED * 60.0 / 20.0 if quick else None
+        self.robot.viewer.run(self.arm, "move", [list(HOME_Q)], self.robot.viewer.grip[self.arm], scale)
         self.last_q[self.arm] = sim_read_joints(self.robot)
         self.home_at = time.monotonic()
         return True

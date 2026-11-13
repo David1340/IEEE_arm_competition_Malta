@@ -183,7 +183,8 @@ class Viewer:
             q, grip = payload
             self._apply(arm, q, grip)
         elif kind == "move":                  # a joint path, the gripper going to `grip` on the way
-            path, grip = payload
+            path, grip = payload[:2]
+            speed_deg = payload[2] if len(payload) > 2 and payload[2] else JOINT_SPEED_DEG
             path = [np.asarray(q, float) for q in path]
             start = np.asarray(self.q[arm], float)
             if np.linalg.norm(path[0] - start) > 1e-6:
@@ -198,7 +199,7 @@ class Viewer:
                     share = (done + t * span) / total
                     self._apply(arm, (1 - t) * a + t * b, g0 + (grip - g0) * min(1.0, 2 * share))
                     self._check(arm)
-                    yield math.radians(STEP_DEG) / math.radians(JOINT_SPEED_DEG)
+                    yield STEP_DEG / speed_deg
                 done += span
             if len(path) == 1:
                 self._apply(arm, path[0], grip)
