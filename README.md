@@ -42,16 +42,20 @@ ends with a summary (placed / failed / in which bin / collisions).
 Simulated, so not tested here: YOLO and the camera (positions are exact, no orientation), grasp physics (a grasp
 always holds), motor tracking (the arm follows the path exactly).
 
-**Get it on your computer** (Python 3.10-3.12; pybullet has no ready wheel for 3.13):
+**Get it on your computer** (conda; Python 3.12, as pybullet has no ready build for 3.13):
 
 ```bash
 git clone https://github.com/David1340/IEEE_arm_competition_Malta.git
 cd IEEE_arm_competition_Malta
 git checkout clean
-python3.12 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements-sim.txt
+conda env create -f environment-sim.yml
+conda activate so101-sim
 ```
+
+Without conda: a Python 3.10-3.12 venv and `pip install -r requirements-sim.txt`. On a computer with ROS 2, open a
+terminal where ROS's `setup.bash` is not sourced (or ignore pip's warnings about ROS packages such as launch-ros:
+they come from ROS's Python path and do not affect this project). The lab PC's `lerobot` conda environment can run
+the simulator too: `conda activate lerobot` and `pip install -r requirements-sim.txt`.
 
 Already cloned: `git fetch origin`, `git checkout clean`, `git pull`.
 

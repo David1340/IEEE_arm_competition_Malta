@@ -1,0 +1,16 @@
+# Conda environment for the simulator (python 04_simulate.py): no arms, no camera, no LeRobot, no ZED.
+#   conda env create -f environment-sim.yml
+#   conda activate so101-sim
+# Update after a pull that changed this file: conda env update -f environment-sim.yml --prune
+name: so101-sim
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pyyaml
+  - scipy
+  - pip
+  - pip:
+      - pybullet           # pip's ready-made wheel for Python 3.12 (no compiling)
+      - opencv-python      # the pip build: its windows (the scene editor) work everywhere

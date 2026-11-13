@@ -1,5 +1,5 @@
 # Only what the simulator needs (python 04_simulate.py): no arms, no camera, no LeRobot, no ZED, no YOLO.
-#   pip install -r requirements-sim.txt
+#   pip install -r requirements-sim.txt        (with conda, use environment-sim.yml instead)
 # pybullet has ready-made wheels for Python 3.8-3.12 on Linux, macOS and Windows; on Python 3.13 it must compile
 # (needs a C++ compiler, and may fail). Use Python 3.10-3.12.
 numpy

@@ -50,6 +50,7 @@ python 02_calibrate.py status | motors --arm all | sync status|pull|push | offse
 python 03_teleop.py [--gui | net send|receive]
 python run_game.py pick_and_place [--round colour|shape|dynamic] [--arm follower_pink] [--no-robot]
 python -m planning.sim --direct --no-pause          # planner smoke test, no hardware or camera
+conda env create -f environment-sim.yml && conda activate so101-sim   # the simulator's environment (team uses conda)
 python 04_simulate.py run example --headless        # a full simulated round: plans, moves, collision check
 python 04_simulate.py edit example                   # place objects and bins (OpenCV window)
 ```
