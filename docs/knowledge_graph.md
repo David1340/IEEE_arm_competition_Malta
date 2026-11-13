@@ -98,7 +98,7 @@ graph LR
 - config: config/arms.yaml, config/calibration/<arm>/motors.yaml, config/calibration/<arm>/joint_offsets.yaml
 
 **`hardware/gripper.py`** (runnable): The gripper: how far to open it for an object (its width from the STL, the jaw gap from the robot model), and closing it on an object with motor-current feedback.
-- defines: jaw_table(), tip_below_grasp(), fixed_face_point(), held_point(), opening_width(), open_command(), object_height(), object_footprint(), object_top_face(), object_width(), read_gripper_current_ma(), close_gripper_with_current_feedback(), main()
+- defines: jaw_table(), tip_below_grasp(), fixed_face_point(), held_point(), opening_width(), open_command(), squeeze_command(), object_height(), object_footprint(), object_top_face(), object_width(), read_gripper_current_ma(), close_gripper_with_current_feedback(), main()
 - imports: core.paths
 - used by: calibration.calibrate, games.pick_and_place, perception.live, planning.pick_planner, simulation.editor, simulation.run, simulation.scene, simulation.viewer, state_machine.arm_worker (+4 in dev/)
 

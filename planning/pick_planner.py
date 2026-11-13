@@ -316,9 +316,11 @@ def postures_for(xy_arm, args):
 
 
 def miss_position(shape, args):
-    """The gripper command (0-100) below which closing on this object without a current rise means a miss: where its
-    jaws touch it (its narrow side, for its detected size) minus --miss-margin. None: close fully (--miss-margin < 0 or
-    the shape is unknown)."""
+    """The gripper command (0-100) below which closing on this object without a current rise means a miss: where the
+    jaws squeeze it against the fixed finger (its narrow side, for its detected size) minus --miss-margin. None: close
+    fully (--miss-margin < 0 or the shape is unknown). (It used to be where the jaw first touches an object centred on
+    the grasp point; the jaw then still has to push it ~10-15 mm onto the fixed finger before the current rises, so
+    objects under ~40 mm were declared missed while being picked.)"""
     if getattr(args, "miss_margin", 10.0) < 0:
         return None
     from hardware import gripper as jaw
@@ -328,8 +330,8 @@ def miss_position(shape, args):
     stl = OBJECT_SIZES.get(name, {}).get(shape.get("size", "")) or OBJECT_STL_FILES.get(name)
     if stl is None:
         return None
-    contact = jaw.open_command(jaw.object_footprint(stl)[0], margin=0.0, min_open=0.0)
-    return max(0.0, contact - args.miss_margin)
+    squeeze = jaw.squeeze_command(jaw.object_footprint(stl)[0])
+    return max(0.0, squeeze - args.miss_margin)
 
 
 _WORLDS = {}       # (arm, clearance) -> the arm's planning world, reused for every plan (World.reset)

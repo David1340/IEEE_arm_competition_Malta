@@ -167,6 +167,20 @@ def open_command(width, margin=0.02, max_open=MAX_OPEN, min_open=MIN_OPEN):
     return float(commands[ok][0]) if ok.any() else float(max_open)
 
 
+def squeeze_command(width):
+    """The command (0-100) at which the jaws close on an object `width` wide [m]: the moving jaw's face is then
+    `width` from the fixed finger's face. Wherever the object sits between the jaws, the moving jaw pushes it against
+    the fixed finger (30 mm from the grasp point) and the motor current only rises here, not where the jaw first
+    touches an object centred on the grasp point (open_command(width, margin=0), up to ~25 units earlier for a 30 mm
+    object)."""
+    commands, widths, info = jaw_table()
+    fixed_gap = info["grasp_x"] - info["fixed_face_x"]          # grasp point to the fixed finger's face [m]
+    ok = np.isfinite(widths)
+    order = np.argsort(widths[ok])
+    # widths[i] / 2 = how far the moving jaw's face is from the grasp point at command i
+    return float(np.interp(2 * (width - fixed_gap), widths[ok][order], commands[ok][order]))
+
+
 def _stl_vertices(path):
     data = Path(path).read_bytes()
     if data[:5] == b"solid" and b"facet" in data[:400]:
