@@ -5,6 +5,10 @@ table, and one script per competition game. Rules: `docs/Robot-Championship-2026
 
 Run everything from the repository root.
 
+**For Claude / new readers:** `CLAUDE.md` is a short map of where everything is, and `docs/knowledge_graph.md` is
+a generated graph of every module (purpose, definitions, imports, users, config). Rebuild it after changing files:
+`python dev/tools/knowledge_graph.py` (`--check` tells whether it is current).
+
 ## Setup, in order
 
 | step | command | result |
