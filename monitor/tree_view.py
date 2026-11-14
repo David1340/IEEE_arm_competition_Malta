@@ -86,7 +86,8 @@ class ArmTrack:
         self.outcome = None               # (result, why, t) of the last attempt
         self.running = None               # (name, start) of the running action
         self.move = None                  # (step, start) of the running move
-        self.last_failure = None          # (task, node, why, t)
+        self.last_failure = None          # (task, node, why, t): the first failure of the last attempt that had one
+        self.failed_now = False           # this attempt has failed somewhere already
         self.finished_tree = False
         self.counts = collections.Counter()
 
@@ -116,7 +117,7 @@ class TreeView:
                 track.nodes = {}
                 track.task, track.attempt, track.attempts = e["task"], e["attempt"], e.get("attempts", 0)
                 track.running = track.move = None
-                track.finished_tree = False
+                track.finished_tree = track.failed_now = False
                 self._log(arm, f"attempt {track.attempt}: {track.task}", INK)
             elif kind == "node":
                 node = track.nodes.setdefault(e["path"], {})
@@ -136,7 +137,9 @@ class TreeView:
                         else:
                             why = node["why"] or "failed"
                             self._log(arm, f"{e['name']}  FAILED: {why}", (60, 60, 210))
-                            track.last_failure = (track.task, e["name"], why, time.time())
+                            if not track.failed_now:      # the cause, not the clean-up branch's "fail: missed"
+                                track.last_failure = (track.task, e["name"], why, time.time())
+                                track.failed_now = True
                     if track.running and track.running[0] == e["name"]:
                         track.running = None
                     if e["path"] == "0":
