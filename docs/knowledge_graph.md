@@ -17,10 +17,13 @@ graph LR
     entry --> core
     entry --> games
     entry --> hardware
+    entry --> perception
+    entry --> planning
     entry --> simulation
     entry --> teleop
     games --> calibration
     games --> core
+    games --> entry
     games --> hardware
     games --> perception
     games --> planning
@@ -35,6 +38,7 @@ graph LR
     planning --> perception
     planning --> state_machine
     simulation --> core
+    simulation --> entry
     simulation --> games
     simulation --> hardware
     simulation --> perception
@@ -60,7 +64,7 @@ graph LR
 
 ## Config files and the modules that use them
 
-- `config/arms.yaml`: `02_calibrate`, `calibration.calibrate`, `calibration.lerobot_sync`, `core.arms`, `games.pick_and_place`, `hardware.arm`, `hardware.usb_ports`, `planning.ik`, `planning.pick_planner`, `planning.sim`, `simulation.editor`, `simulation.run`, `simulation.viewer`, `state_machine.arm_worker`, `teleop.teleop`, `teleop.teleop_gui`, `teleop.teleop_net`
+- `config/arms.yaml`: `02_calibrate`, `calibration.calibrate`, `calibration.lerobot_sync`, `core.arms`, `games.pick_and_place`, `hardware.arm`, `hardware.usb_ports`, `monitor.pybullet_view`, `planning.ik`, `planning.pick_planner`, `planning.sim`, `simulation.editor`, `simulation.run`, `simulation.viewer`, `state_machine.arm_worker`, `teleop.teleop`, `teleop.teleop_gui`, `teleop.teleop_net`
 - `config/perception.yaml`: `calibration.calibrate`, `perception.colour`, `perception.detection`, `perception.live`, `perception.silhouette_live`
 - `config/teleop.yaml`: `03_teleop`, `teleop.teleop_net`
 - `config/games/<game>.yaml`: `games.pick_and_place`, `games.rules`, `games.two_arm_coordination`, `simulation.run`
@@ -77,7 +81,7 @@ graph LR
 **`core/arms.py`**: The arms' setup from config/arms.yaml: ports, USB serials, teleop pairs, where each follower stands, home pose.
 - defines: load(), load_copy(), save(), followers(), leaders(), names(), entry(), role(), port(), base(), default_arm(), lerobot_type(), lerobot_calibration_dir(), lerobot_calibration(), follower_calibration(), calibration_file(), handoff_points(), handoff_min_spacing(), middle_half_width(), teleop_pairs(), bases(), arm_from_table()
 - imports: core.config, core.paths
-- used by: 02_calibrate, calibration.calibrate, calibration.lerobot_sync, games.pick_and_place, hardware.arm, hardware.usb_ports, planning.ik, planning.pick_planner, planning.sim, simulation.editor, simulation.run, simulation.viewer, state_machine.arm_worker, teleop.teleop, teleop.teleop_gui, teleop.teleop_net (+6 in dev/)
+- used by: 02_calibrate, calibration.calibrate, calibration.lerobot_sync, games.pick_and_place, hardware.arm, hardware.usb_ports, monitor.pybullet_view, planning.ik, planning.pick_planner, planning.sim, simulation.editor, simulation.run, simulation.viewer, state_machine.arm_worker, teleop.teleop, teleop.teleop_gui, teleop.teleop_net (+6 in dev/)
 - config: config/arms.yaml, config/calibration/<arm>/motors.yaml (also saves files)
 
 **`core/config.py`**: Read and write the YAML files in config/.
@@ -86,13 +90,17 @@ graph LR
 
 **`core/paths.py`**: Every fixed path in the project, in one place.
 - defines: arm_calibration_dir()
-- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, perception.colour, perception.detection, planning.kinematics, planning.pick_planner, planning.sim, simulation.run, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
+- used by: calibration.calibrate, core.arms, games.rules, hardware.gripper, hardware.joint_offsets, monitor.event_log, monitor.pybullet_view, perception.colour, perception.detection, planning.kinematics, planning.pick_planner, planning.sim, simulation.run, simulation.scene, simulation.viewer, state_machine.arm_worker, teleop.teleop_net (+1 in dev/)
+
+**`core/telemetry.py`**: What the arms are doing, as events, for the live views (monitor/): a small thread-safe publish / subscribe.
+- defines: subscribe(), unsubscribe(), active(), publish()
+- used by: monitor.event_log, monitor.pybullet_view, monitor.tree_view, simulation.run, simulation.viewer, state_machine.arm_worker
 
 
 ### hardware/
 
 **`hardware/arm.py`** (runnable): The follower arms: connect (LeRobot SOFollower), read and send joints, follow paths, home and park; plus an end-effector controller (PyBullet IK -> the real arm).
-- defines: arm_files(), robot_arm(), calib_limits_deg(), class EEController, connect_robot(), go_home(), park_pose(), on_every_arm(), park_and_disconnect(), read_joints_rad(), send_joints(), add_motion_args(), apply_motion_args(), motion_profile(), follow_path(), planning_start(), report_start(), move_to(), main()
+- defines: arm_files(), robot_arm(), calib_limits_deg(), class EEController, connect_robot(), go_home(), park_pose(), on_every_arm(), park_and_disconnect(), read_joints_rad(), joints_from_observation(), send_joints(), add_motion_args(), apply_motion_args(), motion_profile(), follow_path(), planning_start(), report_start(), move_to(), main()
 - imports: core.arms, hardware.joint_offsets, planning.ik, planning.rrt_connect
 - used by: calibration.calibrate, games.pick_and_place, state_machine.arm_worker (+7 in dev/)
 - config: config/arms.yaml, config/calibration/<arm>/motors.yaml, config/calibration/<arm>/joint_offsets.yaml
@@ -166,7 +174,7 @@ graph LR
 **`perception/detection.py`**: YOLO + ZED helpers shared by every script: ROI, camera calibration, weights, point-cloud object centres and the top-face silhouette fit.
 - defines: settings(), load_roi(), latest_weights(), roi_for_frame(), load_camera_transform(), transform_point(), camera_intrinsics(), top_face_fits(), visible_surface_center()
 - imports: calibration.calibrate, core.config, core.paths, perception.object_models, perception.silhouette, perception.silhouette_live
-- used by: calibration.calibrate, games.pick_and_place, perception.live, perception.silhouette_live, planning.pick_planner, simulation.scene (+5 in dev/)
+- used by: calibration.calibrate, games.pick_and_place, monitor.pybullet_view, perception.live, perception.silhouette_live, planning.pick_planner, simulation.scene (+5 in dev/)
 - config: config/perception.yaml, config/calibration/camera.yaml, config/calibration/camera_transform.npy (also saves files)
 
 **`perception/live.py`**: ZED + YOLO + top-face silhouette detection of table objects, shared by the live viewer and the pipeline.
@@ -220,7 +228,7 @@ graph LR
 **`planning/pick_planner.py`**: Planning a pick and place for one arm: every waypoint's pose (M-FRPSO IK) and the collision-free path to it (RRT-Connect), in the planning world of planning/sim.py (the table, the bins, the other o...
 - defines: plan_sequence(), add_obstacle(), add_column(), object_stl(), neighbour_radius(), finger_points(), finger_clearance(), down_rolls(), add_other_arm(), handoff_checker(), grasp_height(), grasp_settings(), grasp_heights(), postures_for(), miss_position(), planning_world(), close_worlds(), plan_task()
 - imports: core.arms, core.config, core.paths, hardware.gripper, perception.detection, planning.sim, state_machine.coordinator
-- used by: games.pick_and_place, planning.planner_service, simulation.run, state_machine.arm_worker (+1 in dev/)
+- used by: games.pick_and_place, monitor.pybullet_view, planning.planner_service, simulation.run, state_machine.arm_worker (+1 in dev/)
 - config: config/arms.yaml
 
 **`planning/planner_service.py`**: A planner per arm, so planning runs in parallel with the other arm's planning and with the arm's own moves.
@@ -236,7 +244,7 @@ graph LR
 **`planning/sim.py`** (runnable): Simulation only: table + objects in PyBullet, then M-FRPSO IK and RRT-Connect, one step at a time.
 - defines: add_table(), add_object(), tilt_down(), matrix_to_quaternion(), class World, wait(), main()
 - imports: core.arms, core.paths, planning.ik, planning.rrt_connect
-- used by: planning.pick_planner, simulation.viewer (+4 in dev/)
+- used by: monitor.pybullet_view, planning.pick_planner, simulation.viewer (+4 in dev/)
 - config: config/arms.yaml
 
 
@@ -244,7 +252,7 @@ graph LR
 
 **`state_machine/arm_worker.py`**: The state machine of one arm: task after task from the coordinator, each attempt a behaviour tree (locate the object and its bin, plan, grasp or back off, carry, release, home, verify the drop).
 - defines: short(), follow(), go_home(), return_motion(), task_tree(), class TaskActions, arm_worker()
-- imports: core.arms, core.paths, hardware.arm, hardware.gripper, planning.kinematics, planning.pick_planner, state_machine.behaviour, state_machine.coordinator
+- imports: core.arms, core.paths, core.telemetry, hardware.arm, hardware.gripper, planning.kinematics, planning.pick_planner, state_machine.behaviour, state_machine.coordinator
 - used by: games.pick_and_place, simulation.run (+1 in dev/)
 - config: config/arms.yaml
 
@@ -264,7 +272,7 @@ graph LR
 
 **`games/pick_and_place.py`** (runnable): Game 1, pick and place: the live view of every object and bin, Enter, and the arms sort them straight away.
 - defines: colour_of(), object_stl(), same_size(), detect(), bin_for(), class TableView, put(), add_game_args(), main()
-- imports: calibration.calibrate, core.arms, games.rules, hardware.arm, hardware.gripper, perception.colour, perception.detection, perception.live, planning.pick_planner, planning.planner_service, state_machine.arm_worker, state_machine.coordinator
+- imports: calibration.calibrate, core.arms, games.rules, hardware.arm, hardware.gripper, monitor.event_log, monitor.pybullet_view, monitor.tree_view, perception.colour, perception.detection, perception.live, planning.pick_planner, planning.planner_service, state_machine.arm_worker, state_machine.coordinator
 - used by: 04_simulate, simulation.run
 - config: config/arms.yaml, config/games/<game>.yaml, config/calibration/colours.yaml
 
@@ -290,7 +298,7 @@ graph LR
 
 **`simulation/run.py`** (runnable): Play a pick-and-place round in PyBullet on a scene: no arms, no camera, the same code as the real game.
 - defines: class SimArm, sim_read_joints(), sim_send_joints(), class SimActions, build_round(), main(), test()
-- imports: core.arms, core.paths, games.pick_and_place, games.rules, hardware.gripper, planning.ik, planning.pick_planner, planning.planner_service, simulation.scene, simulation.viewer, state_machine.arm_worker, state_machine.coordinator
+- imports: core.arms, core.paths, core.telemetry, games.pick_and_place, games.rules, hardware.gripper, monitor.tree_view, planning.ik, planning.pick_planner, planning.planner_service, simulation.scene, simulation.viewer, state_machine.arm_worker, state_machine.coordinator
 - used by: 04_simulate
 - config: config/arms.yaml, config/games/<game>.yaml (also saves files)
 
@@ -301,7 +309,7 @@ graph LR
 
 **`simulation/viewer.py`**: The simulator's PyBullet window: the table, both arms at their bases (config/arms.yaml), the objects and the bins, all in the TABLE frame.
 - defines: yaw_of(), class Viewer, object_size()
-- imports: core.arms, core.paths, hardware.gripper, planning.sim, simulation.scene
+- imports: core.arms, core.paths, core.telemetry, hardware.gripper, planning.sim, simulation.scene
 - used by: simulation.run
 - config: config/arms.yaml
 
@@ -324,6 +332,24 @@ graph LR
 **`04_simulate.py`** (runnable): Simulate a game round in PyBullet: no arms, no camera.
 - defines: main()
 - imports: games.pick_and_place, simulation.editor, simulation.run, simulation.scene
+
+**`monitor/__init__.py`**: Live views of a round, fed by core/telemetry.py: the PyBullet window (pybullet_view.py), the behaviour-tree window (tree_view.py) and the event log (event_log.py).
+
+**`monitor/event_log.py`**: Every behaviour-tree step, plan and move of a round, one JSON line each, to look back at a mistake afterwards.
+- defines: class EventLog
+- imports: core.paths, core.telemetry
+- used by: games.pick_and_place
+
+**`monitor/pybullet_view.py`**: The PyBullet window of a real round: the table, both arms as they really are (their measured joints), every object and bin the camera sees, and the paths: what each arm planned, the move it is on, ...
+- defines: class PyBulletView
+- imports: core.arms, core.paths, core.telemetry, perception.detection, planning.pick_planner, planning.sim
+- used by: games.pick_and_place
+- config: config/arms.yaml
+
+**`monitor/tree_view.py`**: The behaviour-tree window: for each arm, its outer state machine, the behaviour tree of the attempt running now with every node's state, and a history of what each arm did.
+- defines: short(), text(), text_width(), pill(), ago(), class ArmTrack, class TreeView
+- imports: core.telemetry
+- used by: games.pick_and_place, simulation.run
 
 **`run_game.py`** (runnable): Step 4: play a game.
 - defines: main()

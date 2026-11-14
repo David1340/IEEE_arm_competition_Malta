@@ -28,8 +28,18 @@ closest object first, skipping ones whose region the other arm holds). Each atte
 plan, grasp (missed: back off, home, try again from where it is seen next), carry, release, home, and check it is not
 seen outside the bin (else try again from there); up to --attempts times. A handed-off object is looked for again by
 the arm that takes it over, so one that tipped or slid is picked where it is. When the round is
-done its time is printed; Enter again for what is left. h = arms home, q / Esc = quit (after the moves running now;
-the arms park at home).
+done its time is printed; Enter again for what is left. h = arms home, f = freeze / unfreeze the behaviour-tree
+window, q / Esc = quit (after the moves running now; the arms park at home).
+
+Beside the camera window (which stays as it was), two more live views (monitor/, fed by core/telemetry.py):
+  PyBullet window   the table, the arms at their measured joints, every object and bin the camera sees, each arm's
+                    planned path (thin, a colour per step), the move it is on (thick), where its gripper really went
+                    (dark trail) and a stick figure of the pose the move ends at; over each arm, what it is doing
+                    (--no-sim-view: not shown)
+  behaviour tree    each arm's outer state machine (waiting -> attempt -> done / retry / later / other arm / left)
+                    and the behaviour tree of its attempt, every node grey / amber (running) / green / red (failed,
+                    with why), the last failure, and a history of every step (--no-tree-view: not shown)
+Every step is also appended to outputs/behaviour_log.jsonl (--no-event-log: not), to look back at a mistake.
 
 Which bin each object goes in comes from config/games/pick_and_place.yaml (games/rules.py): colour = the object's colour,
 shape = cube -> red, cylinder -> blue, dodecahedron -> green, hexagonal prism -> yellow. Object centres come from the
@@ -312,6 +322,12 @@ def main(argv=None):
     ap.add_argument("--auto-retries", type=int, default=1,
                     help="--auto: an object that failed is tried again in at most this many later rounds while it "
                          "stays where it is (it is tried afresh once it is moved)")
+    ap.add_argument("--no-sim-view", action="store_true",
+                    help="no PyBullet window of the arms, the detected objects and the paths (monitor/pybullet_view.py)")
+    ap.add_argument("--no-tree-view", action="store_true",
+                    help="no window of each arm's state machine and behaviour tree (monitor/tree_view.py)")
+    ap.add_argument("--no-event-log", action="store_true",
+                    help="do not append every behaviour-tree step, plan and move to outputs/behaviour_log.jsonl")
     from hardware.arm import add_motion_args, apply_motion_args
 
     add_motion_args(ap)
@@ -337,6 +353,7 @@ def main(argv=None):
     from hardware.arm import connect_robot, on_every_arm, park_and_disconnect, read_joints_rad, send_joints
 
     robots, workers, vision, planners = {}, [], None, {}
+    sim_view = tree_view = event_log = None          # the live views (monitor/)
     run = {"coordinator": None, "start": 0.0, "reported": True, "status": "Enter: sort what is in view"}
     close_checker = lambda: None
     try:
@@ -355,6 +372,18 @@ def main(argv=None):
         bases = {n: np.array([all_arms[n]["x"], all_arms[n]["y"]]) for n in robots}
         regions = Regions(bases, arm_config.middle_half_width())
         last_q = {n: list(HOME_Q) for n in robots}
+        if not args.no_event_log:
+            from monitor.event_log import EventLog
+
+            event_log = EventLog()
+        if not args.headless and not args.no_sim_view:
+            from monitor.pybullet_view import PyBulletView
+
+            sim_view = PyBulletView(list(robots), args)
+        if not args.headless and not args.no_tree_view:
+            from monitor.tree_view import TreeView
+
+            tree_view = TreeView(list(robots))
 
         def home_all():
             def home(name, robot):
@@ -636,6 +665,8 @@ def main(argv=None):
             canvas, objects, bins = detect(vision, colors, table_from_default)
             with seen["lock"]:
                 seen["objects"], seen["bins"], seen["time"] = objects, bins, time.monotonic()
+            if sim_view is not None:
+                sim_view.scene(objects, bins, marks if run["coordinator"] is not None else ())
             if view is None and not args.headless:
                 view = TableView(vision.cam, bases, regions, args.max_reach, args.min_reach, canvas.shape)
             busy = any(w.is_alive() for w in workers)
@@ -663,11 +694,15 @@ def main(argv=None):
             if not sized:
                 cv2.resizeWindow(WINDOW, out.shape[1], out.shape[0])
                 sized = True
+            if tree_view is not None:
+                tree_view.show()
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 if busy:
                     print("Stopping after the moves running now ...")
                 break
+            if key == ord("f") and tree_view is not None:
+                tree_view.toggle_freeze()
             if busy:
                 continue
             if args.auto:
@@ -686,6 +721,9 @@ def main(argv=None):
             worker.join()
         # whatever goes wrong closing the rest, the arms still park
         for step in (lambda: vision is not None and vision.close(),
+                     lambda: tree_view is not None and tree_view.close(),
+                     lambda: sim_view is not None and sim_view.close(),
+                     lambda: event_log is not None and event_log.close(),
                      lambda: None if args.headless else cv2.destroyAllWindows(),
                      close_checker, *[planner.close for planner in planners.values()]):
             try:

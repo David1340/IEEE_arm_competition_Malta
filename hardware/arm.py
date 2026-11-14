@@ -252,6 +252,13 @@ def read_joints_rad(robot) -> list[float]:
     return [math.radians(correct_joint_position_deg(name, obs[f"{name}.pos"], arm)) for name in ARM_JOINTS]
 
 
+def joints_from_observation(obs, arm) -> tuple[list[float], float]:
+    """(joint angles [rad], as read_joints_rad gives them; gripper 0-100) of an observation already read (e.g. the
+    feedback_callback of follow_path), without reading the motors again."""
+    q = [math.radians(correct_joint_position_deg(name, obs[f"{name}.pos"], arm)) for name in ARM_JOINTS]
+    return q, float(obs.get("gripper.pos", 0.0))
+
+
 def send_joints(
     robot,
     q,

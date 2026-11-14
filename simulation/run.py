@@ -4,6 +4,7 @@
     python 04_simulate.py run example --round shape         # any game option works (python 04_simulate.py run -h)
     python 04_simulate.py run example --speed 3             # faster playback
     python 04_simulate.py run example --headless            # no window: plan and check only (e.g. in CI)
+    python 04_simulate.py run example --tree-view           # also the game's behaviour-tree window (monitor/)
 
 What is the same as on the real arms: the game's options and rules (games/pick_and_place.py add_game_args,
 config/games/pick_and_place.yaml), which arm does what and when (state_machine/coordinator.py), each arm's behaviour
@@ -65,7 +66,12 @@ class SimActions(TaskActions):
         return shape.get("origin", shape)["source"]
 
     def _follow(self, bb, step, gripper):
-        self.robot.viewer.run(self.arm, "move", dict(bb["plans"])[step], gripper)
+        from core import telemetry
+
+        path = dict(bb["plans"])[step]
+        telemetry.publish("move", arm=self.arm, step=step, path=[list(map(float, q)) for q in path], gripper=gripper)
+        self.robot.viewer.run(self.arm, "move", path, gripper)
+        telemetry.publish("moved", arm=self.arm, step=step, ok=True)
 
     def grasp(self, bb):
         task = bb["task"]
@@ -80,6 +86,11 @@ class SimActions(TaskActions):
         viewer.run(self.arm, "attach", self._source(bb))
         bb["hold"] = contact
         print(f"  {self.arm}: holding it (simulated)")
+        return True
+
+    def back_off(self, bb):
+        bb["missed"] = True                                  # as TaskActions.back_off (a simulated grasp holds)
+        self._follow(bb, "lift", bb["opening"])
         return True
 
     def release(self, bb):
@@ -145,6 +156,8 @@ def main(argv=None):
     ap.add_argument("--keep-open", action="store_true", help="leave the window open at the end until Ctrl+C")
     ap.add_argument("--realtime", action="store_true",
                     help="with --headless: the moves still take their time (at --speed), to compare round times")
+    ap.add_argument("--tree-view", action="store_true",
+                    help="show each arm's state machine and behaviour tree as the game does (monitor/tree_view.py)")
     add_game_args(ap)
     args = ap.parse_args(argv)
     args.gui = False                                   # the planners' own worlds stay headless
@@ -197,6 +210,11 @@ def main(argv=None):
                                       (sim_send_joints, sim_read_joints), handoff_points, None, SimActions,
                                       planners[name]))
                for name, robot in robots.items()]
+    tree_view = None
+    if args.tree_view:
+        from monitor.tree_view import TreeView
+
+        tree_view = TreeView(names)
     started = time.monotonic()
     placed = failed = wrong = 0
     for worker in workers:
@@ -209,6 +227,11 @@ def main(argv=None):
                 last_status = time.monotonic()
                 status = [f"{short(a)}: {s}" for a, s in sorted(coordinator.arm_state.items())]
             wait = viewer.step(status)
+            if tree_view is not None:
+                import cv2
+
+                tree_view.show()
+                cv2.waitKey(1)
             time.sleep(wait if wait else 0.002)
         took = time.monotonic() - started
         placed = sum(m["state"] == "placed" for m in marks if m["kind"] == "shape")
@@ -233,6 +256,11 @@ def main(argv=None):
             print("Window left open: Ctrl+C to quit")
             while True:
                 viewer.step()
+                if tree_view is not None:
+                    import cv2
+
+                    tree_view.show()
+                    cv2.waitKey(1)
                 time.sleep(0.05)
     except KeyboardInterrupt:
         coordinator.stop.set()
@@ -241,6 +269,8 @@ def main(argv=None):
         for planner in planners.values():
             planner.close()
         viewer.close()
+        if tree_view is not None:
+            tree_view.close()
     return {"placed": placed, "failed": failed, "left": len(skipped), "collisions": len(viewer.collisions),
             "wrong_bin": wrong, "seconds": round(time.monotonic() - started, 1),
             "objects": len(scene["objects"])}

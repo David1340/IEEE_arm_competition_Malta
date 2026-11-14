@@ -7,6 +7,10 @@ object and its bin, plan, grasp or back off, carry, release, home, verify the dr
 The coordinator (state_machine/coordinator.py) decides which arm does which task and keeps the arms out of each
 other's regions; the tree's nodes are in state_machine/behaviour.py; the planning is planning/pick_planner.py.
 robot None: plan only (no arm moves). camera None: the objects' known positions are used as they are.
+
+Everything the arm does is also published as events (core/telemetry.py: the tree of each attempt and every node's
+start and end, the plans, each move and the measured joints) for the live views (monitor/); a no-op when nothing
+listens.
 """
 import csv
 import math
@@ -16,6 +20,7 @@ import traceback
 import numpy as np
 
 from core import arms as arm_config
+from core import telemetry
 from core.arms import HOME_GRIPPER
 from hardware.gripper import (GRIP_CONFIRM_READINGS, GRIP_SQUEEZE_UNITS, GRIPPER_OPEN,
                               close_gripper_with_current_feedback)
@@ -30,17 +35,33 @@ def short(arm):
     return arm.replace("follower_", "")
 
 
-def follow(robot, path, gripper, send_joints=None, precise=True, **motion):
+def follow(robot, path, gripper, send_joints=None, precise=True, step=None, **motion):
     """Move along a joint path in one smooth motion (hardware/arm.py follow_path), the gripper going to
     `gripper` on the way; precise=False: its end only roughly (faster). motion: speed / accel for this move instead
-    of --speed / --accel. send_joints is not used any more."""
-    from hardware.arm import follow_path
+    of --speed / --accel. send_joints is not used any more. step: the plan step's name, for the live views (the
+    move, and the measured joints on the way, are published: core/telemetry.py)."""
+    from hardware.arm import follow_path, joints_from_observation, robot_arm
 
-    return follow_path(robot, path, gripper, precise=precise, **motion)
+    if not telemetry.active():
+        return follow_path(robot, path, gripper, precise=precise, **motion)
+    arm = robot_arm(robot)
+    telemetry.publish("move", arm=arm, step=step, path=[list(map(float, q)) for q in path], gripper=gripper)
+    last = [0.0]
+
+    def feedback(obs):                                     # the measured joints, about 25 times a second
+        now = time.monotonic()
+        if now - last[0] >= 0.04:
+            last[0] = now
+            q, grip = joints_from_observation(obs, arm)
+            telemetry.publish("joints", arm=arm, q=q, gripper=grip)
+
+    ok = follow_path(robot, path, gripper, precise=precise, feedback_callback=feedback, **motion)
+    telemetry.publish("moved", arm=arm, step=step, ok=bool(ok))
+    return ok
 
 
 def go_home(robot, send_joints, read_joints_rad, **motion):
-    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints, precise=False, **motion)
+    follow(robot, [read_joints_rad(robot), HOME_Q], HOME_GRIPPER, send_joints, precise=False, step="home", **motion)
 
 
 def return_motion(args):
@@ -251,6 +272,12 @@ class TaskActions:
             bb["why"] = f"no plan: {error}"
             return False
         bb["grasp_z"] = z
+        if telemetry.active():
+            goal = bb.get("handoff_xyz") if task.kind == TO_HANDOFF else task.box["xyz"]
+            telemetry.publish("plan", arm=self.arm, task=task.label(),
+                              plans=[(step, [list(map(float, q)) for q in path]) for step, path in bb["plans"]],
+                              target=[float(v) for v in task.shape["xyz"]], grasp_z=float(z),
+                              goal=None if goal is None else [float(v) for v in goal])
         print(f"  {self.arm}: grasp at {100 * z:.1f} cm above the table "
               f"({time.monotonic() - started:.1f} s waiting for the plan)")
         return True
@@ -305,7 +332,7 @@ class TaskActions:
     def _follow(self, bb, step, gripper):
         if self.robot is not None:
             follow(self.robot, dict(bb["plans"])[step], gripper, self.send_joints,
-                   precise=step in self.PRECISE_STEPS)
+                   precise=step in self.PRECISE_STEPS, step=step)
 
     def grasp(self, bb):
         task = bb["task"]
@@ -316,6 +343,7 @@ class TaskActions:
         self._follow(bb, "above shape", bb["opening"])
         self._follow(bb, "grasp", bb["opening"])
         reached_q = self.read_joints_rad(self.robot)            # where the arm stopped, for the grasp check
+        telemetry.publish("joints", arm=self.arm, q=list(map(float, reached_q)), gripper=bb["opening"])
         trace, info = [], {}
         from planning.pick_planner import grasp_settings
 
@@ -331,6 +359,7 @@ class TaskActions:
         if not grasped:
             print(f"  {self.arm}: missed it (gripper {info.get('reason', '')} at {stop:.0f}/100, {current_ma:.0f} mA, "
                   f"peak {max((c for _, _, c in trace), default=0):.0f} mA)")
+            bb["why"] = f"gripper {info.get('reason', 'missed')} at {stop:.0f}/100, {current_ma:.0f} mA"   # the views
             return False
         print(f"  {self.arm}: holding it ({info.get('reason', '')}: stopped at {stop:.0f}/100, {current_ma:.0f} mA)")
         bb["hold"] = hold
@@ -361,7 +390,7 @@ class TaskActions:
         bb["missed"] = True                                  # the way back is quick (--return-speed)
         if self.robot is not None:
             follow(self.robot, dict(bb["plans"])["lift"], bb["opening"], self.send_joints, precise=False,
-                   **return_motion(self.args))
+                   step="back off", **return_motion(self.args))
         return True
 
     def carry_to_bin(self, bb):
@@ -382,9 +411,12 @@ class TaskActions:
     def release(self, bb):
         if self.robot is not None:
             # open only as wide as it was picked with: a wide-open jaw swings into the object just put down
+            telemetry.publish("move", arm=self.arm, step="release", path=[dict(bb["plans"])[bb["release_at"]][-1]],
+                              gripper=bb.get("opening", GRIPPER_OPEN))
             self.send_joints(self.robot, dict(bb["plans"])[bb["release_at"]][-1],
                              gripper=bb.get("opening", GRIPPER_OPEN))
             time.sleep(max(0.0, getattr(self.args, "release_pause", 0.2)))   # let it fall clear of the jaws
+            telemetry.publish("moved", arm=self.arm, step="release", ok=True)
         bb["released"] = True                                # the way back is quick (--return-speed)
         return True
 
@@ -411,29 +443,47 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points,
     (plan in this thread, one arm at a time)."""
     w = (actions or TaskActions)(arm, robot, coordinator, marks, last_q, args, io, handoff_points, camera, planner)
     task = None
+
+    def outcome(result, why=""):
+        telemetry.publish("outcome", arm=arm, task=task.label(), result=result, why=why)
+
+    def observer(node, status):
+        telemetry.publish("node", arm=arm, path=node.path, name=node.name, type=type(node).__name__,
+                          status=status, why=bb.get("why", "") if status == "failure" else "")
+
     try:
         while True:
+            telemetry.publish("worker", arm=arm, state="waiting")
             task = coordinator.next_task(arm)
             if task is None:
                 break
             print(f"\n{task.label()}  (regions: {', '.join(sorted(task.regions))}, attempt {task.attempts + 1})")
             origin = task.shape.get("origin", task.shape)
             bb = {"task": task}
-            if task_tree(task, w).tick(bb):
+            tree = task_tree(task, w)
+            if telemetry.active():
+                bb["observer"] = observer
+                telemetry.publish("worker", arm=arm, state="attempt")
+                telemetry.publish("tree", arm=arm, task=task.label(), attempt=task.attempts + 1,
+                                  attempts=args.attempts, structure=tree.structure())
+            if tree.tick(bb):
                 if task.kind == TO_HANDOFF:
                     origin["state"], origin["handoff_xyz"] = "handoff", bb["handoff_xyz"]
                     print(f"  {arm}: left it on drop-off point {task.slot} for {task.then_arm}")
                 else:
                     origin["state"] = "placed"
                     print(f"  {arm}: dropped it in the {task.box['colour']} bin")
+                outcome("done", "on the drop-off" if task.kind == TO_HANDOFF else f"in the {task.box['colour']} bin")
                 coordinator.finish(task, "done", bb.get("handoff_xyz"))
                 continue
             why = bb.get("why", "failed")
             if why == "region taken":
                 print(f"  {arm}: it is now where the other arm works: later")
+                outcome("later", why)
                 coordinator.requeue(task, count=False)
             elif why in ("missed", "drop missed") and task.attempts + 1 < args.attempts:
                 print(f"  {arm}: {why}; trying again ({task.attempts + 2}/{args.attempts})")
+                outcome("retry", why)
                 coordinator.requeue(task)
             elif why.startswith("no plan"):
                 xyz = np.asarray(task.shape["xyz"], float)[:2]
@@ -442,13 +492,15 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points,
                            and np.linalg.norm(np.asarray(m.get("handoff_xyz") if m["state"] == "handoff"
                                                          else m["xyz"], float)[:2] - xyz) < NEAR
                            for m in marks)
-                outcome = coordinator.blocked(task, near)
+                result = coordinator.blocked(task, near)
                 print(f"  {arm}: {why}: " + {"later": "other objects are close around it, tried again once one of "
                                                       "them is moved",
                                              "other arm": "the other arm tries it from its side",
-                                             "failed": "left"}[outcome])
+                                             "failed": "left"}[result])
+                outcome({"failed": "left"}.get(result, result), why)
             else:
                 print(f"  {arm}: {why}: left")
+                outcome("left", why)
                 origin["state"] = "failed"
                 coordinator.finish(task, "failed")
     except Exception:
@@ -456,5 +508,7 @@ def arm_worker(arm, robot, coordinator, marks, last_q, args, io, handoff_points,
         print(f"{arm}: stopped after an error; the other arm carries on with the tasks that do not need it")
         coordinator.abort(arm, locals().get("task"))
         w.say("ERROR (see the terminal)")
+        telemetry.publish("worker", arm=arm, state="error")
         return
     w.say("done")
+    telemetry.publish("worker", arm=arm, state="finished")

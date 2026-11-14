@@ -41,6 +41,7 @@ files or functions (`--check` tells whether it is current).
 | one arm's behaviour tree (locate, plan, grasp, carry, verify) | `state_machine/arm_worker.py`; nodes in `state_machine/behaviour.py` |
 | game rules (which bin) | `config/games/<game>.yaml` via `games/rules.py` |
 | Game 1 main loop, live view | `games/pick_and_place.py` |
+| live views of a round: PyBullet window (arms, detections, planned and real paths), behaviour-tree window, `outputs/behaviour_log.jsonl` | `monitor/` (`pybullet_view.py`, `tree_view.py`, `event_log.py`), fed by `core/telemetry.py` events published in `state_machine/arm_worker.py` and `state_machine/behaviour.py` (`observer`, `structure()`) |
 | Game 2 (stub) | `games/two_arm_coordination.py` |
 | simulate a round in PyBullet (no hardware): scenes, editor, viewer, runner | `simulation/` (`04_simulate.py`); scenes in `simulation/scenes/*.yaml` |
 | game options shared by the game and the simulator | `games/pick_and_place.py` `add_game_args()` |
@@ -49,7 +50,8 @@ files or functions (`--check` tells whether it is current).
 | experiments, old GUIs, dataset tools | `dev/` (nothing outside `dev/` imports it; ignore it unless asked) |
 
 Dependency direction: `games -> state_machine -> planning -> hardware -> core`, with `perception` and
-`calibration` beside them; `core` imports nothing from the project.
+`calibration` beside them, and `monitor` (only listens to `core/telemetry.py`) used by `games` and `simulation`;
+`core` imports nothing from the project. The views must never block or stop an arm: publish is fire-and-forget.
 
 ## Commands
 

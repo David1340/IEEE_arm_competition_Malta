@@ -18,6 +18,7 @@ import numpy as np
 import pybullet as p
 
 from core import arms as arm_config
+from core import telemetry
 from core.paths import URDF
 from hardware.gripper import object_footprint
 from planning.sim import JOINTS
@@ -123,6 +124,8 @@ class Viewer:
         low, high = self.gripper_range[arm]
         p.resetJointState(body, joint["gripper"], low + float(grip) / 100.0 * (high - low), physicsClientId=self.c)
         self.q[arm], self.grip[arm] = list(map(float, q)), float(grip)
+        if telemetry.active():                          # as the real arms' measured joints (monitor/)
+            telemetry.publish("joints", arm=arm, q=self.q[arm], gripper=self.grip[arm])
         if arm in self.held:
             obj, rel = self.held[arm]
             pos, orn = self._grasp_pose(arm)

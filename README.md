@@ -42,6 +42,31 @@ The game watches the camera and starts a round by itself when objects with their
 `--auto-retries` (1) more times where it is, and one no arm reaches is left alone, until it is moved. All game options
 work too (`--arm follower_blue`, `--round shape`, ...).
 
+## Live views: what each arm is doing, and what it was trying to do
+
+`python run_game.py pick_and_place` opens two more windows beside the camera window (which is unchanged):
+
+- **PyBullet view** (`monitor/pybullet_view.py`): the table, both arms at their *measured* joint angles, every object
+  and bin the camera sees (at their TABLE positions), and the paths: each arm's latest plan (thin lines, one colour
+  per step: above shape blue, grasp red, lift orange, over the bin green), the move running now (thick), where the
+  grasp point really went (dark trail, this attempt and the one before), a red cross on the object it goes for with a
+  line to its bin, and a stick figure of the pose the move ends at. Over each arm: the action it is doing, in red with
+  the reason after a failure. The round's objects carry their state (todo / placed / failed / handoff). It runs in a
+  process of its own: the camera loop and the arms never wait for it, and closing it only closes the view.
+- **Behaviour tree view** (`monitor/tree_view.py`): per arm, the outer state machine (waiting for a task -> attempt ->
+  done / retry / later / other arm / left), the behaviour tree of the attempt running now with every node grey (not
+  run yet), amber (running, with its time), green (succeeded), red (failed, with why: e.g. `close on it: gripper
+  closed empty at 3/100, 12 mA`), the last failure, and a history of every step with the time. **f** freezes / unfreezes
+  it, to read a mistake while the arms carry on.
+
+Every step, plan and move is also appended to `outputs/behaviour_log.jsonl`, to look back at a mistake afterwards.
+`--no-sim-view`, `--no-tree-view`, `--no-event-log` turn them off; `--headless` opens no window (the log is still
+written). The simulator shows the tree view too: `python 04_simulate.py run example --tree-view`.
+
+How it works: the arm workers publish events (`core/telemetry.py`: each attempt's tree, every node's start and end,
+the plans, every move and the joints measured while moving) and the views subscribe; with nothing subscribed,
+publishing does nothing.
+
 ## Grasp check (real arms)
 
 After every grasp the game prints a `grasp check` line and appends a row to `outputs/grasp_log.csv`: where the grasp
@@ -180,7 +205,8 @@ config/          every setting and calibration value, YAML (see config/README.md
   games/           one rules file per game
   calibration/     camera.yaml, and per arm: motors.yaml (LeRobot), joint_offsets.yaml
 
-core/            config loading (config.py), every path (paths.py), the arms' setup and TABLE frame (arms.py)
+core/            config loading (config.py), every path (paths.py), the arms' setup and TABLE frame (arms.py),
+                 events of what the arms do, for the live views (telemetry.py)
 hardware/        USB ports and udev (usb_ports.py), connect and move the arms (arm.py), gripper, joint offsets
 calibration/     camera and base calibration, offsets GUI (calibrate.py), LeRobot calibration sync (lerobot_sync.py)
 teleop/          leader -> follower teleop: lerobot-teleoperate launcher, telemetry GUI, over the network
@@ -188,6 +214,7 @@ perception/      ZED + YOLO: object and bin positions (live.py), colours (colour
 planning/        IK (ik.py, M-FRPSO), paths (rrt_connect.py), the simulation world (sim.py), pick plans (pick_planner.py)
 state_machine/   behaviour trees (behaviour.py), the two-arm coordinator (coordinator.py), each arm's worker
 games/           one script per game: pick_and_place.py (Game 1), two_arm_coordination.py (Game 2, stub); rules.py
+monitor/         live views of a round: PyBullet window (pybullet_view.py), behaviour trees (tree_view.py), event log
 simulation/      PyBullet simulation of a round: scenes/ (YAML layouts), editor.py, viewer.py, run.py (04_simulate.py)
 models/          objects/ (STLs), robot/ (SO-101 URDF), yolo/ (trained weights, not in git)
 dev/             experiments, older GUIs and dataset tools (see dev/README.md)
